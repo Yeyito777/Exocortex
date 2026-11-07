@@ -167,7 +167,7 @@ type CursorShape = "pointer" | "text" | "hand";
  * Determine the desired cursor shape for a mouse position.
  * - "hand" for anything a click acts on (sidebar entries, menu actions,
  *   edit-message picker rows, history links/paths/images, the task panel
- *   and the subagent labels on it,
+ *   and, with Shift held, the subagent rows on it,
  *   the usage block while several accounts make the Accounts screen available)
  * - "text" for text-content areas (prompt, chat history)
  * - "pointer" for non-interactive chrome (topbar, separators, statusbar, sidebar header)
@@ -210,7 +210,7 @@ export function cursorZone(col: number, row: number, state: RenderState): Cursor
   // The queue prompt swallows clicks, so nothing under it is clickable.
   if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) {
     if (isInsideTaskPanel(col, row, state)) {
-      if (taskPanelLinkAt(state, col, row)) return "hand";
+      if (state.mouseShift && taskPanelLinkAt(state, col, row)) return "hand";
       return state.queuePrompt || !layout.taskPanelToggleable ? "pointer" : "hand";
     }
     return !state.queuePrompt && historyClickableAtScreen(col, row, state) ? "hand" : "text";
@@ -242,8 +242,9 @@ function updateMouseCursor(col: number, row: number, state: RenderState): void {
 }
 
 /** Remember the pointer cell and update its shape, even for input an overlay swallows. */
-export function trackMouseCursor(ev: Pick<MouseEvent, "col" | "row">, state: RenderState): void {
+export function trackMouseCursor(ev: Pick<MouseEvent, "col" | "row"> & Partial<Pick<MouseEvent, "shift">>, state: RenderState): void {
   state.mousePosition = { col: ev.col, row: ev.row };
+  state.mouseShift = ev.shift ?? false;
   updateMouseCursor(ev.col, ev.row, state);
 }
 
@@ -372,11 +373,11 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       return { type: "handled" };
     }
 
-    // A subagent's label opens its conversation. The rest of the task panel is one toggle:
+    // Shift+click on a subagent's rows opens its conversation. Otherwise the task panel is one toggle:
     // expand to list every entry, or back to the capped card.
     // A collapsed card that already shows everything has nothing to expand to.
     if (isInsideTaskPanel(col, row, state)) {
-      const convId = taskPanelLinkAt(state, col, row);
+      const convId = ev.shift ? taskPanelLinkAt(state, col, row) : null;
       if (convId) return { type: "load_conversation", convId };
       if (layout.taskPanelToggleable) toggleTaskPanelExpansion(state);
       return { type: "handled" };

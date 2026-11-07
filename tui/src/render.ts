@@ -53,7 +53,7 @@ import {
   hasFocusedConversationTasks,
   isTaskPanelExpanded,
   layoutTaskPanel,
-  taskPanelLinkAt,
+  taskPanelHoverTarget,
 } from "./activitypanel";
 import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
 import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btw/panel";
@@ -1845,13 +1845,12 @@ export function render(state: RenderState): boolean {
       right: panelCol + link.right,
       convId: link.convId,
     }));
-    // The subagent label under the pointer is highlighted; mouse motion repaints only when that changes.
-    const pointer = state.mousePosition;
-    const hovered = pointer ? taskPanelLinkAt(state, pointer.col, pointer.row) : null;
-    const hoveredLink = hovered ? taskPanel.links.find(link => link.convId === hovered) : undefined;
-    state.taskPanelHover = hoveredLink ? hovered : null;
+    // Shift over a subagent's rows highlights them; mouse motion repaints only when that changes.
+    const hovered = taskPanelHoverTarget(state);
+    const hoverLines = new Map(taskPanel.links.filter(link => link.convId === hovered).map(link => [link.line, link.hoverLine]));
+    state.taskPanelHover = hoverLines.size > 0 ? hovered : null;
     for (let i = 0; i < taskPanel.lines.length; i++) {
-      appendRowWrite(ctx, panelTop + i, panelCol, hoveredLink?.line === i ? hoveredLink.hoverLine() : taskPanel.lines[i]);
+      appendRowWrite(ctx, panelTop + i, panelCol, hoverLines.get(i)?.() ?? taskPanel.lines[i]);
     }
   }
 

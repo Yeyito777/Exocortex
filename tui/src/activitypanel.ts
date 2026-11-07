@@ -16,9 +16,9 @@
  * EXPANDED_SUBAGENT_TITLE_ROWS rows), and scrolls when it outgrows the message
  * area. A collapsed card that already shows everything ignores clicks.
  *
- * A subagent's `<indicator> Exocortex` label is a link to its conversation:
- * the pointer over it highlights it, and a click there opens the subagent
- * instead of toggling the card.
+ * A subagent's rows are a link to its conversation while Shift is held: the
+ * pointer over them highlights them, and a Shift+click there opens the
+ * subagent instead of toggling the card.
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
@@ -66,14 +66,14 @@ export interface TaskPanelRender {
   maxScroll: number;
   /** A click changes the card: it is expanded, or collapsed with an entry or part of a title left out. */
   toggleable: boolean;
-  /** Subagent labels that open the child conversation, in card-relative cells. */
+  /** Subagent rows that open the child conversation, in card-relative cells. */
   links: TaskPanelLink[];
 }
 
 /**
- * A subagent's `<indicator> Exocortex` label: line `line` of the card,
- * columns `left`..`right` (0-based, inclusive), and how to draw that line
- * with the label highlighted, for while the pointer is over it.
+ * One row of a subagent's entry: line `line` of the card, columns
+ * `left`..`right` (0-based, inclusive, inside the borders), and how to draw
+ * that line highlighted, for while Shift and the pointer are over the entry.
  */
 export interface TaskPanelLink {
   line: number;
@@ -83,16 +83,22 @@ export interface TaskPanelLink {
   hoverLine: () => string;
 }
 
-/** The conversation whose subagent label is at (col, row), or null; nothing is clickable under a modal overlay. */
+/** The conversation whose subagent row is at (col, row), or null; nothing is clickable under a modal overlay. */
 export function taskPanelLinkAt(state: RenderState, col: number, row: number): string | null {
   if (state.imageModal || state.accountsScreen || state.instructionsModal || state.editMessagePrompt
     || state.queuePrompt || state.sidebar.actionMenu) return null;
   return state.layout.taskPanelLinks.find(link => link.row === row && col >= link.left && col <= link.right)?.convId ?? null;
 }
 
-/** Whether a pointer at (col, row) would highlight a different subagent label than the last frame drew. */
-export function taskPanelHoverChanged(state: RenderState, col: number, row: number): boolean {
-  return taskPanelLinkAt(state, col, row) !== (state.taskPanelHover ?? null);
+/** The subagent the last pointer report highlights: only while it held Shift. */
+export function taskPanelHoverTarget(state: RenderState): string | null {
+  const pointer = state.mousePosition;
+  return pointer && state.mouseShift ? taskPanelLinkAt(state, pointer.col, pointer.row) : null;
+}
+
+/** Whether the last pointer report highlights a different subagent than the last frame drew. */
+export function taskPanelHoverChanged(state: RenderState): boolean {
+  return taskPanelHoverTarget(state) !== (state.taskPanelHover ?? null);
 }
 
 export interface TaskPanelLayout {
@@ -401,16 +407,19 @@ function entryRows(
   titles: string[],
   status: string,
   statusWidth: number,
-  highlightLead = false,
+  highlight = false,
 ): string[] {
-  const row = (start: string, title: string, end: string, highlight = false) => palette.withPanelBg(
-    `${palette.outline}│${theme.reset}${highlight ? theme.sidebarSelBg : ""} ${start}${theme.text} ${highlight ? theme.reset : ""}${title}`
-    + `${theme.muted}${end}${theme.reset} ${palette.outline}│`,
+  // Highlighted, everything between the borders sits on the hover background.
+  const inside = (text: string) => highlight
+    ? `${theme.sidebarSelBg}${text.replaceAll(theme.reset, `${theme.reset}${theme.sidebarSelBg}`)}${theme.reset}`
+    : text;
+  const row = (start: string, title: string, end: string) => palette.withPanelBg(
+    `${palette.outline}│${theme.reset}${inside(` ${start}${theme.text} ${title}${theme.muted}${end}${theme.reset} `)}${palette.outline}│`,
   );
   const blankLead = " ".repeat(leadWidth);
   const blankStatus = " ".repeat(statusWidth);
   return titles.map((title, index) => index === 0
-    ? row(lead, title, padLeftToWidth(status, statusWidth), highlightLead)
+    ? row(lead, title, padLeftToWidth(status, statusWidth))
     : row(blankLead, title, blankStatus));
 }
 
@@ -442,7 +451,7 @@ function taskTitle(task: TaskPanelEntry): string {
 
 /**
  * One entry: label, the title truncated (or wrapped) to fit, and the countdown,
- * elapsed time, or a paused goal's status. `highlightLabel` draws the label on
+ * elapsed time, or a paused goal's status. `highlight` draws its rows on
  * the hover background.
  */
 function taskRows(
@@ -453,7 +462,7 @@ function taskRows(
   now: number,
   indicator: ConversationActivityIndicator | null,
   wrap: boolean,
-  highlightLabel = false,
+  highlight = false,
 ): string[] {
   const isSubagent = task.kind === "subagent";
   const isGoal = task.kind === "goal";
@@ -472,7 +481,7 @@ function taskRows(
   const lead = `${color}${indicator ? `${indicator.color}${label[0]}${color}${label.slice(1)}` : label}`;
   // A subagent's title is its prompt, which can run long: expanded, it gets a few rows, not the whole prompt.
   const limit = isSubagent ? { chars: EXPANDED_SUBAGENT_TITLE_CHARS, rows: EXPANDED_SUBAGENT_TITLE_ROWS } : undefined;
-  return entryRows(palette, lead, termWidth(label), titleRows(title, titleWidth, wrap, limit), time, ELAPSED_WIDTH, highlightLabel);
+  return entryRows(palette, lead, termWidth(label), titleRows(title, titleWidth, wrap, limit), time, ELAPSED_WIDTH, highlight);
 }
 
 function sectionDivider(palette: PanelPalette, innerWidth: number, title: string, count: number): string {
@@ -595,19 +604,21 @@ export function renderTaskPanel(
   ];
 
   const body: string[] = [];
-  // A subagent's label opens its conversation: the label and the blank cell either side, on the entry's first row.
+  // Every row of a subagent's entry opens its conversation, label, title and time, between the borders.
   const bodyLinks: Array<Omit<TaskPanelLink, "line"> & { bodyIndex: number }> = [];
   for (const task of visible.tasks) {
     const indicator = subagentIndicator(state, task);
     const rows = taskRows(task, palette, innerWidth, compactExocortex, now, indicator, expanded);
     if (task.kind === "subagent") {
-      bodyLinks.push({
-        bodyIndex: body.length,
+      let hoverRows: string[] | null = null;
+      const highlighted = () => hoverRows ??= taskRows(task, palette, innerWidth, compactExocortex, now, indicator, expanded, true);
+      rows.forEach((_, index) => bodyLinks.push({
+        bodyIndex: body.length + index,
         left: 1,
-        right: termWidth(taskLabel(task, compactExocortex, indicator !== null)) + 2,
+        right: innerWidth,
         convId: task.id,
-        hoverLine: () => taskRows(task, palette, innerWidth, compactExocortex, now, indicator, expanded, true)[0],
-      });
+        hoverLine: () => highlighted()[index],
+      }));
     }
     body.push(...rows);
   }
