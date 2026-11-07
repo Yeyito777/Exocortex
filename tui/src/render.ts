@@ -33,6 +33,7 @@ import { PROMPT_PREFIX_WIDTH } from "./promptline";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
 import { hexToAnsi, theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
+import { userTextCanonicalCells, type UserTextSpan } from "./usertextcells";
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "./cursorrender";
 import { getPromptHighlightRanges, highlightPromptInput } from "./prompthighlight";
 import { macroDisplayContext } from "./commands";
@@ -505,6 +506,11 @@ interface ViewportHistoryRow {
   sourceRemainder: string;
   /** Width-independent continuation point for a reflowed user bubble. */
   userFlow?: { owner: object; sourceCursor: UserMessageFlowCursor };
+  /**
+   * A reflowed bubble row's text: where it sits in `line` and the source
+   * cursor it starts at. Its columns are unrelated to the canonical line's.
+   */
+  userText?: UserTextSpan;
 }
 
 type ViewportSourceState = Pick<
@@ -620,6 +626,7 @@ function composeSemanticUserRows(
       displayPrefixWidth: 0,
       sourceRemainder: renderedLine,
       userFlow: { owner: anchor.owner, sourceCursor: rendered.sourceStart },
+      userText: { ...rendered.text, source: rendered.sourceStart },
     });
   }
 
@@ -1137,6 +1144,26 @@ function renderMessageArea(
 ): void {
   const { chatCol, bgLine } = ctx;
 
+  /** The selected plain-text columns [start, end] of canonical line `lineIdx`, or null. */
+  const selectedCols = (lineIdx: number): { start: number; end: number } | null => {
+    if (!inVisual || lineIdx < vStartRow || lineIdx > vEndRow) return null;
+    const bounds = contentBounds(stripAnsi(allLines[lineIdx] ?? ""));
+    const anchorIsStart = vAnchor.row <= vCursor.row;
+    if (vimMode === "visual-line") {
+      // Line mode: highlight content bounds (not full terminal width)
+      return bounds;
+    } else if (vStartRow === vEndRow) {
+      // Single-line character selection
+      return { start: Math.min(vAnchor.col, vCursor.col), end: Math.max(vAnchor.col, vCursor.col) };
+    } else if (lineIdx === vStartRow) {
+      return { start: anchorIsStart ? vAnchor.col : vCursor.col, end: bounds.end };
+    } else if (lineIdx === vEndRow) {
+      return { start: bounds.start, end: anchorIsStart ? vCursor.col : vAnchor.col };
+    }
+    // Middle lines: full content bounds
+    return bounds;
+  };
+
   for (let i = 0; i < messageAreaHeight; i++) {
     const row = messageAreaStart + i;
     emitSidebarCol(ctx, row);
@@ -1148,6 +1175,7 @@ function renderMessageArea(
       const searchRanges = searchQuery ? findSearchMatches(plain, searchQuery) : [];
       let rendered = line;
       const math = inVisual ? mathImageSpan(lineAnchors[lineIdx], lineIdx) : null;
+      let cursorCol: number | null = null;
 
       if (math) {
         // A display-math image selects as one unit, like one glyph: when the
@@ -1158,34 +1186,34 @@ function renderMessageArea(
           const padded = rendered + " ".repeat(Math.max(0, localEnd + 1 - plain.length));
           rendered = renderLineWithSelection(padded, localStart, localEnd);
         }
+      } else if (viewportRow.userText) {
+        // A bubble reflowed beside the Tasks panel: map each text cell back to
+        // its canonical line and column, where selection and cursor live.
+        const text = viewportRow.userText;
+        const cells = userTextCanonicalCells(lineAnchors, viewportRow.lineIndex, text);
+        if (inVisual) {
+          let first = -1;
+          let last = -1;
+          cells.forEach((cell, index) => {
+            const range = cell.col === null ? null : selectedCols(cell.lineIndex);
+            const selected = cell.col === null
+              // A wrap point of the canonical layout: selected when the selection runs past it.
+              ? cell.lineIndex >= vStartRow && cell.lineIndex < vEndRow
+              : range !== null && cell.col >= range.start && cell.col <= range.end;
+            if (!selected) return;
+            if (first < 0) first = index;
+            last = index;
+          });
+          if (first >= 0) rendered = renderLineWithSelection(rendered, text.col + first, text.col + last);
+        }
+        if (historyFocused) {
+          const index = cells.findIndex(cell => cell.lineIndex === vCursor.row && cell.col === vCursor.col);
+          if (index >= 0) cursorCol = text.col + index;
+          else if (text.length === 0 && lineIdx === vCursor.row) cursorCol = plain.length;
+        }
       } else if (inVisual && lineIdx >= vStartRow && lineIdx <= vEndRow) {
         // This line is part of the visual selection — text-bound highlight
-        const bounds = contentBounds(canonicalPlain);
-        let startCol: number;
-        let endCol: number;
-
-        if (vimMode === "visual-line") {
-          // Line mode: highlight content bounds (not full terminal width)
-          startCol = bounds.start;
-          endCol = bounds.end;
-        } else if (vStartRow === vEndRow) {
-          // Single-line character selection
-          startCol = Math.min(vAnchor.col, vCursor.col);
-          endCol = Math.max(vAnchor.col, vCursor.col);
-        } else if (lineIdx === vStartRow) {
-          const anchorIsStart = vAnchor.row <= vCursor.row;
-          startCol = anchorIsStart ? vAnchor.col : vCursor.col;
-          endCol = bounds.end;
-        } else if (lineIdx === vEndRow) {
-          const anchorIsStart = vAnchor.row <= vCursor.row;
-          startCol = bounds.start;
-          endCol = anchorIsStart ? vCursor.col : vAnchor.col;
-        } else {
-          // Middle lines: full content bounds
-          startCol = bounds.start;
-          endCol = bounds.end;
-        }
-
+        const { start: startCol, end: endCol } = selectedCols(lineIdx)!;
         const localStart = Math.max(displayPrefixWidth, startCol - viewportRow.startCol + displayPrefixWidth);
         const localEnd = Math.min(plain.length - 1, endCol - viewportRow.startCol + displayPrefixWidth);
         if (localStart <= localEnd) rendered = renderLineWithSelection(rendered, localStart, localEnd);
@@ -1201,11 +1229,14 @@ function renderMessageArea(
       // append the visible cursor cell, while keeping reflow boundaries exclusive.
       const cursorAtBlankLineEnd = canonicalPlain.trim().length === 0
         && vCursor.col === sourceEnd;
-      if (((inVisual && lineIdx === vCursor.row) || (historyFocused && !inVisual && lineIdx === vCursor.row))
+      if (!viewportRow.userText
+        && historyFocused
+        && lineIdx === vCursor.row
         && vCursor.col >= startCol
         && (vCursor.col < sourceEnd || cursorAtBlankLineEnd)) {
-        rendered = renderLineWithCursor(rendered, vCursor.col - startCol + displayPrefixWidth);
+        cursorCol = vCursor.col - startCol + displayPrefixWidth;
       }
+      if (cursorCol !== null) rendered = renderLineWithCursor(rendered, cursorCol);
 
       const finalLine = historyFocused && !inVisual && lineIdx >= hlFirst && lineIdx <= hlLast
         ? applyLineBg(rendered, theme.historyLineBg)
@@ -1790,6 +1821,7 @@ export function render(state: RenderState): boolean {
         startCol: viewportRows[index].startCol,
         displayPrefixWidth: viewportRows[index].displayPrefixWidth,
         endCol: viewportRows[index].startCol + stripAnsi(viewportRows[index].line).length - viewportRows[index].displayPrefixWidth,
+        ...(viewportRows[index].userText ? { userText: viewportRows[index].userText } : {}),
       }
       : null,
   );

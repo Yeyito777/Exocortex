@@ -74,7 +74,7 @@ interface UserMessageCacheEntry {
   background: string;
   result: WrapResult;
   flowDocument: UserMessageFlowDocument;
-  flow: { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null;
+  flow: { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor; texts: UserMessageRowText[] } | null;
 }
 
 const userMessageRenderCache = new WeakMap<object, UserMessageCacheEntry>();
@@ -561,12 +561,21 @@ export interface UserMessageFlowDocument {
   badges: string[];
 }
 
+/** Where a bubble row's text sits in its plain (ANSI-stripped) line. */
+export interface UserMessageRowText {
+  /** UTF-16 index of the first text character in the plain line. */
+  col: number;
+  /** UTF-16 length of the text, which starts at the row's source cursor. */
+  length: number;
+}
+
 export interface AdaptiveUserMessageRow {
   line: string;
   /** Width-independent position in the sanitized user-message text. */
   sourceStart: UserMessageFlowCursor;
   /** Position at which the following row should resume. */
   nextCursor: UserMessageFlowCursor;
+  text: UserMessageRowText;
 }
 
 /** One laid-out bubble row before alignment and background are applied. */
@@ -747,8 +756,9 @@ function paintUserBubbleRows(
   document: UserMessageFlowDocument,
   rows: readonly UserBubbleRow[],
   background: string,
-): string[] {
+): { lines: string[]; texts: UserMessageRowText[] } {
   const lines: string[] = [];
+  const texts: UserMessageRowText[] = [];
   for (let runStart = 0; runStart < rows.length;) {
     const cols = rows[runStart].cols;
     let runEnd = runStart + 1;
@@ -774,10 +784,11 @@ function paintUserBubbleRows(
       const padLeft = " ".repeat(Math.max(0, inner - termWidth(row.text)) + USER_BUBBLE_PADDING);
       const styledText = row.badge ? `${theme.dim}${row.text}${theme.reset}${background}` : row.text;
       lines.push(`${screenOffset}${background}${padLeft}${styledText}${padRight}${theme.reset}`);
+      texts.push({ col: screenOffset.length + padLeft.length, length: row.text.length });
     }
     runStart = runEnd;
   }
-  return lines;
+  return { lines, texts };
 }
 
 /**
@@ -820,11 +831,12 @@ export function renderAdaptiveUserMessageRows(
 ): AdaptiveUserMessageRow[] {
   const document = typeof text === "string" ? createUserMessageFlowDocument(text) : text;
   const rows = layoutUserMessageRows(document, sourceStart, sourceEnd, colsForRow);
-  const lines = paintUserBubbleRows(document, rows, background);
+  const { lines, texts } = paintUserBubbleRows(document, rows, background);
   return rows.map((row, index) => ({
     line: lines[index],
     sourceStart: row.sourceStart,
     nextCursor: row.nextCursor,
+    text: texts[index],
   }));
 }
 
@@ -832,15 +844,17 @@ function renderUserMessageDocument(
   document: UserMessageFlowDocument,
   cols: number,
   background: string,
-): { result: WrapResult; starts: UserMessageFlowCursor[] } {
+): { result: WrapResult; starts: UserMessageFlowCursor[]; texts: UserMessageRowText[] } {
   const rows = layoutUserMessageRows(document, { lineIndex: 0, offset: 0 }, userMessageFlowEnd(document), () => cols);
+  const { lines, texts } = paintUserBubbleRows(document, rows, background);
   return {
     result: {
-      lines: paintUserBubbleRows(document, rows, background),
+      lines,
       cont: rows.map(row => row.cont),
       join: rows.map(row => row.join),
     },
     starts: rows.map(row => row.sourceStart),
+    texts,
   };
 }
 
@@ -878,10 +892,10 @@ function userMessageCacheEntry(
   }
 
   const flowDocument = createUserMessageFlowDocument(text, images);
-  const { result, starts } = renderUserMessageDocument(flowDocument, cols, background);
+  const { result, starts, texts } = renderUserMessageDocument(flowDocument, cols, background);
   const entry: UserMessageCacheEntry = {
     text, cols, imagesKey, themeName: theme.name, background, result, flowDocument,
-    flow: starts.length > 0 ? { starts, end: userMessageFlowEnd(flowDocument) } : null,
+    flow: starts.length > 0 ? { starts, end: userMessageFlowEnd(flowDocument), texts } : null,
   };
   userMessageRenderCache.set(owner, entry);
   return entry;
@@ -897,6 +911,7 @@ export function userMessageFlowMetadataCached(
 ): ({ document: UserMessageFlowDocument } & {
   starts: UserMessageFlowCursor[];
   end: UserMessageFlowCursor;
+  texts: UserMessageRowText[];
 }) | null {
   const cached = userMessageCacheEntry(owner, text, cols, images, background);
   return cached.flow ? { document: cached.flowDocument, ...cached.flow } : null;

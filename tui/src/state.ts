@@ -45,6 +45,7 @@ import type { AccountsOpenRequest, AccountsScreenState } from "./accountsscreen"
 import type { InstructionsModalState } from "./instructions/state";
 import { createInstructionsStore, type InstructionsStore } from "./instructions/store";
 import { createUserMacroStore, type UserMacroStore } from "./usermacros/store";
+import type { UserTextSpan } from "./usertextcells";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -145,7 +146,7 @@ export interface LayoutCache {
   /** Screen rectangle of the status line's usage block; a click there opens the Accounts screen. */
   usageBlockRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Canonical history row and source/display offsets rendered on each message-area row. */
-  historyViewportRows: Array<{ lineIndex: number; startCol: number; displayPrefixWidth: number; endCol?: number } | null>;
+  historyViewportRows: Array<{ lineIndex: number; startCol: number; displayPrefixWidth: number; endCol?: number; userText?: UserTextSpan } | null>;
   chatCol: number;         // 1-based column where chat area starts
   sepAbove: number;        // first row below the message area (search bar or separator)
   firstInputRow: number;   // row number of first input line

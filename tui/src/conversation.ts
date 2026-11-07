@@ -34,6 +34,7 @@ import {
   userMessageFlowMetadataCached,
   type UserMessageFlowDocument,
   type UserMessageFlowCursor,
+  type UserMessageRowText,
 } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
 import { automationLabel, notificationProvenance, notificationSource, ownerRelay, ownerWords, parentPromptLabel, planHistory, type HistoryPlan, type PendingPlan } from "./turncollapse";
@@ -294,6 +295,8 @@ export interface RenderLineAnchor {
   userFlowDocument?: UserMessageFlowDocument;
   userFlowStart?: UserMessageFlowCursor;
   userFlowEnd?: UserMessageFlowCursor;
+  /** Where this row's text sits in its plain line. */
+  userFlowText?: UserMessageRowText;
   /** Images covering this row (several side by side in a strip, or display math), and which of their rows this is. */
   images?: Array<{ layout: HistoryImageLayout; row: number }>;
   /** Columns where Enter or a click on this row (a thumbnail, a strip's `› +N`) opens an image. */
@@ -985,6 +988,7 @@ export function buildMessageLines(
           lineAnchors[contentStart + row].userFlowDocument = flow.document;
           lineAnchors[contentStart + row].userFlowStart = flow.starts[row];
           lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
+          lineAnchors[contentStart + row].userFlowText = flow.texts[row];
         }
       }
       const provenance = relay ? `via ${relay.source}` : from ?? automationProvenance(msg.metadata?.automation);
@@ -1234,6 +1238,7 @@ export function buildMessageLines(
         lineAnchors[queuedContentStart + row].userFlowDocument = flow.document;
         lineAnchors[queuedContentStart + row].userFlowStart = flow.starts[row];
         lineAnchors[queuedContentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
+        lineAnchors[queuedContentStart + row].userFlowText = flow.texts[row];
       }
     }
     // Timing label — right-aligned, muted italic
