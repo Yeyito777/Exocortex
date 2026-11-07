@@ -285,14 +285,15 @@ socket.on("close", () => process.exit(0));
     const stdoutText = await readStream(proc.stdout, chunk => screen.feed(chunk));
     const stderrText = await readStream(proc.stderr);
 
-    await waitFor(() => fakeDaemon.commands.some(command => command.type === "client_capabilities"));
+    // Starting a TUI from source is the slow part of these tests under load.
+    await waitFor(() => fakeDaemon.commands.some(command => command.type === "client_capabilities"), 8_000);
     // Keys sent before the UI is up on its route (the SSH progress view, the
     // route-switch reset) don't reach the prompt.
     await waitFor(() => {
       const rows = screen.plainRows();
       return rows.some(row => row.includes("OpenAI/Gpt-5.5")) && rows.some(row => row.startsWith("I >"))
         && (route === "local" || rows.some(row => row.includes("Connected daemon: SSH alias fixture")));
-    });
+    }, 8_000);
 
     const recordingsPath = join(fakeBin, "recordings");
     const recordings = () => existsSync(recordingsPath) ? readFileSync(recordingsPath, "utf8").split("\n").length - 1 : 0;

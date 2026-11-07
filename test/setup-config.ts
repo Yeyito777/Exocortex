@@ -66,6 +66,11 @@ if (!process.env.EXOCORTEX_TEST_CONFIG_READY) {
   // OAuth login) and a usage refresh started a real Claude Code process. A
   // missing binary reads as not signed in. Tests that need one set their own.
   process.env.CLAUDE_CODE_BIN = join(configDir, "no-claude-code-in-tests");
+  // Bash-tool commands run as direct children, not one `systemd-run --user`
+  // unit each (the daemon's default under systemd): units leave the check's
+  // CPU share and cleanup, and each costs a trip through the busy user
+  // manager. tools/bash.test.ts turns them back on to test that path.
+  process.env.EXOCORTEX_DISABLE_TRANSIENT_BASH_UNITS = "1";
 
   if (!configured) {
     process.on("exit", () => {

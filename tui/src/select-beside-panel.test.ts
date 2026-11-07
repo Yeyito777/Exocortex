@@ -136,23 +136,24 @@ function textRows(state: RenderState, segment: string): Array<{ row: number; fir
   });
 }
 
-function expectSelectionsMatch(state: RenderState, segment: string): void {
+/** Every pair of rows, one full render each: one mode per test keeps each well inside the timeout under load. */
+function expectSelectionsMatch(state: RenderState, segment: string, mode: "visual" | "visual-line"): void {
   captureRenderOutput(state);
   const rows = textRows(state, segment);
   expect(rows.length).toBeGreaterThan(2);
-  for (const mode of ["visual", "visual-line"] as const) {
-    for (let from = 0; from < rows.length; from++) {
-      for (let to = from; to < rows.length; to++) {
-        const anchor = { row: rows[from].row, col: rows[from].first };
-        const cursor = { row: rows[to].row, col: rows[to].last };
-        const label = `${mode} ${anchor.row}:${anchor.col} → ${cursor.row}:${cursor.col}`;
-        const { highlighted, copied } = selectAndRender(state, mode, anchor, cursor);
-        expect(copied.length, label).toBeGreaterThan(0);
-        expect(highlighted, label).toBe(copied);
-      }
+  for (let from = 0; from < rows.length; from++) {
+    for (let to = from; to < rows.length; to++) {
+      const anchor = { row: rows[from].row, col: rows[from].first };
+      const cursor = { row: rows[to].row, col: rows[to].last };
+      const label = `${mode} ${anchor.row}:${anchor.col} → ${cursor.row}:${cursor.col}`;
+      const { highlighted, copied } = selectAndRender(state, mode, anchor, cursor);
+      expect(copied.length, label).toBeGreaterThan(0);
+      expect(highlighted, label).toBe(copied);
     }
   }
 }
+
+const MODES = ["visual", "visual-line"] as const;
 
 describe("visual selection beside the Tasks panel", () => {
   const messages: RenderState["messages"] = [
@@ -160,7 +161,7 @@ describe("visual selection beside the Tasks panel", () => {
     { role: "assistant", blocks: [{ type: "text", text: assistantText }], metadata: null },
   ];
 
-  test("highlights exactly the copied text of a right-aligned bubble reflowed beside the panel", () => {
+  test.each(MODES)("highlights exactly the copied text of a right-aligned bubble reflowed beside the panel (%s)", mode => {
     const state = panelState(12, messages);
     captureRenderOutput(state);
     const bufferBottom = (state.layout.taskPanelRect?.bottom ?? 0) + 1;
@@ -168,10 +169,10 @@ describe("visual selection beside the Tasks panel", () => {
       .map((row, index) => ({ row, screenRow: 3 + index }))
       .filter(({ row }) => row && state.historyLineAnchors[row.lineIndex]?.segment === "user_content");
     expect(userRows.every(({ screenRow }) => screenRow <= bufferBottom)).toBe(true);
-    expectSelectionsMatch(state, "user_content");
+    expectSelectionsMatch(state, "user_content", mode);
   });
 
-  test("highlights exactly the copied text of a bubble that starts beside the panel and continues below it", () => {
+  test.each(MODES)("highlights exactly the copied text of a bubble that starts beside the panel and continues below it (%s)", mode => {
     const state = panelState(1, messages);
     captureRenderOutput(state);
     const bufferBottom = (state.layout.taskPanelRect?.bottom ?? 0) + 1;
@@ -181,14 +182,14 @@ describe("visual selection beside the Tasks panel", () => {
       .map(({ screenRow }) => screenRow);
     expect(screenRows.some(row => row <= bufferBottom)).toBe(true);
     expect(screenRows.some(row => row > bufferBottom)).toBe(true);
-    expectSelectionsMatch(state, "user_content");
+    expectSelectionsMatch(state, "user_content", mode);
   });
 
-  test("highlights exactly the copied text of left-aligned assistant text beside the panel", () => {
+  test.each(MODES)("highlights exactly the copied text of left-aligned assistant text beside the panel (%s)", mode => {
     const state = panelState(12, [
       { role: "assistant", blocks: [{ type: "text", text: `${assistantText}\n\n${assistantText}` }], metadata: null },
     ]);
-    expectSelectionsMatch(state, "assistant_block");
+    expectSelectionsMatch(state, "assistant_block", mode);
   });
 
   test("a click on a reflowed bubble lands on the character shown under it", () => {

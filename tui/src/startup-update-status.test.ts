@@ -154,7 +154,7 @@ createInterface({ input: process.stdin }).on("close", () => process.exit(0)).on(
       }
     });
     const stderrDone = consume(proc.stderr as ReadableStream<Uint8Array>, text => { stderr += text; });
-    const deadline = Date.now() + 8_000;
+    const deadline = Date.now() + 15_000;
     while (!screen.plainRows().some(row => /Remote:\s+None/.test(row)) && Date.now() < deadline) {
       await Bun.sleep(10);
     }
@@ -195,4 +195,4 @@ createInterface({ input: process.stdin }).on("close", () => process.exit(0)).on(
     rmSync(socketPath, { force: true });
     rmSync(temp, { recursive: true, force: true });
   }
-}, 10_000);
+}, 20_000);

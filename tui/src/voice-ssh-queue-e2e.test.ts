@@ -32,7 +32,7 @@ describe("voice recall real TUI flow", () => {
     expect(localDaemon.commands.filter(isUserMessageDispatchCommand)).toEqual([]);
     expect(fakeDaemon.commands.filter(isTranscribeAudioCommand)).toEqual([]);
     expect(stderrText()).not.toContain("Fatal:");
-  }, 10_000);
+  }, 20_000);
 
   test("SSH: a submitted local transcription survives a remote disconnect and reconnect", async () => {
     if (process.platform === "win32") return;
@@ -61,5 +61,5 @@ describe("voice recall real TUI flow", () => {
     expect(fakeDaemon.commands.filter(isTranscribeAudioCommand)).toEqual([]);
     expect(localDaemon.commands.filter(isUserMessageDispatchCommand)).toEqual([]);
     expect(stderrText()).not.toContain("Fatal:");
-  }, 10_000);
+  }, 20_000);
 });

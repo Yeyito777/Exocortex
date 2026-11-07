@@ -16,10 +16,14 @@ describe("DB-first orchestrator persistence", () => {
       stdout: "pipe",
       stderr: "pipe",
       env: process.env,
+      // Kill a hung child in time to report its output.
+      timeout: 28_000,
     });
     const output = `${child.stdout.toString()}${child.stderr.toString()}`;
     expect(child.exitCode, output).toBe(0);
     expect(output).toContain("105 pass");
     expect(output).toContain("0 fail");
-  });
+    // 105 cases in one child, each with its own 5 s limit: the default 5 s for
+    // all of them ran out under a loaded check.
+  }, 30_000);
 });
