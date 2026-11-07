@@ -15,7 +15,7 @@ import { notificationLabel } from "./turncollapse";
 import type { Message } from "./messages";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import { getScrollOffsetForViewStart } from "./chatscroll";
-import { hasOlderHistoryCursor } from "./historypagination";
+import { hasOlderHistoryCursor, historyNavigationNeed } from "./historypagination";
 import {
   ensureCursorRowVisibleInViewport,
   scrollLineWithStickyCursorInViewport,
@@ -292,6 +292,30 @@ export function resumeHistoryNavigation(state: RenderState): void {
   if (action && state.panelFocus === "chat" && state.chatFocus === "history") {
     applyHistoryAction(action, state);
   }
+}
+
+/**
+ * Keep a waiting jump (gg, {, [) moving, so it never waits on nothing
+ * (historyNavigationNeed): land it, or have `request` ask for the page before
+ * the window; with `resend`, the page in flight went unanswered and is
+ * forgotten first. Returns what it did.
+ */
+export function advanceHistoryNavigation(
+  state: RenderState,
+  request: (resend: boolean) => void,
+  now = Date.now(),
+): ReturnType<typeof historyNavigationNeed> {
+  const need = historyNavigationNeed(state, now);
+  if (need === "land") {
+    resumeHistoryNavigation(state);
+  } else if (need === "request" || need === "resend") {
+    if (need === "resend") {
+      state.historyLoadingOlder = false;
+      state.historyLoadingRequestId = null;
+    }
+    request(need === "resend");
+  }
+  return need;
 }
 
 // ── Cursor-aware scrolling (vim-style) ─────────────────────────────

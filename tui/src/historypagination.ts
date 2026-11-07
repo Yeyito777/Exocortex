@@ -141,6 +141,24 @@ export function olderHistoryDueAfterLayout(state: RenderState): boolean {
   return state.historyFillAwaitsLayout && hasHistoryLayout(state) && olderHistoryDue(state);
 }
 
+/** An older page a waiting jump asked for and still unanswered after this long is asked for again. */
+export const LOST_OLDER_PAGE_MS = 4_000;
+
+/**
+ * What a pending history jump (gg, {, [) needs now, so it never waits on
+ * nothing: to land, when the loaded window already starts at the first entry;
+ * the page before the window, when nothing is fetching it (whatever stopped
+ * the last request: a dropped page, a reload, a cached copy not confirmed
+ * yet); or that page again, when the one in flight has gone unanswered.
+ */
+export function historyNavigationNeed(state: RenderState, now = Date.now()): "none" | "land" | "request" | "resend" {
+  if (!state.pendingHistoryNavigation || !state.convId) return "none";
+  if (!hasOlderHistoryCursor(state)) return "land";
+  if (!state.historyLoadingOlder) return "request";
+  if (state.historyLoadingStartedAt === null || now - state.historyLoadingStartedAt >= LOST_OLDER_PAGE_MS) return "resend";
+  return "none";
+}
+
 /** Load before the viewport reaches the oldest rendered row. */
 export function shouldLoadOlderHistory(state: RenderState): boolean {
   if (!state.convId || state.historyLoadingOlder || !hasOlderHistoryCursor(state)) return false;
