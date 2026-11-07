@@ -3,6 +3,8 @@ import { buildMessageLines, compactionFinishedDivider, compactionSpinnerText, wo
 import { theme } from "./theme";
 import { visibleLength } from "./textwidth";
 import { createInitialState } from "./state";
+import { noteImmediateQueuedDeliveries } from "./queue";
+import { handleEvent } from "./events";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI } from "./messages";
 
 function stripAnsi(text: string): string {
@@ -147,6 +149,39 @@ describe("automated user-message provenance", () => {
     };
     expect(label("anthropic")).toContain("queued: next turn");
     expect(label("openai")).toContain("queued: steer");
+  });
+
+  test("input the daemon delivers at once, because the turn sleeps in Chrono, shows as sent until its echo", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    const sleeping = { id: "chrono:sleep:toolu_1", kind: "chrono", title: "Sleeping", startedAt: 0, dueAt: 60_000, chronoMode: "sleep" };
+    state.sidebar.conversations = [{ id: "conv-1", streaming: true, tasks: [sleeping] } as never];
+    state.queuedMessages.push(
+      { id: "now", convId: "conv-1", text: "look at this", timing: "next-turn", optimistic: true },
+      { id: "later", convId: "conv-1", text: "after the turn", timing: "message-end", optimistic: true },
+    );
+    noteImmediateQueuedDeliveries(state);
+    const shown = () => {
+      const rendered = buildMessageLines(state, 80);
+      return rendered.lineAnchors.flatMap((anchor, index) => {
+        if (anchor.segment !== "queued_content" && anchor.segment !== "queued_label") return [];
+        return [{ segment: anchor.segment, muted: rendered.lines[index].startsWith(theme.muted), text: stripAnsi(rendered.lines[index]).trim() }];
+      });
+    };
+    const rows = shown();
+    expect(rows.some(row => row.text.includes("look at this") && !row.muted)).toBe(true);
+    expect(rows.some(row => row.text.includes("after the turn") && row.muted)).toBe(true);
+    expect(rows.filter(row => row.segment === "queued_label").map(row => row.text)).toEqual(["queued: message end"]);
+
+    // The sleep ends a moment before the echo arrives: it stays sent.
+    state.sidebar.conversations = [{ id: "conv-1", streaming: true, tasks: [] } as never];
+    handleEvent({ type: "queue_updated", messages: state.queuedMessages.map(({ optimistic: _o, ...message }) => ({ ...message, source: "daemon", createdAt: 1 })) } as never, state, {} as never);
+    expect(state.deliveringQueueIds).toEqual(new Set(["now"]));
+    expect(shown().filter(row => row.segment === "queued_label").map(row => row.text)).toEqual(["queued: message end"]);
+
+    // Delivered: the entry leaves the queue and is forgotten.
+    handleEvent({ type: "queue_updated", messages: [{ id: "later", convId: "conv-1", text: "after the turn", timing: "message-end", source: "daemon", createdAt: 1 }] } as never, state, {} as never);
+    expect(state.deliveringQueueIds.size).toBe(0);
   });
 
   test("bounds a delivered notification's label by the terminal width", () => {

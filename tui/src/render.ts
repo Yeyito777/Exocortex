@@ -96,6 +96,7 @@ interface HistoryRenderCacheEntry {
   messageCount: number;
   queuedMessagesRef: RenderState["queuedMessages"];
   queuedMessageCount: number;
+  deliveringQueueCount: number;
   streamingTailRef: RenderState["streamingTailMessages"];
   streamingTailCount: number;
   voiceMessageRef: RenderState["voiceMessage"];
@@ -149,6 +150,7 @@ function canReuseHistoryRender(
     && cached.messageCount === state.messages.length
     && cached.queuedMessagesRef === state.queuedMessages
     && cached.queuedMessageCount === state.queuedMessages.length
+    && cached.deliveringQueueCount === state.deliveringQueueIds.size
     && cached.streamingTailRef === state.streamingTailMessages
     && cached.streamingTailCount === state.streamingTailMessages.length
     && cached.voiceMessageRef === state.voiceMessage
@@ -297,6 +299,7 @@ function getHistoryRender(
     messageCount: state.messages.length,
     queuedMessagesRef: state.queuedMessages,
     queuedMessageCount: state.queuedMessages.length,
+    deliveringQueueCount: state.deliveringQueueIds.size,
     streamingTailRef: state.streamingTailMessages,
     streamingTailCount: state.streamingTailMessages.length,
     voiceMessageRef: state.voiceMessage,

@@ -68,7 +68,7 @@ import { handleUserMacroError, handleUserMacrosEvent, userMacrosRouteSwitched } 
 import type { DaemonActions } from "./events/types";
 import { accountsMayHaveChanged, handleAccountsEvent, isAccountsPrefetchError, prefetchAccounts, type AccountsRequester } from "./accountsscreen";
 import { failBtwRequest, handleBtwEvent } from "./btw/events";
-import { settleRejectedQueueRequest } from "./queue";
+import { noteImmediateQueuedDeliveries, settleRejectedQueueRequest } from "./queue";
 import { confirmDirectSendRequest, restoreUnconfirmedSends, settleRejectedDirectSend } from "./sendecho";
 import { formatChronoResult } from "./chronoschedule";
 import { turnRequestStartedAt } from "./request-ids";
@@ -358,6 +358,7 @@ export function handleEvent(
             .map(message => ({ ...message })),
           ...pendingLocal,
         ];
+        noteImmediateQueuedDeliveries(state);
       }
       break;
 

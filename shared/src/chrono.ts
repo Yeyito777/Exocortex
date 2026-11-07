@@ -68,6 +68,22 @@ export function inlineLongSleepStartedAt(
   return startedAt;
 }
 
+/**
+ * Whether queued input ends the Chrono sleep or wait the conversation's turn
+ * is blocked in, and so is delivered at once rather than waiting. The daemon's
+ * rule: a person's next-turn input ends any of them; automated input of either
+ * timing ends one past the suspension threshold; a person's message-end input
+ * waits for the turn to end. Clients use it to show such input as sent.
+ */
+export function queuedInputEndsChronoSleep(
+  conversation: Pick<ConversationSummary, "streaming" | "tasks">,
+  entry: { timing: "next-turn" | "message-end"; automation?: unknown },
+): boolean {
+  if (!conversation.streaming) return false;
+  if (entry.automation) return inlineLongSleepStartedAt(conversation) !== null;
+  return entry.timing === "next-turn" && (conversation.tasks ?? []).some(isTurnChronoSleep);
+}
+
 /** The short form of a Chrono schedule id that `/chrono` shows and accepts. */
 export function chronoShortId(id: string): string {
   return id.replace(/^chrono:/, "").slice(0, 8);

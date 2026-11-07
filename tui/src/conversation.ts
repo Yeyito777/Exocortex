@@ -99,7 +99,7 @@ import type { WrapCopyLine, WrapImage, WrapResult } from "./textwrap";
 import { mathImageLayout, type HistoryImageLayout } from "./historyimages";
 import { mathImageGeneration } from "./mathimages";
 import type { LinkSpan } from "./links";
-import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";
+import { isDeliveringQueuedMessage, isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";
 
 export { wordWrap, type WrapResult } from "./textwrap";
 
@@ -1215,7 +1215,10 @@ export function buildMessageLines(
       : qm.automation && relayed === null
         ? notificationProvenance(automationLabel(qm.automation), notificationSource(qm.text, qm.automation, conversationTitle))
         : automationProvenance(qm.automation);
-    const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
+    // One the daemon delivers at once (its turn sleeps in Chrono) reads as sent:
+    // a plain bubble without a timing label.
+    const delivering = isDeliveringQueuedMessage(state, qm);
+    const timingLabel = [provenance, delivering ? null : queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
     if (!followsBubble()) pushLine("", qm, "queued_margin_top");
     // Render a dimmed user bubble
     const queuedText = relayed ?? qm.text;
@@ -1223,7 +1226,7 @@ export function buildMessageLines(
     const qr = renderUserMessageCached(qm, queuedText, availableWidth, qm.images, background);
     const queuedContentStart = lines.length;
     for (let i = 0; i < qr.lines.length; i++) {
-      pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
+      pushLine(delivering ? qr.lines[i] : `${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
     }
     const flow = userMessageFlowMetadataCached(qm, queuedText, availableWidth, qm.images, background);
     if (flow && flow.starts.length === qr.lines.length) {
@@ -1234,7 +1237,7 @@ export function buildMessageLines(
       }
     }
     // Timing label — right-aligned, muted italic
-    pushLine(rightAlignedProvenanceLabel(timingLabel, availableWidth), qm, "queued_label");
+    if (timingLabel) pushLine(rightAlignedProvenanceLabel(timingLabel, availableWidth), qm, "queued_label");
   }
 
   return {

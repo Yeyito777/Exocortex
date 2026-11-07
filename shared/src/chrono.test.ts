@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CHRONO_WHAT_MAX_CHARS, chronoCallLine, chronoCallLineText, chronoWhat, formatChronoProgress, formatChronoSpan, inlineLongSleepStartedAt, LONG_CHRONO_SLEEP_THRESHOLD_MS, msUntilChronoProgressChange } from "./chrono";
+import { CHRONO_WHAT_MAX_CHARS, chronoCallLine, chronoCallLineText, chronoWhat, formatChronoProgress, formatChronoSpan, inlineLongSleepStartedAt, LONG_CHRONO_SLEEP_THRESHOLD_MS, msUntilChronoProgressChange, queuedInputEndsChronoSleep } from "./chrono";
 import type { ConversationTaskSummary } from "./messages";
 
 const sleep = (id: string, startedAt: number, durationMs: number, chronoMode: "sleep" | "wait" = "sleep"): ConversationTaskSummary => ({
@@ -23,6 +23,32 @@ describe("inline long Chrono sleeps", () => {
       sleep("chrono:sleep:later", 9_000, 20 * 60_000),
       sleep("chrono:wait:earlier", 4_000, 20 * 60_000, "wait"),
     ] })).toBe(4_000);
+  });
+});
+
+describe("queued input during a Chrono sleep or wait", () => {
+  const short = sleep("chrono:sleep:s", 0, 60_000);
+  const longWait = sleep("chrono:wait:w", 0, LONG_CHRONO_SLEEP_THRESHOLD_MS + 1, "wait");
+  const person = (timing: "next-turn" | "message-end") => ({ timing });
+  const automated = (timing: "next-turn" | "message-end") => ({ timing, automation: { kind: "chrono_wake" } });
+
+  test("a person's next-turn input ends any sleep or wait; their message-end input waits for the turn", () => {
+    for (const task of [short, longWait]) {
+      expect(queuedInputEndsChronoSleep({ streaming: true, tasks: [task] }, person("next-turn"))).toBe(true);
+      expect(queuedInputEndsChronoSleep({ streaming: true, tasks: [task] }, person("message-end"))).toBe(false);
+    }
+  });
+
+  test("automated input ends only a long one, whatever its timing", () => {
+    for (const timing of ["next-turn", "message-end"] as const) {
+      expect(queuedInputEndsChronoSleep({ streaming: true, tasks: [longWait] }, automated(timing))).toBe(true);
+      expect(queuedInputEndsChronoSleep({ streaming: true, tasks: [short] }, automated(timing))).toBe(false);
+    }
+  });
+
+  test("a turn not in a sleep, or not streaming, takes nothing at once", () => {
+    expect(queuedInputEndsChronoSleep({ streaming: true, tasks: [{ id: "bash:1", kind: "background", title: "build", startedAt: 0 }] }, person("next-turn"))).toBe(false);
+    expect(queuedInputEndsChronoSleep({ streaming: false, tasks: [longWait] }, person("next-turn"))).toBe(false);
   });
 });
 
