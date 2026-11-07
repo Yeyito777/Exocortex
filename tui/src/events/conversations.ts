@@ -1,5 +1,4 @@
 import { log } from "../log";
-import { logHistoryNavigation } from "../historydiag";
 import type { ConversationSummary } from "../messages";
 import type { Event } from "../protocol";
 import { syncChosenProvider } from "../providerselection";
@@ -395,9 +394,7 @@ export function handleConversationLoaded(
     ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
   state.historyHasOlder = event.hasOlderHistory ?? false;
   state.historyTrimmedAboveView = null;
-  // A reload of the same conversation keeps a jump on its way (gg): it pages
-  // on from the new window rather than stopping where the old one did.
-  if (!sameConversation) state.pendingHistoryNavigation = null;
+  state.pendingHistoryNavigation = null;
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
@@ -482,34 +479,18 @@ export function handleConversationLoaded(
   // client sees all conversations' entries, not only the one being loaded.
 }
 
-/** Older pages dropped in a row because the window had moved: a waiting jump stops asking after this many. */
-const MAX_DROPPED_OLDER_PAGES = 3;
-const droppedOlderPages = new WeakMap<RenderState, number>();
-
 export function handleConversationHistoryLoaded(
   event: Extract<Event, { type: "conversation_history_loaded" }>,
   state: RenderState,
 ): void {
   if (event.convId !== state.convId) return;
-  if (!event.reqId || event.reqId !== state.historyLoadingRequestId) {
-    if (state.pendingHistoryNavigation || state.historyLoadingOlder) {
-      logHistoryNavigation("older page dropped: not the request in flight", state, { pageReqId: event.reqId ?? null, pageStart: event.historyStartIndex, pageEnd: event.historyEndIndex });
-    }
-    return;
-  }
+  if (!event.reqId || event.reqId !== state.historyLoadingRequestId) return;
 
   // A canonical history refresh may have replaced the window while this page
   // was in flight. Absolute cursors make that stale response safe to discard.
   if (event.historyEndIndex !== state.historyStartIndex
       || (event.historyEndBlockIndex ?? 0) !== state.historyStartBlockIndex) {
-    logHistoryNavigation("older page dropped: window moved", state, { pageReqId: event.reqId, pageStart: event.historyStartIndex, pageEnd: event.historyEndIndex, pageEndBlock: event.historyEndBlockIndex ?? 0 });
-    // A waiting jump asks again from the current window, but not forever.
-    const dropped = (droppedOlderPages.get(state) ?? 0) + 1;
-    droppedOlderPages.set(state, dropped);
-    if (dropped >= MAX_DROPPED_OLDER_PAGES) {
-      droppedOlderPages.delete(state);
-      state.pendingHistoryNavigation = null;
-    }
+    state.pendingHistoryNavigation = null;
     state.historyLoadingOlder = false;
     state.historyLoadingStartedAt = null;
     state.historyLoadingRequestId = null;
@@ -519,7 +500,6 @@ export function handleConversationHistoryLoaded(
     return;
   }
 
-  droppedOlderPages.delete(state);
   const prependOlderMessages = () => {
     const currentMessages = state.messages;
     let pinnedCount = 0;
@@ -565,8 +545,7 @@ export function handleConversationHistoryLoaded(
   const pageIsEmpty = event.historyStartIndex > event.historyEndIndex
     || (event.historyStartIndex === event.historyEndIndex
       && (event.historyStartBlockIndex ?? 0) >= (event.historyEndBlockIndex ?? 0));
-  // Nothing before the window: it starts at the first entry, so a waiting jump lands there.
-  if (pageIsEmpty) state.historyHasOlder = false;
+  if (pageIsEmpty) state.pendingHistoryNavigation = null;
   // Continue from the semantic cursor, not from the new page's first row.
   // Pages without a matching human prompt/AI text leave the action pending.
   resumeHistoryNavigation(state);

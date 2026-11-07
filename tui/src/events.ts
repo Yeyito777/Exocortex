@@ -551,7 +551,7 @@ export function handleEvent(
         state.messages = dedupedReversed.reverse();
         state.historyTotalEntries = event.historyTotalEntries
           ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
-        // A jump on its way (gg) pages on from the refreshed window.
+        state.pendingHistoryNavigation = null;
         state.historyLoadingOlder = false;
         state.historyLoadingStartedAt = null;
         state.historyLoadingRequestId = null;
