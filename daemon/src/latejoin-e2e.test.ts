@@ -80,7 +80,9 @@ describe("late-join streaming integration", () => {
     const streamingStarted = new Promise<void>((resolve) => { onStreamingStarted = resolve; });
     const client = new DaemonClient((event) => {
       // The machine's resources come on connect, whatever is loaded, and the scratchpad with any subscribe.
-      if (event.type !== "machine_resources" && event.type !== "scratchpad_updated") seen.push(event.type);
+      // The coalesced history_revisions push for the seeded messages lands
+      // whenever its timer fires: before the client connects, or at any point after.
+      if (!["machine_resources", "scratchpad_updated", "history_revisions"].includes(event.type)) seen.push(event.type);
       handleEvent(event, state, client);
       if (event.type === "streaming_started") onStreamingStarted();
     }, socketPath);

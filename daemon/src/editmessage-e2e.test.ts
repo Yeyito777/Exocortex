@@ -79,16 +79,20 @@ describe("edit-message integration", () => {
     const seenA: string[] = [];
     const seenB: string[] = [];
     const seenC: string[] = [];
+    // Timer-driven pushes land whenever their timer fires, so they aren't
+    // counted: machine_resources samples and the coalesced history_revisions
+    // (for the seeded messages, then the unwind).
+    const counted = (type: string) => type !== "history_revisions" && type !== "machine_resources";
     const clientA = new DaemonClient((event) => {
-      seenA.push(event.type);
+      if (counted(event.type)) seenA.push(event.type);
       handleEvent(event, stateA, clientA);
     }, socketPath);
     const clientB = new DaemonClient((event) => {
-      seenB.push(event.type);
+      if (counted(event.type)) seenB.push(event.type);
       handleEvent(event, stateB, clientB);
     }, socketPath);
     const clientC = new DaemonClient((event) => {
-      seenC.push(event.type);
+      if (counted(event.type)) seenC.push(event.type);
       handleEvent(event, stateC, clientC);
     }, socketPath);
     const legacyEvents: Array<{ type: string; reqId?: string }> = [];
@@ -142,8 +146,10 @@ describe("edit-message integration", () => {
         () => !userText(stateA).includes("second prompt")
           && !assistantText(stateA).includes("second answer")
           && !userText(stateB).includes("second prompt")
-          && !assistantText(stateB).includes("second answer"),
-        "unwind to propagate to both clients",
+          && !assistantText(stateB).includes("second answer")
+          && seenC.includes("conversation_unwound")
+          && legacyEvents.some((event) => event.type === "history_updated"),
+        "unwind to propagate to every client",
       );
 
       expect(stateA.inputBuffer).toBe("second prompt");
@@ -170,7 +176,8 @@ describe("edit-message integration", () => {
         userMessageIndex: 0,
       })}\n`);
       await waitFor(
-        () => legacyEvents.some((event) => event.type === "conversation_loaded" && event.reqId === "legacy-unwind"),
+        () => legacyEvents.some((event) => event.type === "conversation_loaded" && event.reqId === "legacy-unwind")
+          && legacyEvents.some((event) => event.type === "history_updated"),
         "legacy initiating client to receive its correlated canonical conversation",
       );
       expect(legacyEvents.map((event) => event.type)).toEqual([

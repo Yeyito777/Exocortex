@@ -35,6 +35,10 @@ export function stopConversationLoader(reason = "Conversation loader stopped"): 
   clearTimeout(prewarmTimer); prewarmTimer = undefined;
   for (let lane = 0; lane < workers.length; lane++) stopLane(lane, reason);
 }
+/** Tests: no request, prefetch or scheduled prewarm is outstanding, so the workers can be reused. */
+export function conversationLoaderIdleForTest(): boolean {
+  return pending.size === 0 && prewarmTimer === undefined && backgroundKey === null;
+}
 function getWorker(lane: number): Worker {
   if (workers[lane]) return workers[lane]!;
   const source = new URL("./conversation-load-worker.ts", import.meta.url);
