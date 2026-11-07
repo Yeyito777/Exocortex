@@ -1,7 +1,7 @@
 import { topUnpinnedOrder, type ConversationSummary, type EffortLevel, type FastMode, type ModelId, type ProviderId } from "../messages";
 import { focusTargetAfterRemovingSidebarItems } from "./removal";
 import { focusSidebarItem } from "./selection";
-import type { SidebarState } from "./state";
+import { insertConversation, removeConversationAt, type SidebarState } from "./state";
 import { syncSelectedIndex } from "./updates";
 
 export interface OptimisticConversation {
@@ -54,7 +54,7 @@ export function addOptimisticConversation(sidebar: SidebarState, conversation: O
     folderId,
   };
   sidebar.optimisticConversationIds.add(summary.id);
-  sidebar.conversations.unshift(summary);
+  insertConversation(sidebar, 0, summary);
   syncSelectedIndex(sidebar);
 }
 
@@ -75,7 +75,7 @@ export function removeOptimisticConversation(sidebar: SidebarState, convId: stri
   const item = { type: "conversation" as const, id: convId };
   const selected = sidebar.selectedItem?.type === "conversation" && sidebar.selectedItem.id === convId;
   const focusTarget = selected ? focusTargetAfterRemovingSidebarItems(sidebar, [item]) : null;
-  sidebar.conversations.splice(idx, 1);
+  removeConversationAt(sidebar, idx);
   if (selected) focusSidebarItem(sidebar, focusTarget);
   else syncSelectedIndex(sidebar);
   return true;

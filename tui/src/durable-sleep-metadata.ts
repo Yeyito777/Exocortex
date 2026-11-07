@@ -1,5 +1,5 @@
 import type { AIMessage } from "./messages";
-import type { RenderState } from "./state";
+import { focusedConversation, type RenderState } from "./state";
 import { inlineLongSleepStartedAt, isDurablySleeping } from "./taskvisibility";
 
 const CHRONO_SUSPENDED_TASK_PREFIXES = ["chrono:sleep:", "chrono:wait:"];
@@ -15,7 +15,7 @@ const CHRONO_SUSPENDED_TASK_PREFIXES = ["chrono:sleep:", "chrono:wait:"];
  */
 export function activeDurableSleepAssistant(state: RenderState): AIMessage | null {
   if (!state.convId) return null;
-  const conversation = state.sidebar?.conversations.find(candidate => candidate.id === state.convId);
+  const conversation = focusedConversation(state);
   if (!conversation || !isDurablySleeping(conversation)) return null;
 
   const sleepTaskIds = new Set(
@@ -44,7 +44,7 @@ export function activeDurableSleepAssistant(state: RenderState): AIMessage | nul
 /** Start of the long Chrono call the focused conversation's live turn sleeps in, or null. */
 export function focusedInlineSleepStartedAt(state: RenderState): number | null {
   if (!state.convId) return null;
-  const conversation = state.sidebar?.conversations.find(candidate => candidate.id === state.convId);
+  const conversation = focusedConversation(state);
   return conversation ? inlineLongSleepStartedAt(conversation) : null;
 }
 
@@ -55,7 +55,7 @@ export function focusedInlineSleepStartedAt(state: RenderState): number | null {
  */
 export function inlineSleepMetadataEndedAt(state: RenderState): number | null {
   if (!state.pendingAI || !state.convId) return null;
-  const conversation = state.sidebar?.conversations.find(candidate => candidate.id === state.convId);
+  const conversation = focusedConversation(state);
   return conversation ? inlineLongSleepStartedAt(conversation, { sleepsOnly: true }) : null;
 }
 

@@ -5,7 +5,7 @@
  */
 
 import { formatChronoProgress, msUntilChronoProgressChange, type ChronoCallProgress } from "@exocortex/shared/chrono";
-import type { RenderState } from "./state";
+import { focusedConversation, type RenderState } from "./state";
 
 const CHRONO_CALL_TASK_PREFIXES = ["chrono:sleep:", "chrono:wait:"];
 
@@ -13,7 +13,7 @@ const CHRONO_CALL_TASK_PREFIXES = ["chrono:sleep:", "chrono:wait:"];
 export function liveChronoCalls(state: Pick<RenderState, "convId" | "sidebar">): Map<string, Omit<ChronoCallProgress, "now">> {
   const calls = new Map<string, Omit<ChronoCallProgress, "now">>();
   if (!state.convId) return calls;
-  const conversation = state.sidebar?.conversations.find(candidate => candidate.id === state.convId);
+  const conversation = focusedConversation(state);
   for (const task of conversation?.tasks ?? []) {
     if (task.kind !== "chrono" || (task.chronoMode !== "sleep" && task.chronoMode !== "wait") || task.dueAt === undefined) continue;
     const prefix = CHRONO_CALL_TASK_PREFIXES.find(candidate => task.id.startsWith(candidate));

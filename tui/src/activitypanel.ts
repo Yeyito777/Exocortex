@@ -25,7 +25,8 @@ import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrati
 import { ACTIVITY_GLYPH, conversationActivityIndicator, type ConversationActivityIndicator } from "./sidebar/activityindicator";
 import { areConversationNotificationsMuted } from "./sidebar/folders";
 import { isGlobalIdleQueuedMessage } from "./queue";
-import type { RenderState } from "./state";
+import { focusedConversation, type RenderState } from "./state";
+import { conversationById } from "./sidebar/state";
 import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap } from "./textwrap";
@@ -109,7 +110,7 @@ export interface TaskPanelLayout {
 
 export function focusedConversationTasks(state: RenderState): TaskPanelEntry[] {
   if (!state.convId) return [];
-  const activityTasks = (state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.tasks ?? [])
+  const activityTasks = (focusedConversation(state)?.tasks ?? [])
     .filter(shouldDisplayConversationTask);
   const goal = state.goal;
   const goalTask: TaskPanelEntry[] = goal && goal.status !== "complete"
@@ -154,7 +155,7 @@ export function hasFocusedConversationTasks(state: RenderState): boolean {
 /** Durable external notification subscriptions targeting the focused conversation. */
 export function focusedConversationIntegrations(state: RenderState): ExternalIntegrationSummary[] {
   if (!state.convId) return [];
-  return state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.integrations ?? [];
+  return focusedConversation(state)?.integrations ?? [];
 }
 
 export function hasFocusedConversationIntegrations(state: RenderState): boolean {
@@ -368,7 +369,7 @@ export function panelPalette(state: RenderState): PanelPalette {
  */
 function subagentIndicator(state: RenderState, task: TaskPanelEntry): ConversationActivityIndicator | null {
   if (task.kind !== "subagent") return null;
-  const child = state.sidebar.conversations.find(conversation => conversation.id === task.id);
+  const child = conversationById(state.sidebar, task.id);
   if (!child) return null;
   const indicator = conversationActivityIndicator(child, {
     globalIdle: state.queuedMessages.some(message => message.convId === child.id && isGlobalIdleQueuedMessage(message)),
@@ -473,11 +474,7 @@ function taskRows(
     : palette.bash;
   const label = taskLabel(task, compactExocortex, indicator !== null);
   const title = taskTitle(task);
-  const time = isGoal && task.goalStatus !== "active"
-    ? task.goalStatus ?? "paused"
-    : isChronoCountdown(task)
-      ? formatTaskCountdown(task.dueAt, now)
-    : formatTaskElapsed(task.startedAt, now);
+  const time = taskTime(task, now);
   const titleWidth = innerWidth - termWidth(label) - ELAPSED_WIDTH - 3;
   const lead = `${color}${indicator ? `${indicator.color}${label[0]}${color}${label.slice(1)}` : label}`;
   // A subagent's title is its prompt, which can run long: expanded, it gets a few rows, not the whole prompt.
@@ -561,11 +558,50 @@ export function expandedPanelFooter(palette: PanelPalette, innerWidth: number, a
  * past EXPANDED_PANEL_WIDTH_FACTOR × its collapsed width or `chatWidth`, and
  * wraps titles instead of truncating them.
  */
+/** The time an entry shows: its state, countdown or elapsed time. */
+function taskTime(task: TaskPanelEntry, now: number): string {
+  return task.kind === "goal" && task.goalStatus !== "active"
+    ? task.goalStatus ?? "paused"
+    : isChronoCountdown(task)
+      ? formatTaskCountdown(task.dueAt, now)
+      : formatTaskElapsed(task.startedAt, now);
+}
+
+const taskPanelCache = new WeakMap<RenderState, { key: unknown[]; panel: TaskPanelRender | null }>();
+
+/**
+ * The Tasks card, built again only when something it shows changed: its
+ * entries, their times as shown (a countdown or elapsed time changes at most
+ * once a second), their activity, the card's expansion and size. Scroll and
+ * glide frames reuse it.
+ */
 export function renderTaskPanel(
   state: RenderState,
   chatWidth: number,
   maxHeight: number,
   now = Date.now(),
+): TaskPanelRender | null {
+  const key: unknown[] = [
+    state.convId, chatWidth, maxHeight, state.taskPanelExpansion?.convId, state.taskPanelExpansion?.scroll,
+    focusedConversation(state)?.integrations, state.goal, state.externalToolStyles, state.toolRegistry, theme.name,
+  ];
+  for (const task of focusedConversationTasks(state)) {
+    const indicator = subagentIndicator(state, task);
+    key.push(task.id, task.kind, task.title, task.toolName, task.goalStatus, task.startedAt, task.dueAt, task.chronoMode, task.chronoRunning,
+      taskTime(task, now), indicator?.icon, indicator?.color);
+  }
+  const cached = taskPanelCache.get(state);
+  if (cached && cached.key.length === key.length && cached.key.every((value, index) => value === key[index])) return cached.panel;
+  const panel = buildTaskPanel(state, chatWidth, maxHeight, now);
+  taskPanelCache.set(state, { key, panel });
+  return panel;
+}
+
+function buildTaskPanel(
+  state: RenderState,
+  chatWidth: number,
+  maxHeight: number,
+  now: number,
 ): TaskPanelRender | null {
   // Priority tasks lead the Tasks section, collapsed or expanded; the rest keep the daemon's order.
   const allTasks = focusedConversationTasks(state);

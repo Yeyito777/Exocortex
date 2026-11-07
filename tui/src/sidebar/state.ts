@@ -43,6 +43,51 @@ export interface SidebarState {
   actionMenu: SidebarActionMenuState | null;
 }
 
+/** id → summary for each conversation list, kept with it (conversationById). */
+const conversationIndexes = new WeakMap<ConversationSummary[], Map<string, ConversationSummary>>();
+
+function indexConversations(list: ConversationSummary[]): Map<string, ConversationSummary> {
+  const index = new Map(list.map(conversation => [conversation.id, conversation]));
+  conversationIndexes.set(list, index);
+  return index;
+}
+
+/**
+ * A conversation's summary by id, without scanning the list: frames ask for
+ * the open one from several places, and the list holds thousands. A list
+ * assigned anew is indexed on its first lookup; changes in place go through
+ * replaceConversationAt / insertConversation / removeConversationAt, which keep
+ * the index. Reordering needs nothing. A list grown in place some other way is
+ * indexed again on a miss.
+ */
+export function conversationById(sidebar: { conversations: ConversationSummary[] } | undefined, id: string | null | undefined): ConversationSummary | undefined {
+  if (!sidebar || !id) return undefined;
+  const list = sidebar.conversations;
+  const index = conversationIndexes.get(list) ?? indexConversations(list);
+  const found = index.get(id);
+  if (found || index.size === list.length) return found;
+  return indexConversations(list).get(id);
+}
+
+export function replaceConversationAt(sidebar: SidebarState, at: number, summary: ConversationSummary): void {
+  const index = conversationIndexes.get(sidebar.conversations);
+  const old = sidebar.conversations[at];
+  if (index && old && index.get(old.id) === old) index.delete(old.id);
+  sidebar.conversations[at] = summary;
+  index?.set(summary.id, summary);
+}
+
+export function insertConversation(sidebar: SidebarState, at: number, summary: ConversationSummary): void {
+  sidebar.conversations.splice(at, 0, summary);
+  conversationIndexes.get(sidebar.conversations)?.set(summary.id, summary);
+}
+
+export function removeConversationAt(sidebar: SidebarState, at: number): void {
+  const [removed] = sidebar.conversations.splice(at, 1);
+  const index = conversationIndexes.get(sidebar.conversations);
+  if (removed && index?.get(removed.id) === removed) index.delete(removed.id);
+}
+
 export function createSidebarState(folderView: SidebarFolderView = "tree"): SidebarState {
   return {
     open: false,

@@ -27,6 +27,7 @@ import type { RenderState, QueueTiming, QueueWaitTarget, QueuedMessage } from ".
 import type { QueuedCommandInvocation } from "./protocol";
 import { expandMacros } from "./macros";
 import { isStreaming } from "./state";
+import { conversationById } from "./sidebar/state";
 import { clearPrompt } from "./promptstate";
 import { queueIdFromRequestId, unqueueIdFromRequestId } from "./request-ids";
 
@@ -87,7 +88,7 @@ export function noteImmediateQueuedDeliveries(state: RenderState): void {
   for (const message of state.queuedMessages) {
     if (!message.id || isGlobalIdleQueuedMessage(message)) continue;
     present.add(message.id);
-    const conversation = state.sidebar?.conversations.find(candidate => candidate.id === message.convId);
+    const conversation = conversationById(state.sidebar, message.convId);
     if (conversation && queuedInputEndsChronoSleep(conversation, message)) state.deliveringQueueIds.add(message.id);
   }
   for (const id of state.deliveringQueueIds) if (!present.has(id)) state.deliveringQueueIds.delete(id);

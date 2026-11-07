@@ -12,6 +12,7 @@ import { productConversationDefaults, type ConversationDefaults } from "@exocort
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage } from "./messages";
 import { supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block, ConversationSummary } from "./messages";
+import { conversationById, replaceConversationAt } from "./sidebar/state";
 import { loadHideSensitiveInfoPreference } from "./privacy";
 import { loadClockPreference, type ClockFormat } from "./clock";
 import { loadDiagnosticsPreference, loadTurnWorkPreference } from "./diagnostics";
@@ -476,9 +477,14 @@ export interface RenderState {
   scratchpadExpansion: { convId: string; scroll: number } | null;
 }
 
+/** The open conversation's sidebar summary (conversationById: no scan). */
+export function focusedConversation(state: { convId: string | null; sidebar?: { conversations: ConversationSummary[] } }): ConversationSummary | undefined {
+  return conversationById(state.sidebar, state.convId);
+}
+
 /** The daemon's streaming bit also covers handoffs between ordinary turns. */
 export function isStreaming(state: RenderState): boolean {
-  return state.pendingAI !== null || state.sidebar.conversations.some(conv => conv.id === state.convId && conv.streaming);
+  return state.pendingAI !== null || focusedConversation(state)?.streaming === true;
 }
 
 /** Stop also applies to active goals suspended in a durable Chrono sleep. */
@@ -543,7 +549,7 @@ export function reapplyLocalStops(state: RenderState, now = Date.now()): void {
     const index = conversations.findIndex(conversation => conversation.id === convId);
     if (index === -1) continue;
     const shown = withLocalStop(state, conversations[index], now);
-    if (shown !== conversations[index]) conversations[index] = shown;
+    if (shown !== conversations[index]) replaceConversationAt(state.sidebar, index, shown);
   }
 }
 
@@ -563,7 +569,7 @@ export function isOpenRequested(state: RenderState, convId: string): boolean {
 export function clearUnreadLocally(state: RenderState, convId: string): void {
   const conversations = state.sidebar.conversations;
   const index = conversations.findIndex(conversation => conversation.id === convId);
-  if (index !== -1 && conversations[index].unread) conversations[index] = { ...conversations[index], unread: false };
+  if (index !== -1 && conversations[index].unread) replaceConversationAt(state.sidebar, index, { ...conversations[index], unread: false });
 }
 
 /** Whether the open conversation is a cached copy not yet known to be current (cachedopen.ts). */
