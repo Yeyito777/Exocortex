@@ -7,15 +7,12 @@ describe("voice recall real TUI flow", () => {
   for (const route of ["local", "ssh"] as const) {
     test(`${route}: Enter-recalling a submitted transcription ignores the Enter release and keeps completion in the prompt`, async () => {
       if (process.platform === "win32") return; // fake recorder is a POSIX shell fixture
-      const { proc, screen, stdoutText, stderrText, fakeDaemon, localDaemon } = await launchVoiceTui(route);
+      const { proc, screen, holdSpace, stdoutText, stderrText, fakeDaemon, localDaemon } = await launchVoiceTui(route);
       // Start hold-to-talk from normal mode, release to begin transcribing in the
       // prompt, then press Enter to submit that still-running transcription into
       // chat history. This matches the real workflow that regressed more closely
       // than pressing Enter while the recorder is still active.
-      proc.stdin.write("\x1b");
-      await delay(30);
-      proc.stdin.write("\x1b[32;1:1u");
-      await delay(650);
+      await holdSpace();
       proc.stdin.write("\x1b[32;1:3u");
       const transcriptionCommand = await waitFor(() => localDaemon.commands.find(isTranscribeAudioCommand));
       proc.stdin.write("\r");
@@ -35,7 +32,7 @@ describe("voice recall real TUI flow", () => {
       expect(sendsBeforeCompletion).toEqual([]);
 
       localDaemon.broadcast({ type: "transcription_result", reqId: transcriptionCommand.reqId, text: "recalled transcript" });
-      await delay(250);
+      await waitFor(() => screen.plainRows().some(row => row.includes("recalled transcript")));
 
       const sendsAfterCompletion = fakeDaemon.commands.filter(isUserMessageDispatchCommand);
       const rows = screen.plainRows();

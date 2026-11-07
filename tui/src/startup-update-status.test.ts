@@ -18,6 +18,7 @@ test.each([
   const temp = mkdtempSync(join(tmpdir(), "exo-startup-status-"));
   const bin = join(temp, "bin");
   const ready = join(temp, "ssh-ready");
+  const probed = join(temp, "local-probed");
   mkdirSync(bin);
   const env = {
     ...process.env,
@@ -47,7 +48,7 @@ test.each([
   ];
   writeFileSync(join(bin, "ssh"), `#!${process.execPath}
 import { createInterface } from "node:readline";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 const send = event => process.stdout.write(JSON.stringify(event) + "\\n");
 createInterface({ input: process.stdin }).on("line", line => {
   const command = JSON.parse(line);
@@ -55,11 +56,17 @@ createInterface({ input: process.stdin }).on("line", line => {
   if (command.updateStatusOnly) {
     send({ type: "pong", reqId: command.reqId, updateStatus: "none" });
   } else {
-    setTimeout(() => {
-      writeFileSync(${JSON.stringify(ready)}, "");
-      send({ type: "pong", reqId: command.reqId });
-      for (const event of ${JSON.stringify(bootstrap)}) send(event);
-    }, ${sshDelayMs});
+    // The TUI starts its Local probe before SSH. Answer only once it has
+    // reached the local daemon, so a slow probe can't pass for a post-switch one.
+    const answer = () => {
+      if (!existsSync(${JSON.stringify(probed)})) return void setTimeout(answer, 5);
+      setTimeout(() => {
+        writeFileSync(${JSON.stringify(ready)}, "");
+        send({ type: "pong", reqId: command.reqId });
+        for (const event of ${JSON.stringify(bootstrap)}) send(event);
+      }, ${sshDelayMs});
+    };
+    answer();
   }
 });
 `, { mode: 0o755 });
@@ -89,7 +96,10 @@ createInterface({ input: process.stdin }).on("line", line => {
         if (command.type !== "ping") continue;
         if (command.updateStatusOnly) {
           const afterSwitch = existsSync(ready);
-          if (connection > 1 && !afterSwitch) startupIndependentProbes++;
+          if (connection > 1 && !afterSwitch) {
+            startupIndependentProbes++;
+            writeFileSync(probed, "");
+          }
           if (connection === 1) startupActiveProbes++;
           // A fresh post-switch check is slow. Startup's already-known Local
           // result must not turn into Unknown while that check is outstanding.
@@ -143,7 +153,7 @@ createInterface({ input: process.stdin }).on("line", line => {
       }
     });
     const stderrDone = consume(proc.stderr as ReadableStream<Uint8Array>, text => { stderr += text; });
-    const deadline = Date.now() + 3_000;
+    const deadline = Date.now() + 8_000;
     while (!screen.plainRows().some(row => /Remote:\s+None/.test(row)) && Date.now() < deadline) {
       await Bun.sleep(10);
     }

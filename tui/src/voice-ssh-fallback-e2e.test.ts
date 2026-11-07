@@ -6,16 +6,13 @@ describe("voice recall real TUI flow", () => {
 
   test("SSH: uploaded remote fallback recovers after disconnect and sends final text only once", async () => {
     if (process.platform === "win32") return;
-    const { proc, screen, fakeDaemon, localDaemon, stdoutText, stderrText } = await launchVoiceTui("ssh");
+    const { proc, screen, holdSpace, fakeDaemon, localDaemon, stdoutText, stderrText } = await launchVoiceTui("ssh");
     fakeDaemon.broadcast({
       type: "conversation_created", convId: "remote-voice", provider: "openai", model: "gpt-5.5",
       effort: "high", fastMode: false,
     });
-    await delay(100);
-    proc.stdin.write("\x1b");
-    await delay(30);
-    proc.stdin.write("\x1b[32;1:1u");
-    await delay(650);
+    await waitFor(() => fakeDaemon.commands.some(command => command.type === "subscribe" && command.convId === "remote-voice"));
+    await holdSpace();
     proc.stdin.write("\r");
     const localRequest = await waitFor(() => localDaemon.commands.find(isTranscribeAudioCommand));
     localDaemon.broadcast({ type: "error", reqId: localRequest.reqId, message: "Fixture local ASR unavailable" });
