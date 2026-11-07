@@ -149,6 +149,10 @@ describe("macOS source", () => {
       now: () => clock,
     });
     for (const line of VM_STAT_INTERVAL.split("\n").slice(0, 3)) lineSink!(line);
+    // The instant first sample: memory, no CPU, and the CPU baseline kept.
+    const instant = source.sample(false);
+    expect(instant.cpuPercent).toBeNull();
+    expect(instant.memory).not.toBeNull();
     user = 25;
     const sample = source.sample();
     expect(sample.cpuPercent).toBe(25);
@@ -181,50 +185,93 @@ async function until(done: () => boolean): Promise<void> {
 }
 
 describe("watch", () => {
-  test("samples only while a client watches, and gives a late joiner the last sample at once", async () => {
+  function watchHarness(graceMs: number) {
     const sent: Array<{ client: string; resources: MachineResources }> = [];
-    const stops: number[] = [];
+    const samples: boolean[] = [];
     let created = 0;
+    let stopped = 0;
+    let clock = 1_000;
     const watch = createMachineResourcesWatch({
       send: (client, event) => {
         if (event.type === "machine_resources") sent.push({ client: (client as { id: string }).id, resources: event.resources });
       },
       createSource: (): ResourceSource => {
         created++;
-        return { sample: () => SNAPSHOT, stop: () => { stops.push(created); } };
+        return {
+          sample: (withCpu = true) => {
+            samples.push(withCpu);
+            return { ...SNAPSHOT, cpuPercent: withCpu ? SNAPSHOT.cpuPercent : null };
+          },
+          stop: () => { stopped++; },
+        };
       },
       intervalMs: 5,
       firstSampleMs: 1,
+      graceMs,
+      now: () => clock,
     });
+    return { watch, sent, samples, created: () => created, stopped: () => stopped, advance: (ms: number) => { clock += ms; } };
+  }
+
+  test("a new watcher gets a sample at once: instant figures first, CPU in the next", async () => {
+    const h = watchHarness(0);
+    const a = fakeClient("a");
+    expect(h.watch.sampling()).toBe(false);
+    h.watch.add(a);
+    // Sent while handling the subscription, before anything else goes out.
+    expect(h.sent).toEqual([{ client: "a", resources: { ...SNAPSHOT, cpuPercent: null } }]);
+    expect(h.samples).toEqual([false]);
+    await until(() => h.sent.length >= 2);
+    expect(h.sent[1].resources.cpuPercent).toBe(12.5);
+    h.watch.dispose();
+  });
+
+  test("a late joiner gets the last sample at once; sampling stops a grace period after the last leaves", async () => {
+    const h = watchHarness(30_000);
     const a = fakeClient("a");
     const b = fakeClient("b");
-    expect(watch.sampling()).toBe(false);
-    watch.add(a);
-    expect(watch.sampling()).toBe(true);
-    await until(() => sent.length >= 2);
-    expect(sent.every(entry => entry.client === "a" && entry.resources === SNAPSHOT)).toBe(true);
+    h.watch.add(a);
+    await until(() => h.sent.length >= 2);
 
-    sent.length = 0;
-    watch.add(b);
-    expect(sent).toEqual([{ client: "b", resources: SNAPSHOT }]);
-    watch.add(b);
-    expect(sent).toHaveLength(1);
+    h.sent.length = 0;
+    h.watch.add(b);
+    expect(h.sent).toEqual([{ client: "b", resources: SNAPSHOT }]);
+    h.watch.add(b);
+    expect(h.sent).toHaveLength(1);
 
-    watch.remove(a);
-    expect(watch.sampling()).toBe(true);
-    watch.remove(b);
-    expect(watch.sampling()).toBe(false);
-    expect(stops).toEqual([1]);
-    expect(created).toBe(1);
-    watch.dispose();
+    h.watch.remove(a);
+    h.watch.remove(b);
+    // Within the grace period: still sampling, and a reopened TUI gets a full sample at once.
+    const before = h.samples.length;
+    await until(() => h.samples.length > before + 1);
+    expect(h.watch.sampling()).toBe(true);
+    h.sent.length = 0;
+    const c = fakeClient("c");
+    h.watch.add(c);
+    expect(h.sent).toEqual([{ client: "c", resources: SNAPSHOT }]);
+    h.watch.remove(c);
+
+    h.advance(30_000);
+    await until(() => !h.watch.sampling());
+    expect(h.stopped()).toBe(1);
+    expect(h.created()).toBe(1);
+    h.watch.dispose();
+  });
+
+  test("a disconnected watcher is dropped at the next sample", async () => {
+    const h = watchHarness(0);
+    const a = fakeClient("a") as unknown as { socket: { destroyed: boolean } };
+    h.watch.add(a as never);
+    a.socket.destroyed = true;
+    await until(() => !h.watch.sampling());
+    expect(h.watch.watcherCount()).toBe(0);
   });
 });
 
 describe("handler", () => {
   afterEach(() => setMachineResourcesTimingForTest());
 
-  function harness(capabilities: string[]) {
-    setMachineResourcesTimingForTest({ intervalMs: 5, firstSampleMs: 1 });
+  function harness() {
     const sent: Array<{ client: unknown; event: any }> = [];
     const server = {
       sendTo: mock((client: unknown, event: unknown) => { sent.push({ client, event }); }),
@@ -234,35 +281,43 @@ describe("handler", () => {
     const handle = createHandler(server as never);
     const client = { id: "tui", capabilities: new Set<string>(), subscriptions: new Set<string>(), socket: { destroyed: false } };
     const resources = () => sent.filter(entry => entry.event.type === "machine_resources");
-    return { handle, client, sent, resources, close: () => { client.socket.destroyed = true; }, capabilities };
+    const stop = () => (handle as unknown as { stop: () => Promise<void> }).stop();
+    return { handle, client, sent, resources, stop };
   }
 
-  test("a machine-resources client gets this machine's samples until it disconnects", async () => {
-    const h = harness(["machine-resources"]);
+  test("a machine-resources client gets a sample in the capabilities' own handling, CPU within ~300 ms, until it disconnects", async () => {
+    setMachineResourcesTimingForTest({ intervalMs: 2_000, firstSampleMs: 200, graceMs: 0 });
+    const h = harness();
     try {
+      const startedAt = performance.now();
       await h.handle(h.client as never, { type: "client_capabilities", capabilities: ["machine-resources"] });
       expect(h.client.capabilities.has("machine-resources")).toBe(true);
+      expect(h.resources()).toHaveLength(1);
+      const first = h.resources()[0].event.resources as MachineResources;
+      expect(first.cpuPercent).toBeNull();
+      if (process.platform === "linux") expect(first.memory?.totalBytes).toBeGreaterThan(0);
+
       await until(() => h.resources().length >= 2);
-      const { event } = h.resources().at(-1)!;
-      expect(event.resources.sampledAt).toBeGreaterThan(0);
-      if (process.platform === "linux") expect(event.resources.memory?.totalBytes).toBeGreaterThan(0);
-      h.close();
-      const count = h.resources().length;
-      await Bun.sleep(20);
-      expect(h.resources().length).toBe(count);
+      expect(performance.now() - startedAt).toBeLessThan(400);
+      if (process.platform === "linux") expect(h.resources()[1].event.resources.cpuPercent).not.toBeNull();
+
+      // A second declaration (the /ssh probe's, then the connection's) sends nothing more.
+      await h.handle(h.client as never, { type: "client_capabilities", capabilities: ["machine-resources"] });
+      expect(h.resources()).toHaveLength(2);
     } finally {
-      await (h.handle as unknown as { stop: () => Promise<void> }).stop();
+      await h.stop();
     }
   });
 
   test("a client without the capability gets none", async () => {
-    const h = harness([]);
+    setMachineResourcesTimingForTest({ intervalMs: 5, firstSampleMs: 1, graceMs: 0 });
+    const h = harness();
     try {
       await h.handle(h.client as never, { type: "client_capabilities", capabilities: ["history-push"] });
       await Bun.sleep(20);
       expect(h.resources()).toEqual([]);
     } finally {
-      await (h.handle as unknown as { stop: () => Promise<void> }).stop();
+      await h.stop();
     }
   });
 });

@@ -3,11 +3,15 @@
  * beside them GPU and VRAM where that machine reports them.
  *
  * The figures come from the daemon (machine_resources), so over /ssh they are
- * the remote's. A figure the machine does not report shows as "—"; a GPU
- * column with neither figure is left out. The block hides first when the
- * terminal is narrow, its GPU column before the rest.
+ * the remote's. The layout follows the route's shape (machine-resources.ts):
+ * before the first sample the block shows at that width, bars empty and
+ * figures "—", and the sample fills it in place. A figure the machine does
+ * not report stays "—"; a machine without GPU figures has no GPU column. The
+ * block hides first when the terminal is narrow, its GPU column before the
+ * rest.
  */
 
+import type { ResourcesShape } from "../machine-resources";
 import type { MachineResources, MemoryUse } from "../protocol";
 import type { RenderState } from "../state";
 import type { StatusBlock } from "../statusline";
@@ -32,9 +36,12 @@ export function formatMemory(memory: MemoryUse | null): string {
   return `${(memory.usedBytes / GIB).toFixed(1)}/${Math.round(memory.totalBytes / GIB)}G`;
 }
 
-/** The widest a figure gets, so the columns don't shift as it changes. */
-function memoryFigureWidth(memory: MemoryUse | null): number {
-  return termWidth(formatMemory(memory && { usedBytes: memory.totalBytes, totalBytes: memory.totalBytes }));
+/** A memory figure's width while its total is unknown: "10.8/31G". */
+const UNKNOWN_TOTAL_FIGURE_WIDTH = 8;
+
+/** The widest a memory figure gets, so the columns don't shift as it changes. */
+function memoryFigureWidth(totalBytes: number | null): number {
+  return totalBytes === null ? UNKNOWN_TOTAL_FIGURE_WIDTH : termWidth(formatMemory({ usedBytes: totalBytes, totalBytes }));
 }
 
 interface Cell {
@@ -91,24 +98,23 @@ function block(columns: Column[]): StatusBlock {
   return { id: "resources", priority: -1, width, height: 2, rows };
 }
 
-export function resourcesBlockFor(resources: MachineResources | null): StatusBlock | null {
-  if (!resources) return null;
-  const { cpuPercent, memory, gpuPercent, vram } = resources;
-  if (cpuPercent === null && memory === null && gpuPercent === null && vram === null) return null;
+/** The block in `shape`'s layout, filled from `resources` (null: none yet); null without a shape. */
+export function resourcesBlockFor(resources: MachineResources | null, shape: ResourcesShape | null): StatusBlock | null {
+  if (!shape) return null;
   const percentWidth = termWidth(formatPercent(100));
   const machine = column(
-    [percentCell("CPU", cpuPercent), memoryCell("MEM", memory)],
-    Math.max(percentWidth, memoryFigureWidth(memory)),
+    [percentCell("CPU", resources?.cpuPercent ?? null), memoryCell("MEM", resources?.memory ?? null)],
+    Math.max(percentWidth, memoryFigureWidth(shape.memoryTotalBytes)),
   );
-  if (gpuPercent === null && vram === null) return block([machine]);
+  if (!shape.gpu) return block([machine]);
   // A column's labels share one width: "GPU:  " over "VRAM: ".
   const gpu = column(
-    [percentCell("GPU", gpuPercent), memoryCell("VRAM", vram)],
-    Math.max(percentWidth, memoryFigureWidth(vram)),
+    [percentCell("GPU", resources?.gpuPercent ?? null), memoryCell("VRAM", resources?.vram ?? null)],
+    Math.max(percentWidth, memoryFigureWidth(shape.vramTotalBytes)),
   );
   return { ...block([machine, gpu]), narrower: [block([machine])] };
 }
 
 export function resourcesBlock(state: RenderState): StatusBlock | null {
-  return resourcesBlockFor(state.machineResources);
+  return resourcesBlockFor(state.machineResources, state.machineResourcesShape);
 }

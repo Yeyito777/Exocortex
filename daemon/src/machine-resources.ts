@@ -4,8 +4,10 @@
  * machine-resources capability. A TUI on /ssh talks to the remote daemon, so
  * it shows the remote's machine.
  *
- * Sampling runs only while such a client is connected, and never starts a
- * process per tick:
+ * A client gets a sample as soon as it declares the capability (the last one,
+ * or memory and GPU figures read at once with CPU to follow ~200 ms later).
+ * Sampling runs only while such a client is connected and for 30 s after the
+ * last one leaves, and never starts a process per tick:
  * - Linux: /proc/stat, /proc/meminfo and an amdgpu card's sysfs files
  *   (gpu_busy_percent, the figure radeontop reports, and mem_info_vram_*).
  * - macOS: os.cpus() (host_processor_info) for CPU, one long-running
@@ -24,13 +26,16 @@ import { log } from "./log";
 
 /** How often a sample goes out while watched. */
 const SAMPLE_INTERVAL_MS = 2_000;
-/** The first sample after watching starts: soon, but long enough for a CPU reading. */
-const FIRST_SAMPLE_MS = 500;
-let timing = { intervalMs: SAMPLE_INTERVAL_MS, firstSampleMs: FIRST_SAMPLE_MS };
+/** The first full sample after sampling starts: soon, but long enough for a CPU reading. */
+const FIRST_SAMPLE_MS = 200;
+/** Sampling goes on this long after the last watcher leaves, so a TUI reopened meanwhile gets a sample at once. */
+const IDLE_GRACE_MS = 30_000;
+const DEFAULT_TIMING = { intervalMs: SAMPLE_INTERVAL_MS, firstSampleMs: FIRST_SAMPLE_MS, graceMs: IDLE_GRACE_MS };
+let timing = DEFAULT_TIMING;
 
 /** Shrink the watch's waits in tests; call with no argument to restore them. */
-export function setMachineResourcesTimingForTest(next?: { intervalMs: number; firstSampleMs: number }): void {
-  timing = next ?? { intervalMs: SAMPLE_INTERVAL_MS, firstSampleMs: FIRST_SAMPLE_MS };
+export function setMachineResourcesTimingForTest(next?: typeof DEFAULT_TIMING): void {
+  timing = next ?? DEFAULT_TIMING;
 }
 /** A vm_stat that exited is started again no sooner than this. */
 const VM_STAT_RESPAWN_MS = 30_000;
@@ -140,9 +145,12 @@ export function createVmStatParser(totalBytes: number): (line: string) => Memory
 
 // ── Sources ─────────────────────────────────────────────────────────
 
-/** One machine's readings; CPU is measured since the previous sample. */
+/**
+ * One machine's readings; CPU is measured since the previous sample that
+ * measured it. Without `withCpu` (the instant first sample), CPU is null.
+ */
 export interface ResourceSource {
-  sample(): MachineResources;
+  sample(withCpu?: boolean): MachineResources;
   stop(): void;
 }
 
@@ -188,10 +196,13 @@ export function createLinuxSource(options: LinuxSourceOptions = {}): ResourceSou
   const readCpu = () => parseProcStat(read(join(procDir, "stat")) ?? "");
   let previous = readCpu();
   return {
-    sample() {
-      const next = readCpu();
-      const cpu = cpuPercent(previous, next);
-      if (next) previous = next;
+    sample(withCpu = true) {
+      let cpu: number | null = null;
+      if (withCpu) {
+        const next = readCpu();
+        cpu = cpuPercent(previous, next);
+        if (next) previous = next;
+      }
       const vramUsed = gpu ? parseInteger(read(join(gpu, "mem_info_vram_used"))) : null;
       const vramTotal = gpu ? parseInteger(read(join(gpu, "mem_info_vram_total"))) : null;
       const busy = gpu ? parseInteger(read(join(gpu, "gpu_busy_percent"))) : null;
@@ -260,11 +271,14 @@ export function createMacSource(options: MacSourceOptions = {}): ResourceSource 
   ensureVmStat();
 
   return {
-    sample() {
+    sample(withCpu = true) {
       ensureVmStat();
-      const next = sumCpuInfo(cpuInfo());
-      const cpu = cpuPercent(previous, next);
-      if (next) previous = next;
+      let cpu: number | null = null;
+      if (withCpu) {
+        const next = sumCpuInfo(cpuInfo());
+        cpu = cpuPercent(previous, next);
+        if (next) previous = next;
+      }
       return { cpuPercent: cpu, memory, gpuPercent: null, vram: null, sampledAt: now() };
     },
     stop() {
@@ -286,16 +300,22 @@ export interface MachineResourcesWatchDeps {
   createSource?: () => ResourceSource;
   intervalMs?: number;
   firstSampleMs?: number;
+  graceMs?: number;
+  now?: () => number;
 }
 
 export function createMachineResourcesWatch(deps: MachineResourcesWatchDeps) {
   const createSource = deps.createSource ?? defaultSource;
   const intervalMs = deps.intervalMs ?? timing.intervalMs;
   const firstSampleMs = deps.firstSampleMs ?? timing.firstSampleMs;
+  const graceMs = deps.graceMs ?? timing.graceMs;
+  const now = deps.now ?? Date.now;
   const watchers = new Set<ConnectedClient>();
   let source: ResourceSource | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let latest: MachineResources | null = null;
+  /** When a client last watched (sampling stops `graceMs` after). */
+  let watchedAt = 0;
 
   const stop = () => {
     if (timer) clearTimeout(timer);
@@ -325,7 +345,8 @@ export function createMachineResourcesWatch(deps: MachineResourcesWatchDeps) {
         else deps.send(client, event);
       }
     }
-    if (watchers.size === 0) stop();
+    if (watchers.size > 0) watchedAt = now();
+    if (watchers.size === 0 && now() - watchedAt >= graceMs) stop();
     else schedule(intervalMs);
   };
 
@@ -333,19 +354,25 @@ export function createMachineResourcesWatch(deps: MachineResourcesWatchDeps) {
     add(client: ConnectedClient): void {
       if (watchers.has(client)) return;
       watchers.add(client);
-      if (latest) deps.send(client, { type: "machine_resources", resources: latest });
-      if (source) return;
-      try {
-        source = createSource();
-      } catch (error) {
-        log("debug", `machine resources: unavailable: ${error instanceof Error ? error.message : error}`);
-        return;
+      watchedAt = now();
+      if (!source) {
+        try {
+          source = createSource();
+          // Memory and the GPU's figures are instant reads; CPU follows in the first full sample.
+          latest = source.sample(false);
+        } catch (error) {
+          log("debug", `machine resources: unavailable: ${error instanceof Error ? error.message : error}`);
+          stop();
+          return;
+        }
+        schedule(firstSampleMs);
       }
-      schedule(firstSampleMs);
+      // At once, in the command's own handling: the TUI tells from it, ahead of
+      // the bootstrap, that this daemon sends them.
+      if (latest) deps.send(client, { type: "machine_resources", resources: latest });
     },
     remove(client: ConnectedClient): void {
-      if (!watchers.delete(client)) return;
-      if (watchers.size === 0) stop();
+      if (watchers.delete(client) && watchers.size === 0) watchedAt = now();
     },
     /** Stop sampling for good (daemon shutdown). */
     dispose(): void {

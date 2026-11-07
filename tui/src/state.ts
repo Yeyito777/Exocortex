@@ -32,6 +32,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
+import { DEFAULT_RESOURCES_SHAPE, type ResourcesShape } from "./machine-resources";
 import type { AccountsSnapshot, ConversationDefaultsSnapshot, MachineResources, ConversationGoal, MacroEnvironment, ProviderAuthInfo, UserMacro, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { TokenStatsView } from "./commands/tokens";
@@ -279,6 +280,10 @@ export interface RenderState {
   usageByProvider: Record<ProviderId, UsageData | null>;
   /** The connected daemon's machine (the remote's over /ssh); null until its first sample or while disconnected. */
   machineResources: MachineResources | null;
+  /** The resources block's layout, drawn empty until a sample fills it; null: the daemon sends none (machine-resources.ts). */
+  machineResourcesShape: ResourcesShape | null;
+  /** A sample came on this connection. */
+  machineResourcesSeen: boolean;
   /** Providers the daemon sends through /proxy; null when the daemon predates /proxy. */
   providerProxies: ProviderProxyInfo[] | null;
   /** Persistent token-accounting snapshot from the daemon. */
@@ -835,6 +840,8 @@ export function createInitialState(): RenderState {
       anthropic: null,
     },
     machineResources: null,
+    machineResourcesShape: DEFAULT_RESOURCES_SHAPE,
+    machineResourcesSeen: false,
     providerProxies: null,
     tokenStats: null,
     pendingTokenStatsView: null,
