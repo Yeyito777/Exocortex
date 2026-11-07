@@ -244,6 +244,10 @@ export function handleEvent(
       state.usageByProvider[event.provider] = event.usage;
       break;
 
+    case "machine_resources":
+      state.machineResources = event.resources;
+      break;
+
     case "accounts":
       handleAccountsEvent(state, event);
       break;
