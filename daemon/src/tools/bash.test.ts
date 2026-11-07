@@ -80,6 +80,9 @@ describe("bash timeouts with escaped descendants", () => {
       .stdout.toString().trim().split("\n").filter(Boolean);
     const before = units().length;
     const controller = new AbortController();
+    // The test preload runs commands directly; this test is about the unit.
+    const directRunner = process.env.EXOCORTEX_DISABLE_TRANSIENT_BASH_UNITS;
+    delete process.env.EXOCORTEX_DISABLE_TRANSIENT_BASH_UNITS;
     try {
       const pending = executeBashBackgroundable(
         { command: `setsid bash -c 'exec -a ${marker} sleep 30' & sleep 100`, await: 60 },
@@ -89,12 +92,14 @@ describe("bash timeouts with escaped descendants", () => {
       const running = () => Bun.spawnSync(["pgrep", "-f", marker]).exitCode === 0;
       for (let i = 0; i < 500 && !running(); i++) await Bun.sleep(10);
       expect(running()).toBe(true);
+      expect(units().length).toBeGreaterThan(before);
       controller.abort();
       await pending;
       let after = units().length;
       for (let i = 0; i < 200 && after > before; i++) { await Bun.sleep(20); after = units().length; }
       expect(after).toBe(before);
     } finally {
+      if (directRunner !== undefined) process.env.EXOCORTEX_DISABLE_TRANSIENT_BASH_UNITS = directRunner;
       spawn("pkill", ["-f", marker]);
     }
   }, 20_000);

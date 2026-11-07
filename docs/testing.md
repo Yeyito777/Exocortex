@@ -40,7 +40,9 @@ While iterating, run `bun run check --changed`; before merging, run the full
   in each `bunfig.toml`) makes a fresh `EXOCORTEX_CONFIG_DIR` per file, and
   refuses the live config. Nothing a test does reaches the main daemon. It
   also points `CLAUDE_CODE_BIN` at a missing file, so no test runs the real
-  Claude Code CLI or uses the user's Claude login.
+  Claude Code CLI or uses the user's Claude login, and runs bash-tool commands
+  as direct children rather than one `systemd-run` unit each, so they stay in
+  the check's scope (`tools/bash.test.ts` tests the unit path).
 - **One temp root per run.** The check points `TMPDIR` at `/tmp/exck-…` and
   removes it at the end, also after a failure, a timeout or Ctrl-C. Plain
   `bun test` sweeps its own leftover config dirs.
