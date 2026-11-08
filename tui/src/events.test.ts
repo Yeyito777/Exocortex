@@ -596,6 +596,21 @@ describe("rejected queue and BTW requests", () => {
     expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✗ Invalid queue timing" });
   });
 
+  test("a quiet error settles its history page without a row", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.historyLoadingOlder = true;
+    state.historyLoadingStartedAt = 100;
+    state.historyLoadingRequestId = "history-backfill";
+    const rows = state.messages.length;
+
+    handleEvent({ type: "error", reqId: "history-backfill", convId: "conv-1", message: "Invalid conversation history delta", quiet: true }, state, daemon);
+
+    expect(state.historyLoadingRequestId).toBeNull();
+    expect(state.historyLoadingOlder).toBe(false);
+    expect(state.messages).toHaveLength(rows);
+  });
+
   test("a rejected enqueue for a background conversation is still reported", () => {
     const state = createInitialState();
     state.convId = "open";

@@ -22,6 +22,7 @@ import { runtimeDir } from "@exocortex/shared/paths";
 import { decodePagePush } from "@exocortex/shared/history-push";
 import { compactLiveBlock, decodeLiveBlocks, describeLiveBlocks } from "@exocortex/shared/live-delta";
 import type { AIMessagePayload, Command, Event } from "./protocol";
+import { log } from "./log";
 
 export type LoadedEvent = Extract<Event, { type: "conversation_loaded" }>;
 export type HistoryPageEvent = Extract<Event, { type: "conversation_history_loaded" }>;
@@ -501,13 +502,16 @@ export class ViewCache {
 
   /**
    * Rebuild a load's pages sent against the copy it named (baseCopy), before
-   * anything else reads them. Null when one cannot be: the load is asked for
-   * again, plainly, and this answer goes no further.
+   * anything else reads them. Null when one cannot be: it is asked for again,
+   * plainly (the load whole, or its backfill from its cursor), and this answer
+   * goes no further.
    */
   decodeCopyAnswer(event: Event, retry?: (command: Command) => void): Event | null {
     if ((event.type !== "conversation_loaded" && event.type !== "conversation_history_loaded") || event.baseCopy === undefined || !event.reqId) return event;
     const loaded = event.type === "conversation_loaded";
     const load = loaded ? this.loads.get(event.reqId) : [...this.loads.values()].find(candidate => candidate.backfillReqId === event.reqId);
+    // Its load named no copy: this answers the one before it, dropped and asked for again; the new one's pages follow.
+    if (load && load.command.baseCopy === undefined) return null;
     const page = loaded ? load?.copy?.loaded : load?.copy?.backfill;
     try {
       if (!load || !page || load.convId !== event.convId) throw new Error("No copy to rebuild from");
@@ -520,10 +524,25 @@ export class ViewCache {
         if (load.backfillReqId) this.awaitingBackfill.delete(load.backfillReqId);
         this.copySeqs.delete(load.convId);
         const { baseCopy: _base, ...command } = load.command;
-        if (loaded && retry) retry(command);
+        if (loaded) {
+          if (retry) retry(command);
+        } else if (load.peek) {
+          // A peek's copy is refreshed again, by a peek that names no copy.
+          this.forced.add(load.convId);
+          this.peekDone(load.convId);
+        } else if (retry && command.initialBackfill && event.type === "conversation_history_loaded") {
+          // Its opening page is shown: the backfill is asked for as an ordinary page from its cursor.
+          retry({
+            type: "load_conversation_history", reqId: event.reqId, convId: event.convId, beforeEntryIndex: event.historyEndIndex,
+            ...(event.historyEndBlockIndex ? { beforeBlockIndex: event.historyEndBlockIndex } : {}),
+            turns: command.initialBackfill.turns, requestSource: "initial-backfill",
+            ...(command.viewport?.folded ? { folded: true } : {}),
+          });
+        }
+      } else {
+        log("warn", `tui: dropped ${event.type} ${event.reqId}: built against a copy no tracked load named`);
       }
-      // A backfill whose opening page was already shown settles as failed, like any page that cannot be rebuilt.
-      return loaded ? null : { type: "error", reqId: event.reqId, convId: event.convId, message: "Invalid conversation history delta" };
+      return null;
     }
   }
 

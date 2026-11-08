@@ -1,4 +1,5 @@
 import type { Command, Event } from "./protocol";
+import { log } from "./log";
 import { historyEntryHash, MAX_CACHED_HISTORY_ENTRIES, type HistoryResponse } from "@exocortex/shared/history-delta";
 
 type HistoryRequest = Extract<Command, { type: "load_conversation" | "load_conversation_history" }>;
@@ -86,6 +87,13 @@ export class HistoryCache {
     return prepared;
   }
 
+  /** Track a retry without a base: its answer is taken whole, and one that is not settles quietly (no third ask). */
+  plain(command: HistoryRequest): void {
+    if (!command.reqId) return;
+    this.release(command.reqId);
+    this.pending.set(command.reqId, { command, key: requestKey(command) });
+  }
+
   /** The cached page under `key`, pinned for an outstanding request, if the pin budget allows. */
   private pin(key: string): Page | undefined {
     const base = this.pages.get(key);
@@ -151,7 +159,8 @@ export class HistoryCache {
             }
             : pending.command);
         } else {
-          return { type: "error", reqId: event.reqId, convId: event.convId, message: "Invalid conversation history delta" };
+          log("warn", `tui: ${event.type} ${event.reqId} for ${event.convId} could not be rebuilt after a plain retry; settled without it`);
+          return { type: "error", reqId: event.reqId, convId: event.convId, message: "Invalid conversation history delta", quiet: true };
         }
         return null;
       }

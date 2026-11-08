@@ -223,6 +223,7 @@ export function handleEvent(
       // while streaming, an older-history page) must not hide the live turn.
       if (event.convId === state.convId && state.pendingAI && state.pendingAI.blocks.length === 0
           && (rejectedCreation || isFailedSendOfPendingAI(state, event.reqId))) clearPendingAI(state);
+      if (event.quiet) break;
       pushSystemMessage(state, /^Unknown command: provider_proxy\b/.test(event.message)
         ? "✗ The connected Exocortex daemon does not support /proxy; update it."
         : `✗ ${event.message}`, theme.error);

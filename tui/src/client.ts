@@ -1645,7 +1645,11 @@ export class DaemonClient {
           continue;
         }
         // Pages sent against a copy the view cache holds (baseCopy) are rebuilt from it first.
-        const fromCopy = this.sshAlias ? this.viewCacheFor(this.sshAlias).decodeCopyAnswer(parsed, command => this.writeCommand(command)) : parsed;
+        const fromCopy = this.sshAlias ? this.viewCacheFor(this.sshAlias).decodeCopyAnswer(parsed, command => {
+          // Asked for plainly: an answer that is still a delta settles quietly instead of asking again.
+          if (command.type === "load_conversation" || command.type === "load_conversation_history") this.historyCache.plain(command);
+          this.writeCommand(command);
+        }) : parsed;
         if (!fromCopy) continue;
         const received = this.historyCache.receive(fromCopy, command => this.writeCommand(command));
         const assembled = received?.type === "conversations_list" ? this.assembleConversationsList(received) : received;

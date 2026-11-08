@@ -530,6 +530,118 @@ describe("DaemonClient SSH routing", () => {
     }
   });
 
+  describe("pages the TUI cannot rebuild are asked for again quietly, once", () => {
+    const user = (text: string) => ({ type: "user" as const, text: text.repeat(300), metadata: null });
+    const opening = (cmd: any, extra: Record<string, unknown> = {}) => ({ type: "conversation_loaded", reqId: cmd.reqId, convId: cmd.convId,
+      provider: "openai", model: "gpt-5.4", effort: "high", fastMode: false, entries: [user("b")], historyStartIndex: 1, historyStartUserIndex: 1,
+      historyTotalEntries: 2, hasOlderHistory: true, initialBackfillReqId: cmd.initialBackfill?.reqId, historyRev: "e.1", copySeq: 1,
+      contextTokens: 1, toolOutputsIncluded: false, ...extra });
+    const older = (reqId: string, extra: Record<string, unknown> = {}) => ({ type: "conversation_history_loaded", reqId, convId: "c",
+      requestSource: "initial-backfill", entries: [user("a")], historyStartIndex: 0, historyStartUserIndex: 0, historyEndIndex: 1,
+      historyTotalEntries: 2, hasOlderHistory: false, historyRev: "e.1", ...extra });
+
+    /** A TUI over a fake /ssh link holding a watched copy of c (copy 1); `reopen` answers its next requests. */
+    async function reopened(reopen: (cmd: any, write: (event: object) => void, index: number) => void) {
+      const events: any[] = [];
+      const requests: any[] = [];
+      const client = new DaemonClient(event => events.push(event), "/tmp/local.sock", false, {
+        spawnSshProcess: () => {
+          const child = respondingProbe();
+          const write = (event: object) => child.stdout.write(`${JSON.stringify(event)}\n`);
+          child.stdin.on("data", chunk => {
+            for (const line of chunk.toString().trim().split("\n")) {
+              const cmd = JSON.parse(line);
+              if (cmd.type !== "load_conversation" && cmd.type !== "load_conversation_history") continue;
+              requests.push(cmd);
+              if (requests.length === 1) {
+                write(opening(cmd));
+                write(older(cmd.initialBackfill.reqId));
+              } else {
+                reopen(cmd, write, requests.length - 2);
+              }
+            }
+          });
+          return child;
+        },
+      });
+      client.ssh("connect", `retry-${Math.random().toString(36).slice(2)}`);
+      await waitFor(() => client.remoteAlias !== null);
+      (await client.connect()).releaseBootstrapEvents?.();
+      client.loadConversation("c", 5, { rows: 40, cols: 100, folded: true }, 10);
+      await waitFor(() => events.some(event => event.type === "conversation_history_loaded"));
+      events.length = 0;
+      client.loadConversation("c", 5, { rows: 40, cols: 100, folded: true }, 10);
+      return { client, events, requests };
+    }
+    const shown = (events: any[]) => events.filter(event => event.type === "error" ? !event.quiet : event.type.startsWith("conversation_"))
+      .map(event => event.type === "error" ? event.message : `${event.type}:${event.entries.map((entry: any) => entry.text[0]).join("")}`);
+
+    test("a backfill that cannot be rebuilt is asked for from its cursor, plainly", async () => {
+      const { client, events, requests } = await reopened((cmd, write, index) => {
+        if (index === 0) {
+          expect(cmd.baseCopy).toBe(1);
+          write({ ...opening(cmd, { copySeq: 2 }), entries: [], entryOrder: [-1], baseCopy: 1 });
+          // Built against a copy the TUI does not hold.
+          write({ ...older(cmd.initialBackfill.reqId), entries: [], entryOrder: [-3], baseCopy: 1 });
+        } else {
+          write(older(cmd.reqId));
+        }
+      });
+      try {
+        await waitFor(() => events.filter(event => event.type !== "history_revisions").length >= 2);
+        expect(shown(events)).toEqual(["conversation_loaded:b", "conversation_history_loaded:a"]);
+        expect(requests[2]).toMatchObject({ type: "load_conversation_history", reqId: requests[1].initialBackfill.reqId, convId: "c",
+          beforeEntryIndex: 1, turns: 10, requestSource: "initial-backfill", folded: true });
+        expect(requests[2]).not.toHaveProperty("cachedEntryHashes");
+      } finally {
+        client.disconnect();
+      }
+    });
+
+    test("an opening page that cannot be rebuilt is asked for again whole; its stale backfill is dropped", async () => {
+      const { client, events, requests } = await reopened((cmd, write, index) => {
+        if (index === 0) {
+          write({ ...opening(cmd, { copySeq: 2 }), entries: [], entryOrder: [-4], baseCopy: 1 });
+          write({ ...older(cmd.initialBackfill.reqId), entries: [], entryOrder: [-1], baseCopy: 1 });
+        } else {
+          write(opening(cmd, { copySeq: 3 }));
+          write(older(cmd.initialBackfill.reqId));
+        }
+      });
+      try {
+        await waitFor(() => events.some(event => event.type === "conversation_history_loaded"));
+        await Bun.sleep(20);
+        expect(shown(events)).toEqual(["conversation_loaded:b", "conversation_history_loaded:a"]);
+        expect(requests).toHaveLength(3);
+        expect(requests[2]).toMatchObject({ type: "load_conversation", reqId: requests[1].reqId });
+        expect(requests[2]).not.toHaveProperty("baseCopy");
+        expect(requests[2]).not.toHaveProperty("cachedEntryHashes");
+      } finally {
+        client.disconnect();
+      }
+    });
+
+    test("a retry that cannot be rebuilt either settles quietly, with no third request", async () => {
+      const { client, events, requests } = await reopened((cmd, write, index) => {
+        if (index === 0) {
+          write({ ...opening(cmd, { copySeq: 2 }), entries: [], entryOrder: [-1], baseCopy: 1 });
+          write({ ...older(cmd.initialBackfill.reqId), entries: [], entryOrder: [-3], baseCopy: 1 });
+        } else {
+          write({ ...older(cmd.reqId), entries: [], entryOrder: [-1] });
+        }
+      });
+      try {
+        await waitFor(() => events.some(event => event.type === "error"));
+        await Bun.sleep(20);
+        expect(shown(events)).toEqual(["conversation_loaded:b"]);
+        expect(events.find(event => event.type === "error")).toMatchObject({ reqId: requests[1].initialBackfill.reqId, quiet: true });
+        expect(requests).toHaveLength(3);
+      } finally {
+        client.disconnect();
+      }
+    });
+  });
+
   test("over /ssh the TUI tells the remote which scratchpads it holds, and keeps what the remote sends", async () => {
     let remote: FakeProcess | null = null;
     const state = createInitialState();
