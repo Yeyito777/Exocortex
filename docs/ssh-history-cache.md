@@ -75,7 +75,8 @@ output left out (`load_tool_outputs` serves a running round's results when
 they are shown). Each push names the copy it updates; the TUI applies it only
 to that copy, and peeks one it cannot. An open of a watched copy names it
 (`baseCopy`) and its answer is encoded against the daemon's record, so neither
-side resends or describes the copy; the subscription's catch-up leaves out the
+side resends or describes the copy (a page that cannot be rebuilt from it is
+asked for again plainly: the load whole, or its backfill from its cursor); the subscription's catch-up leaves out the
 blocks the answer already carried. So a conversation that changed, or is
 streaming, while you were elsewhere is current when you return, its turn in
 progress included.
@@ -155,7 +156,8 @@ The TUI now keeps a transport-only, in-memory LRU cache for remote history loads
   an open seeds it from the disk copy, so a TUI that just started still gets deltas.
 - Reconstruction happens before existing TUI event handlers. Pending requests
   pin their own bases, so concurrent loads and LRU eviction cannot corrupt them.
-  An invalid delta retries the original request once without cache hints.
+  An invalid delta retries the original request once without cache hints; one
+  that still cannot be rebuilt settles quietly (a TUI log warning, no error row).
 - Successful endpoint switches clear the cache. Reconnects to the same endpoint
   discard pending bases but can reuse stored pages after content validation.
 - Only opt-in requests receive deltas. Older clients receive full responses;

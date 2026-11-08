@@ -3069,6 +3069,8 @@ export interface ErrorEvent {
   message: string;
   /** A send refused because the daemon is shutting down: the next daemon can take it. */
   reason?: "daemon_shutting_down";
+  /** Settles its request without a row (the TUI's own, when a history page could not be rebuilt even after a retry; see the TUI log). */
+  quiet?: boolean;
 }
 
 export type Event =
