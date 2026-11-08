@@ -9,7 +9,7 @@
  *   every render mode, so switching modes or loading pixels never shifts text.
  * - store: previews are fetched lazily from the daemon (`get_image`) at the
  *   size they will be drawn, which bounds traffic over SSH, and kept in a
- *   small LRU. A pasted image whose bytes the TUI already holds (its own local
+ *   small LRU, and over /ssh on disk too (imagecache.ts), read before asking. A pasted image whose bytes the TUI already holds (its own local
  *   echo, or history that still carries the payload) is rendered here instead
  *   (a PNG that needs no shrinking goes to Kitty terminals as is), so a
  *   just-sent image never waits for its upload to reach the daemon.
@@ -31,6 +31,7 @@ import { hexToRgb, rgbToAnsi, type TerminalColorLevel } from "./terminalcolors";
 import { log } from "./log";
 import { termWidth, truncateToWidth } from "./textwidth";
 import { imageIdForBytes, sniffImage } from "@exocortex/shared/image-sniff";
+import type { StoredImagePreview } from "./imagecache";
 
 // ── Sources ─────────────────────────────────────────────────────────
 
@@ -237,6 +238,12 @@ export interface ImagePreviewResponse {
 
 export type ImagePreviewFetcher = (request: ImagePreviewRequest) => Promise<ImagePreviewResponse>;
 
+/** Previews kept on disk under their in-memory keys (imagecache.ts). */
+export interface ImagePreviewTier {
+  get(key: string): Promise<StoredImagePreview | null>;
+  put(key: string, preview: StoredImagePreview): void;
+}
+
 /** Renders a preview from bytes in hand; rejects when it can't (no renderer). */
 export type LocalImageRenderer = (
   base64: string,
@@ -282,16 +289,20 @@ let inFlight = 0;
 const queued: Array<{ key: string; run: () => void }> = [];
 let fetcher: ImagePreviewFetcher | null = null;
 let localRenderer: LocalImageRenderer | null = null;
+let diskTier: () => ImagePreviewTier | null = () => null;
 let nextKittyId = 0x40000000;
 const retryTimers = new Set<ReturnType<typeof setTimeout>>();
 
 export function configureInlineImages(options: {
   fetch: ImagePreviewFetcher;
   renderLocal?: LocalImageRenderer;
+  /** The disk tier of the current route, if it has one. */
+  disk?: () => ImagePreviewTier | null;
   onChange: () => void;
 }): void {
   fetcher = options.fetch;
   localRenderer = options.renderLocal ?? null;
+  diskTier = options.disk ?? (() => null);
   onChange = options.onChange;
 }
 
@@ -361,6 +372,7 @@ function enqueueFetch(key: string, request: ImagePreviewRequest, fetch: ImagePre
     inFlight++;
     fetch(request).then(preview => {
       store(key, { phase: "ready", preview });
+      diskTier()?.put(key, preview);
     }, error => {
       const message = error instanceof Error ? error.message : String(error);
       const delay = TRANSIENT_RETRY_MS[retries];
@@ -395,7 +407,7 @@ function prioritize(key: string): void {
   if (index > 0) queued.unshift(...queued.splice(index, 1));
 }
 
-function request(request: ImagePreviewRequest, urgent = false, peek = false, source?: InlineImageSource): PreviewEntry | null {
+function request(request: ImagePreviewRequest, urgent = false, peek = false, source?: InlineImageSource, localKey?: string): PreviewEntry | null {
   const key = previewKey(request);
   const existing = previews.get(key);
   if (existing && (existing.phase !== "error" || Date.now() < existing.retryAt)) {
@@ -404,10 +416,41 @@ function request(request: ImagePreviewRequest, urgent = false, peek = false, sou
     return existing;
   }
   if (!fetcher || peek) return null;
-  store(key, { phase: "loading", retries: 0 });
-  enqueueFetch(key, request, source ? fetcherFor(source, fetcher) : fetcher, 0, urgent);
-  runQueued();
+  const loading: PreviewEntry = { phase: "loading", retries: 0 };
+  store(key, loading);
+  const fetch = source ? fetcherFor(source, fetcher) : fetcher;
+  const disk = diskTier();
+  if (!disk) {
+    enqueueFetch(key, request, fetch, 0, urgent);
+    runQueued();
+  } else {
+    void fromDisk(disk, key, localKey).then(found => {
+      // Dropped or replaced meanwhile (a reset, a reconnect's retry): not this read's to settle.
+      if (previews.get(key) !== loading) return;
+      if (!found) {
+        enqueueFetch(key, request, fetch, 0, urgent);
+        runQueued();
+        return;
+      }
+      if (found.key === key) store(key, { phase: "ready", preview: found.preview });
+      else {
+        // A sent PNG's own bytes: kept under their key, where kittyPreview looks first.
+        previews.delete(key);
+        store(found.key, { phase: "ready", preview: found.preview });
+      }
+      previewSettled(request);
+    });
+  }
   return previews.get(key) ?? null;
+}
+
+/** The preview under `key` on disk, else (a PNG Kitty may draw as is) the image's own bytes kept under `localKey`. */
+async function fromDisk(disk: ImagePreviewTier, key: string, localKey?: string): Promise<{ key: string; preview: ImagePreviewResponse } | null> {
+  const preview = await disk.get(key).catch(() => null);
+  if (preview) return { key, preview };
+  if (!localKey) return null;
+  const local = await disk.get(localKey).catch(() => null);
+  return local && local.format === "png" && local.base64.length <= MAX_LOCAL_KITTY_CHARS ? { key: localKey, preview: local } : null;
 }
 
 /**
@@ -424,20 +467,32 @@ export function retryFailedImagePreviews(): void {
   if (dropped) changed();
 }
 
+function localKittyKey(source: InlineImageSource): string {
+  return `${source.imageId}:local`;
+}
+
+/** Whether Kitty may draw this PNG's own bytes for about `pixels` without waste. */
+function localKittyFits(source: InlineImageSource, pixels: { width: number; height: number }): boolean {
+  return source.mediaType === "image/png"
+    && source.width <= MAX_KITTY_DIMENSION && source.height <= MAX_KITTY_DIMENSION
+    && source.width * source.height <= MAX_LOCAL_AREA_RATIO * pixels.width * pixels.height;
+}
+
 /** A pasted PNG's own bytes, ready for Kitty when the terminal can draw them at about `pixels` without waste. */
 function localKittyEntry(source: InlineImageSource, pixels: { width: number; height: number }): PreviewEntry | null {
-  const key = `${source.imageId}:local`;
+  const key = localKittyKey(source);
   const existing = previews.get(key);
   // History carries a large paste without its bytes; the ones its local echo drew from are still here.
   const base64 = source.localBase64 ?? (existing?.phase === "ready" ? existing.preview.base64 : undefined);
-  if (!base64 || source.mediaType !== "image/png" || base64.length > MAX_LOCAL_KITTY_CHARS) return null;
-  if (source.width > MAX_KITTY_DIMENSION || source.height > MAX_KITTY_DIMENSION) return null;
-  if (source.width * source.height > MAX_LOCAL_AREA_RATIO * pixels.width * pixels.height) return null;
+  if (!base64 || base64.length > MAX_LOCAL_KITTY_CHARS || !localKittyFits(source, pixels)) return null;
   if (existing) {
     touch(key, existing);
     return existing;
   }
-  store(key, { phase: "ready", preview: { format: "png", width: source.width, height: source.height, base64 } });
+  const preview: ImagePreviewResponse = { format: "png", width: source.width, height: source.height, base64 };
+  store(key, { phase: "ready", preview });
+  // On disk too: history never carries these bytes, so a restarted TUI has only that copy.
+  diskTier()?.put(key, preview);
   return previews.get(key) ?? null;
 }
 
@@ -463,7 +518,7 @@ export function kittyPreview(source: InlineImageSource, box: InlineImageBox, opt
     width,
     height,
     ...(options.purpose ? { purpose: options.purpose } : {}),
-  }, options.urgent, options.peek, source);
+  }, options.urgent, options.peek, source, localKittyFits(source, { width, height }) ? localKittyKey(source) : undefined);
   if (!entry || entry.phase === "loading") return { phase: "loading" };
   if (entry.phase === "error") return { phase: "error", error: entry.error };
   if (entry.preview.format !== "png") return { phase: "error", error: "unexpected preview format" };
@@ -888,6 +943,7 @@ export const inlineImagesInternalsForTest = {
     queued.length = 0;
     fetcher = null;
     localRenderer = null;
+    diskTier = () => null;
     onChange = () => {};
     environment.mode = "pending";
     environment.cell = { width: 8, height: 16 };

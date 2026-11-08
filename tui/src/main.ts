@@ -17,6 +17,7 @@ import { setWireTrace, DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type ModifierEvent, type MouseEvent } from "./input";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
 import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from "./terminalgraphics";
+import { imagePreviewDiskFor } from "./imagecache";
 import { configureInlineImages, inlineImageCellSize, setInlineImageCellSize, setInlineImageMode, setInlineVideoSupport } from "./inlineimages";
 import { configureVideoPlayer, handleVideoEvent, handleVideoTerminalReply, resetVideoPlayer, stopVideo } from "./videoplayer";
 import { handleVideoHistoryKey, handleVideoModalKey } from "./videoview";
@@ -2670,6 +2671,8 @@ async function main(): Promise<void> {
   configureInlineImages({
     fetch: request => daemon.getImage(request),
     renderLocal: (base64, mediaType, request) => renderLocalPreview(base64, mediaType, request),
+    // Over /ssh, previews drawn before are kept on disk: a restart draws them without the remote.
+    disk: () => daemon.remoteAlias ? imagePreviewDiskFor(daemon.remoteAlias) : null,
     onChange: () => scheduleRender(),
   });
   configureMathImages({ onChange: () => scheduleRender() });
