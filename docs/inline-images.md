@@ -99,6 +99,17 @@ smaller boxes let the terminal scale it down. It fetches only thumbnails on
 screen, then those within a screen's height above and below, nearest first;
 opening a long conversation does not download every image in it.
 
+Over `/ssh` the TUI also keeps the previews it has drawn on disk
+(`tui/src/imagecache.ts`, `config/runtime/ssh-image-cache/<alias>/`, 256 MB,
+least recently used first out), under the same keys as in memory, a sent
+PNG's own bytes included; a preview missing from memory is read from there
+before the daemon is asked, so a restarted TUI or a cached open draws images
+without fetching them again. TUIs on one machine share the directory: files
+are written whole and renamed into place, and each read is checked against its
+key, size and SHA-256, so a damaged or foreign file is dropped and fetched as
+usual. Over the limit a write looks at the whole directory (also at least
+every 10 s), so other TUIs' files count.
+
 Pasted images are also copied into the store when `send_message`,
 `queue_message`, or `update_queued_message` arrives, because a turn stores its
 user message only after loading the conversation and a client asks for its own
