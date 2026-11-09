@@ -1,7 +1,7 @@
 import type { MessageBound, RenderLineAnchor } from "../conversation";
 import { getScrollOffsetForViewStart } from "../chatscroll";
 import type { RenderState } from "../state";
-import { scrollOffsetForPercentage } from "./position";
+import { scrollOffsetForPercentage, viewStartForScrollAnchor } from "./position";
 import { updateStreamingResponseAutoscroll } from "./response";
 
 export interface RenderedTextRows {
@@ -131,6 +131,11 @@ function applyPendingOpenRestore(
     } else {
       state.scrollOffset = 0;
     }
+  } else if (pending.mode === "anchor" && pending.anchor) {
+    // A prompt no longer loaded: older than the window shows its top, else the bottom.
+    const viewStart = viewStartForScrollAnchor(state, lineAnchors, pending.anchor)
+      ?? (pending.anchor.userIndex < state.historyStartUserIndex ? 0 : totalLines);
+    state.scrollOffset = getScrollOffsetForViewStart(totalLines, viewportHeight, viewStart);
   } else {
     state.scrollOffset = scrollOffsetForPercentage(
       totalLines,
