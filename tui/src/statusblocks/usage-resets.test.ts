@@ -95,3 +95,21 @@ describe("usage reset status block", () => {
     }
   });
 });
+
+describe("Claude's reset grants", () => {
+  test("show in the same block when the usage report carries them, and not otherwise", () => {
+    Date.now = () => 1_700_000_000_000;
+    const state = createInitialState();
+    state.provider = "anthropic";
+    state.authByProvider.anthropic = true;
+    state.usageByProvider.anthropic = { fiveHour: null, sevenDay: { utilization: 50, resetsAt: 1_700_000_000_000 + 24 * 60 * 60_000 }, capacity: 200 };
+    expect(usageResetsBlock(state)).toBeNull();
+    state.usageByProvider.anthropic.resetCredits = { availableCount: 2, nextExpiresAt: 1_700_000_000_000 + 4 * 24 * 60 * 60_000 + 3 * 60 * 60_000 };
+    const block = usageResetsBlock(state)!;
+    expect(block.rows.map(row => stripAnsi(row).trim())).toEqual(["Usage Resets: 2", "Next Expiry: 4d:3h:00m"]);
+    // Another provider's resets are not this one's.
+    state.provider = "openai";
+    state.authByProvider.openai = true;
+    expect(usageResetsBlock(state)).toBeNull();
+  });
+});

@@ -50,7 +50,11 @@ function formatAccount(report: ClaudeAccountReport, now: number): string[] {
       report.conversations > 0 ? `${report.conversations} conversation${report.conversations === 1 ? "" : "s"} with a warm cache` : null,
     ].filter(Boolean).join(", ");
     const fiveHour = report.usage?.noFiveHourLimit ? "5-hour n/a" : formatWindow("5-hour", report.usage?.fiveHour, now);
-    lines.push(`      ${fiveHour} · ${formatWindow("weekly", report.usage?.sevenDay, now)}${activity ? ` · ${activity}` : ""}`);
+    // The Fable allowance, where the account reports one; a refused Fable request says so, since the bar may not.
+    const fable = report.usage?.fable;
+    const held = fable?.limitedUntil != null && fable.limitedUntil > now ? `, Fable refused for ${formatDuration(fable.limitedUntil - now)}` : "";
+    const fablePart = fable ? ` · ${formatWindow("Fable", fable, now)}${held}` : "";
+    lines.push(`      ${fiveHour} · ${formatWindow("weekly", report.usage?.sevenDay, now)}${fablePart}${activity ? ` · ${activity}` : ""}`);
   } else if (!report.block && (!status || !status.loggedIn || !isSubscriptionAuth(status))) {
     lines.push(`      sign in from a terminal: ${claudeLoginCommand(account)}`);
   }
@@ -61,7 +65,8 @@ function formatCombined(usage: UsageData | null): string | null {
   if (!usage?.capacity) return null;
   const part = (label: string, window: UsageWindow | null, capacity: number) =>
     capacity > 0 ? `${label} ${window ? Math.round(window.utilization) : "?"}/${capacity}%` : `${label} n/a`;
-  return `Combined (the usage bars): ${part("5-hour", usage.fiveHour, usage.fiveHourCapacity ?? usage.capacity)} · ${part("weekly", usage.sevenDay, usage.capacity)}`;
+  const fable = usage.fable ? ` · ${part("Fable", usage.fable, usage.capacity)}` : "";
+  return `Combined (the usage bars): ${part("5-hour", usage.fiveHour, usage.fiveHourCapacity ?? usage.capacity)} · ${part("weekly", usage.sevenDay, usage.capacity)}${fable}`;
 }
 
 export function formatClaudeAccountReports(reports: ClaudeAccountReport[], combined: UsageData | null, now = Date.now()): string {

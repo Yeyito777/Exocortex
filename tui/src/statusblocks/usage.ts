@@ -6,6 +6,11 @@
  * reset times. Accounts with no 5-hour limit cross out their share of the
  * 5-hour bar; the rest of the bar is scaled to the accounts that have it.
  *
+ * Claude's Fable allowance (a share of the weekly limit that Fable models
+ * draw on) is a bar like the others. With no 5-hour limit on any account it
+ * takes that row's place, under Weekly; otherwise it sits beside the bars as
+ * two short rows.
+ *
  * While the provider goes through /proxy, the bars are the remote's; a link
  * that is down or connecting, or a remote that is not logged in, shows beside
  * them so it never fails silently.
@@ -92,7 +97,7 @@ function pad2(n: number): string {
 
 function windowLineWidth(label: string, pctStr: string, resetStr: string): number {
   // "  label: [bar] pct resets in reset"
-  return 2 + label.length + 2 + 1 + BAR_WIDTH + 1 + 1 + pctStr.length + " resets in ".length + resetStr.length;
+  return labelCell(label).length + 1 + BAR_WIDTH + 1 + 1 + pctStr.length + " resets in ".length + resetStr.length;
 }
 
 function unavailableWindowLineWidth(label: string): number {
@@ -106,7 +111,8 @@ function renderWindowLine(label: string, window: UsageWindow | null, now: number
   const pctStr = capacity !== 100 || crossed > 0 ? `${shown}/${capacity}%` : `${shown}%`;
   const resetStr = formatResetLabel(window, now, crossed > 0);
   const bar = renderBar(pct, capacity, crossed);
-  const line = `${theme.muted}  ${label}: ${theme.text}[${bar}${theme.text}] ${theme.accent}${pctStr}${theme.muted} resets in ${theme.accent}${resetStr}${theme.reset}`;
+  // A shorter label ("Fable") is padded, so the bars line up.
+  const line = `${theme.muted}${labelCell(label)}${theme.text}[${bar}${theme.text}] ${theme.accent}${pctStr}${theme.muted} resets in ${theme.accent}${resetStr}${theme.reset}`;
   const width = windowLineWidth(label, pctStr, resetStr);
   return { line, width };
 }
@@ -128,6 +134,34 @@ function fiveHourShare(usage: UsageData, capacity: number): { capacity: number; 
   const limited = usage.fiveHourCapacity;
   if (limited === undefined || limited <= 0 || limited >= capacity) return null;
   return { capacity: limited, crossed: Math.round(BAR_WIDTH * (1 - limited / capacity)) };
+}
+
+/** The Fable allowance to show: a reading, on an account (or accounts) that has one. */
+function fableWindow(usage: UsageData): UsageWindow | null {
+  return usage.fable ?? null;
+}
+
+/** Whether the 5-Hour row has anything to say: some account has the limit, or it is not known that none has. */
+function fiveHourApplies(usage: UsageData, capacity: number): boolean {
+  if (usage.fiveHour || fiveHourShare(usage, capacity)) return true;
+  return !(usage.noFiveHourLimit || usage.fiveHourCapacity === 0);
+}
+
+/** "Fable 14/200%" over "resets in 4d7h · 4d12h": the allowance beside the bars, while the 5-Hour row is in use. */
+function fableSideRows(fable: UsageWindow, now: number, capacity: number): { rows: string[]; width: number } {
+  const pct = Math.round(fable.utilization);
+  const figure = capacity !== 100 ? `${pct}/${capacity}%` : `${pct}%`;
+  const reset = formatResetLabel(fable, now, true);
+  const head = `Fable ${figure}`;
+  const second = `resets in ${reset}`;
+  const width = Math.max(head.length, second.length);
+  return {
+    width,
+    rows: [
+      `${theme.muted}Fable ${theme.accent}${figure}${theme.reset}${" ".repeat(width - head.length)}`,
+      `${theme.muted}resets in ${theme.accent}${reset}${theme.reset}${" ".repeat(width - second.length)}`,
+    ],
+  };
 }
 
 /** The /tokens form of the 5-Hour row. */
@@ -452,7 +486,9 @@ export function usageSummary(state: RenderState, now = Date.now()): string | nul
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
   const credits = usage.apiCredits?.active ? ` · ${apiCreditSummary(usage.apiCredits, now)}` : "";
-  return `${summarizeFiveHour(usage, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}${credits}`;
+  const fable = fableWindow(usage);
+  const fableSummary = fable ? ` · ${summarizeWindow("Fable", fable, now, capacity)}` : "";
+  return `${summarizeFiveHour(usage, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}${fableSummary}${credits}`;
 }
 
 /** While Claude turns run on API credits: the key new ones take and why ("max2 (its credit expires soonest: …)"); null otherwise or from an older daemon. */
@@ -562,20 +598,24 @@ function usageBars(state: RenderState): StatusBlock | null {
 
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
   const share = fiveHourShare(usage, capacity);
-  const fiveHour = share ? renderWindowLine("5-Hour", usage.fiveHour, now, share.capacity, share.crossed)
-    : usage.fiveHour ? renderWindowLine("5-Hour", usage.fiveHour, now, capacity)
-    : renderUnavailableWindowLine("5-Hour");
   const weekly = renderWindowLine("Weekly", usage?.sevenDay ?? null, now, capacity);
-  const blockWidth = Math.max(fiveHour.width, weekly.width);
-
-  return {
+  const fable = fableWindow(usage);
+  // No 5-hour limit to show: the Fable allowance takes the row, under the weekly limit it is a share of.
+  const lines = fable && !fiveHourApplies(usage, capacity)
+    ? [weekly, renderWindowLine("Fable", fable, now, capacity)]
+    : [
+        share ? renderWindowLine("5-Hour", usage.fiveHour, now, share.capacity, share.crossed)
+          : usage.fiveHour ? renderWindowLine("5-Hour", usage.fiveHour, now, capacity)
+          : renderUnavailableWindowLine("5-Hour"),
+        weekly,
+      ];
+  const blockWidth = Math.max(...lines.map(line => line.width));
+  const bars: StatusBlock = {
     id: "usage",
     priority: 3,
     width: blockWidth,
     height: 2,
-    rows: [
-      fiveHour.line + " ".repeat(Math.max(0, blockWidth - fiveHour.width)),
-      weekly.line + " ".repeat(Math.max(0, blockWidth - weekly.width)),
-    ],
+    rows: lines.map(({ line, width }) => line + " ".repeat(Math.max(0, blockWidth - width))),
   };
+  return fable && fiveHourApplies(usage, capacity) ? withSide(bars, fableSideRows(fable, now, capacity)) : bars;
 }

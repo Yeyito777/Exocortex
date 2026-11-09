@@ -1,5 +1,7 @@
 /**
- * Earned usage-reset status block — available count and nearest expiry.
+ * Earned usage-reset status block — available count and nearest expiry, for
+ * the current provider: OpenAI's reset credits, and Claude's reset grants
+ * when its usage report carries them.
  */
 
 import type { RenderState } from "../state";
@@ -23,8 +25,8 @@ function formatTimeUntil(expiresAt: number | null, now: number): string {
 }
 
 export function usageResetsBlock(state: RenderState): StatusBlock | null {
-  if (state.provider !== "openai" || !state.authByProvider.openai) return null;
-  const resetCredits = state.usageByProvider.openai?.resetCredits;
+  if (!state.authByProvider[state.provider]) return null;
+  const resetCredits = state.usageByProvider[state.provider]?.resetCredits;
   if (!resetCredits || resetCredits.availableCount <= 0) return null;
 
   const countLabel = "  Usage Resets: ";

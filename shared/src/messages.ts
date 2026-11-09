@@ -946,13 +946,11 @@ export interface UsageWindow {
 
 /**
  * Claude: an account's Fable allowance, the share of its weekly limit that
- * Fable models may use (a `weekly_scoped` row of Claude Code's usage report).
+ * Fable models may use (a `weekly_scoped` row of Claude Code's usage report):
+ * the percent of the allowance used and when it resets. Combined over several
+ * accounts it is a plain window on the `capacity` scale, like `sevenDay`.
  */
-export interface FableUsage {
-  /** Percent of the allowance used, 0–100. */
-  utilization: number;
-  /** Unix timestamp (ms) when the allowance resets. Null if unknown. */
-  resetsAt: number | null;
+export interface FableUsage extends UsageWindow {
   /** The allowance as a percent of the weekly limit (50), when the report says. */
   allowanceOfWeekly?: number;
   /**
@@ -988,7 +986,12 @@ export interface UsageData {
    * limit does not apply to it. A null `fiveHour` without this is only unknown.
    */
   noFiveHourLimit?: boolean;
-  /** OpenAI reset-credit metadata. Omitted for older caches and unsupported providers. */
+  /**
+   * Earned limit resets still available: OpenAI's reset credits, and Claude's
+   * reset grants when Claude Code's usage report carries them (`cedar_ember`;
+   * combined over accounts: every account's together, the nearest expiry).
+   * Omitted for older caches and unsupported providers.
+   */
   resetCredits?: UsageResetCredits | null;
   /**
    * OpenAI logged in with an API key: no plan windows (both null), but what
@@ -997,7 +1000,7 @@ export interface UsageData {
   apiKey?: ApiKeyUsage | null;
   /** Claude: the API-credit fallback (providers.anthropic.apiCreditFallback), when it is configured. */
   apiCredits?: ApiCreditsUsage | null;
-  /** One Claude account: its Fable allowance. Null: the account has none; omitted: not reported. */
+  /** Claude: the Fable allowance, one account's or combined. Null: the account has none; omitted: not reported. */
   fable?: FableUsage | null;
 }
 

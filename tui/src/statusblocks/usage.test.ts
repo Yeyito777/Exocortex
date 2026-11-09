@@ -243,6 +243,63 @@ describe("Claude accounts without the 5-hour limit", () => {
   });
 });
 
+describe("Claude's Fable allowance", () => {
+  const NOW = 1_700_000_000_000;
+  const M = 60_000;
+  const H = 60 * M;
+  const D = 24 * H;
+  const resets = [NOW + 4 * D + 7 * H, NOW + 4 * D + 12 * H];
+  const weekly = { utilization: 77, resetsAt: resets[0], resets };
+  const fable = { utilization: 14, resetsAt: resets[0], resets };
+
+  function block(usage: UsageData) {
+    Date.now = () => NOW;
+    const state = createInitialState();
+    state.provider = "anthropic";
+    state.authByProvider.anthropic = true;
+    state.usageByProvider.anthropic = usage;
+    const shown = usageBlock(state)!;
+    expect(shown.rows.every(row => stripAnsi(row).length === shown.width)).toBe(true);
+    return { state, rows: shown.rows.map(row => stripAnsi(row).trimEnd()), block: shown };
+  }
+
+  test("with no 5-hour limit on any account it takes that row, under Weekly, bars lined up", () => {
+    const { rows, state } = block({ capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly, fable });
+    expect(rows).toEqual([
+      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`,
+      `  Fable:  [${"\u2588".repeat(1)}${"\u2591".repeat(19)}] 14/200% resets in 4d7h · 4d12h`,
+    ]);
+    expect(usageSummary(state, NOW)).toBe("5-hour n/a · weekly 77/200% (resets in 4d7h · 4d12h) · Fable 14/200% (resets in 4d7h · 4d12h)");
+  });
+
+  test("one account without the 5-hour limit: the same two rows on the plain scale", () => {
+    const { rows } = block({ fiveHour: null, sevenDay: { utilization: 43, resetsAt: resets[0] }, noFiveHourLimit: true, fable: { utilization: 11, resetsAt: resets[0], allowanceOfWeekly: 50 } });
+    expect(rows).toEqual([
+      `  Weekly: [${"\u2588".repeat(9)}${"\u2591".repeat(11)}] 43% resets in 4d:7h:00m`,
+      `  Fable:  [${"\u2588".repeat(2)}${"\u2591".repeat(18)}] 11% resets in 4d:7h:00m`,
+    ]);
+  });
+
+  test("while the 5-Hour row is in use it sits beside the bars as two short rows", () => {
+    const { rows } = block({ capacity: 200, fiveHour: { utilization: 30, resetsAt: NOW + 2 * H, resets: [NOW + 2 * H, NOW + 3 * H] }, sevenDay: weekly, fable });
+    expect(rows).toEqual([
+      `  5-Hour: [${"\u2588".repeat(3)}${"\u2591".repeat(17)}] 30/200% resets in 2h00m · 3h00m  Fable 14/200%`,
+      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h   resets in 4d7h · 4d12h`,
+    ]);
+    // Not known yet whether the 5-hour limit applies: the rows stay as they were, the allowance beside them.
+    const unknown = block({ fiveHour: null, sevenDay: { utilization: 43, resetsAt: resets[0] }, fable: { utilization: 11, resetsAt: resets[0] } }).rows;
+    expect(unknown[0]).toStartWith("  5-Hour: [");
+    expect(unknown[0]).toEndWith("Fable 11%");
+    expect(unknown[1]).toEndWith("  resets in 4d:7h:00m");
+  });
+
+  test("no Fable allowance reported, or an account that has none: nothing changes", () => {
+    const plain = [`  5-Hour: [${"X".repeat(20)}] not applicable`, `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`];
+    expect(block({ capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly }).rows).toEqual(plain);
+    expect(block({ capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly, fable: null }).rows).toEqual(plain);
+  });
+});
+
 describe("API-credit marker", () => {
   function claudeState(active: boolean) {
     const state = createInitialState();
