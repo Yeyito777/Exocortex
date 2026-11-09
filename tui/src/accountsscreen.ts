@@ -310,9 +310,10 @@ function usageCell(window: UsageWindow | null | undefined, now: number): UsageCe
 
 function usageCells(usage: UsageData | null | undefined, now: number): Array<UsageCell | null> | undefined {
   const fiveHour = usage?.noFiveHourLimit ? { pct: 0, reset: "", notApplicable: true } : usageCell(usage?.fiveHour, now);
-  const fable = usageCell(usage?.fable, now);
+  // Reported to have no Fable allowance: crossed out like a missing 5-hour limit, where the column shows at all.
+  const fable = usage?.fable === null ? { pct: 0, reset: "", notApplicable: true } : usageCell(usage?.fable, now);
   const cells = [fiveHour, usageCell(usage?.sevenDay, now), ...(fable ? [fable] : [])];
-  return cells.some(cell => cell) ? cells : undefined;
+  return cells[0] || cells[1] || (fable && !fable.notApplicable) ? cells : undefined;
 }
 
 function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: number): TableRow {
@@ -504,7 +505,8 @@ function layoutColumns(lines: ScreenLine[], maxWidth: number): Columns {
     const { row } = line;
     name = Math.max(name, termWidth(row.name[1]) + (row.tag ? 2 + termWidth(row.tag[1]) : 0));
     for (const cell of row.windows ?? []) if (cell) reset = Math.max(reset, cell.reset.length);
-    usage = Math.max(usage, Math.min(COLUMN_LABELS.length, row.windows?.length ?? 0));
+    // The Fable column shows only for an allowance some account has.
+    if (row.windows?.slice(BASE_USAGE_COLUMNS).some(cell => cell && !cell.notApplicable)) usage = COLUMN_LABELS.length;
     if (row.resets) resets = Math.max(resets, termWidth(RESETS_LABEL), resetWidth(row.resets));
     if (row.credits) credits = Math.max(credits, termWidth(CREDITS_LABEL), creditWidth(row.credits));
   }

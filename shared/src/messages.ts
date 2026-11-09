@@ -1002,6 +1002,12 @@ export interface UsageData {
   apiCredits?: ApiCreditsUsage | null;
   /** Claude: the Fable allowance, one account's or combined. Null: the account has none; omitted: not reported. */
   fable?: FableUsage | null;
+  /**
+   * Combined Claude usage with some account that has no Fable allowance: what
+   * means "full" for `fable`, 100 per account that has one (or whose report
+   * is not in yet). Omitted when no account is known to be without one.
+   */
+  fableCapacity?: number;
 }
 
 /** Claude turns running on API credits while every subscription account is at a limit. */

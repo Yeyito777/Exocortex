@@ -9,7 +9,9 @@
  * Claude's Fable allowance (a share of the weekly limit that Fable models
  * draw on) is a bar like the others. With no 5-hour limit on any account it
  * takes that row's place, under Weekly; otherwise it sits beside the bars as
- * two short rows.
+ * two short rows, the first thing to go when the terminal is too narrow.
+ * Like the 5-hour bar it counts only the accounts that have an allowance
+ * and crosses out the others' share.
  *
  * While the provider goes through /proxy, the bars are the remote's; a link
  * that is down or connecting, or a remote that is not logged in, shows beside
@@ -147,10 +149,24 @@ function fiveHourApplies(usage: UsageData, capacity: number): boolean {
   return !(usage.noFiveHourLimit || usage.fiveHourCapacity === 0);
 }
 
+/** The Fable bar when only some combined accounts have an allowance: their capacity and the others' crossed-out cells. */
+function fableShare(usage: UsageData, capacity: number): { capacity: number; crossed: number } | null {
+  const limited = usage.fableCapacity;
+  if (limited === undefined || limited <= 0 || limited >= capacity) return null;
+  return { capacity: limited, crossed: Math.round(BAR_WIDTH * (1 - limited / capacity)) };
+}
+
+/** The /tokens form of the Fable allowance: on the scale of the accounts that have one. */
+function summarizeFable(usage: UsageData, fable: UsageWindow, now: number, capacity: number): string {
+  const share = fableShare(usage, capacity);
+  if (!share) return summarizeWindow("Fable", fable, now, capacity);
+  return `Fable ${Math.round(fable.utilization)}/${share.capacity}% (resets in ${formatResetLabel(fable, now, true)})`;
+}
+
 /** "Fable 14/200%" over "resets in 4d7h · 4d12h": the allowance beside the bars, while the 5-Hour row is in use. */
-function fableSideRows(fable: UsageWindow, now: number, capacity: number): { rows: string[]; width: number } {
+function fableSideRows(fable: UsageWindow, now: number, capacity: number, shared: boolean): { rows: string[]; width: number } {
   const pct = Math.round(fable.utilization);
-  const figure = capacity !== 100 ? `${pct}/${capacity}%` : `${pct}%`;
+  const figure = capacity !== 100 || shared ? `${pct}/${capacity}%` : `${pct}%`;
   const reset = formatResetLabel(fable, now, true);
   const head = `Fable ${figure}`;
   const second = `resets in ${reset}`;
@@ -487,7 +503,7 @@ export function usageSummary(state: RenderState, now = Date.now()): string | nul
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
   const credits = usage.apiCredits?.active ? ` · ${apiCreditSummary(usage.apiCredits, now)}` : "";
   const fable = fableWindow(usage);
-  const fableSummary = fable ? ` · ${summarizeWindow("Fable", fable, now, capacity)}` : "";
+  const fableSummary = fable ? ` · ${summarizeFable(usage, fable, now, capacity)}` : "";
   return `${summarizeFiveHour(usage, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}${fableSummary}${credits}`;
 }
 
@@ -601,8 +617,9 @@ function usageBars(state: RenderState): StatusBlock | null {
   const weekly = renderWindowLine("Weekly", usage?.sevenDay ?? null, now, capacity);
   const fable = fableWindow(usage);
   // No 5-hour limit to show: the Fable allowance takes the row, under the weekly limit it is a share of.
+  const fableOf = fableShare(usage, capacity);
   const lines = fable && !fiveHourApplies(usage, capacity)
-    ? [weekly, renderWindowLine("Fable", fable, now, capacity)]
+    ? [weekly, fableOf ? renderWindowLine("Fable", fable, now, fableOf.capacity, fableOf.crossed) : renderWindowLine("Fable", fable, now, capacity)]
     : [
         share ? renderWindowLine("5-Hour", usage.fiveHour, now, share.capacity, share.crossed)
           : usage.fiveHour ? renderWindowLine("5-Hour", usage.fiveHour, now, capacity)
@@ -617,5 +634,7 @@ function usageBars(state: RenderState): StatusBlock | null {
     height: 2,
     rows: lines.map(({ line, width }) => line + " ".repeat(Math.max(0, blockWidth - width))),
   };
-  return fable && fiveHourApplies(usage, capacity) ? withSide(bars, fableSideRows(fable, now, capacity)) : bars;
+  if (!fable || !fiveHourApplies(usage, capacity)) return bars;
+  // Too narrow for both: the allowance goes, the bars stay.
+  return { ...withSide(bars, fableSideRows(fable, now, fableOf?.capacity ?? capacity, fableOf !== null)), narrower: [bars] };
 }

@@ -65,7 +65,7 @@ function formatCombined(usage: UsageData | null): string | null {
   if (!usage?.capacity) return null;
   const part = (label: string, window: UsageWindow | null, capacity: number) =>
     capacity > 0 ? `${label} ${window ? Math.round(window.utilization) : "?"}/${capacity}%` : `${label} n/a`;
-  const fable = usage.fable ? ` · ${part("Fable", usage.fable, usage.capacity)}` : "";
+  const fable = usage.fable ? ` · ${part("Fable", usage.fable, usage.fableCapacity ?? usage.capacity)}` : "";
   return `Combined (the usage bars): ${part("5-hour", usage.fiveHour, usage.fiveHourCapacity ?? usage.capacity)} · ${part("weekly", usage.sevenDay, usage.capacity)}${fable}`;
 }
 

@@ -293,10 +293,62 @@ describe("Claude's Fable allowance", () => {
     expect(unknown[1]).toEndWith("  resets in 4d:7h:00m");
   });
 
+  test("a 5-hour limit on one account only: its row stays, counting that account, with the allowance beside it", () => {
+    const { rows } = block({ capacity: 200, fiveHourCapacity: 100, fiveHour: { utilization: 30, resetsAt: NOW + 2 * H, resets: [NOW + 2 * H] }, sevenDay: weekly, fable });
+    const fiveHourRow = `  5-Hour: [${"\u2588".repeat(3)}${"\u2591".repeat(7)}${"X".repeat(10)}] 30/100% resets in 2h00m`;
+    const weeklyRow = `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`;
+    // The allowance starts in the same column on both rows, two past the longer bar row.
+    expect(rows).toEqual([`${fiveHourRow.padEnd(weeklyRow.length)}  Fable 14/200%`, `${weeklyRow}  resets in 4d7h · 4d12h`]);
+  });
+
+  test("an allowance on one account only: the bar counts that account and crosses out the other's share, like the 5-hour bar", () => {
+    const one = { utilization: 14, resetsAt: resets[0], resets: [resets[0]] };
+    const { rows, state } = block({ capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly, fable: one, fableCapacity: 100 });
+    expect(rows).toEqual([
+      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`,
+      `  Fable:  [${"\u2588".repeat(1)}${"\u2591".repeat(9)}${"X".repeat(10)}] 14/100% resets in 4d7h`,
+    ]);
+    expect(usageSummary(state, NOW)).toEndWith(" · Fable 14/100% (resets in 4d7h)");
+    // Beside a 5-Hour row the figure is on the same scale.
+    const side = block({ capacity: 200, fiveHour: { utilization: 30, resetsAt: NOW + 2 * H, resets: [NOW + 2 * H, NOW + 3 * H] }, sevenDay: weekly, fable: one, fableCapacity: 100 }).rows;
+    expect(side[0]).toEndWith("  Fable 14/100%");
+    expect(side[1]).toEndWith("  resets in 4d7h");
+    // By share: 1 of 3 without one crosses out about a third.
+    const third = block({ capacity: 300, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly, fable, fableCapacity: 200 }).rows;
+    expect(third[1]).toBe(`  Fable:  [${"\u2588".repeat(1)}${"\u2591".repeat(12)}${"X".repeat(7)}] 14/200% resets in 4d7h · 4d12h`);
+  });
+
+  test("too narrow for the bars and the allowance beside them: the allowance goes first, Weekly stays", () => {
+    const usage: UsageData = { capacity: 200, fiveHour: { utilization: 30, resetsAt: NOW + 2 * H, resets: [NOW + 2 * H, NOW + 3 * H] }, sevenDay: weekly, fable };
+    const { block: full, state } = block(usage);
+    const bars = full.narrower!;
+    expect(bars).toHaveLength(1);
+    expect(bars[0].rows.map(row => stripAnsi(row).trimEnd())).toEqual([
+      `  5-Hour: [${"\u2588".repeat(3)}${"\u2591".repeat(17)}] 30/200% resets in 2h00m · 3h00m`,
+      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`,
+    ]);
+    const shown = (cols: number) => renderStatusLine(state, cols).lines.map(row => stripAnsi(row)).join("\n");
+    expect(shown(full.width + 1)).toContain("Fable 14/200%");
+    const narrow = shown(full.width - 1);
+    expect(narrow).not.toContain("Fable");
+    expect(narrow).toContain("Weekly: [");
+    expect(narrow).toContain("5-Hour: [");
+    // With the row to itself (no 5-hour limit) the allowance is one of the two bars: nothing to drop.
+    expect(block({ capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly, fable }).block.narrower).toBeUndefined();
+  });
+
   test("no Fable allowance reported, or an account that has none: nothing changes", () => {
     const plain = [`  5-Hour: [${"X".repeat(20)}] not applicable`, `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`];
     expect(block({ capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly }).rows).toEqual(plain);
     expect(block({ capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly, fable: null }).rows).toEqual(plain);
+    // With a 5-hour limit too: the two rows and no side, no narrower form.
+    const withFiveHour = block({ capacity: 200, fiveHour: { utilization: 30, resetsAt: NOW + 2 * H, resets: [NOW + 2 * H, NOW + 3 * H] }, sevenDay: weekly });
+    expect(withFiveHour.rows).toEqual([
+      `  5-Hour: [${"\u2588".repeat(3)}${"\u2591".repeat(17)}] 30/200% resets in 2h00m · 3h00m`,
+      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`,
+    ]);
+    expect(withFiveHour.block.narrower).toBeUndefined();
+    expect(usageSummary(withFiveHour.state, NOW)).not.toContain("Fable");
   });
 });
 

@@ -702,6 +702,16 @@ test("a Fable column while some Claude account reports a Fable allowance; rows w
   expect(refusedRows.find(row => row.includes("● main"))).toMatch(/● main {2}Fable out /);
   expect(refusedRows.find(row => row.includes("● max2"))).not.toContain("Fable out");
 
+  // An account reported to have no Fable allowance: crossed out, like a missing 5-hour limit.
+  const mixed = openScreen(snapshot({}, [claude("main", { usage: usage(43, 11) }), claude("max2", { usage: { ...usage(34), fable: null } })]));
+  const mixedRows = screenText(mixed.state);
+  expect(mixedRows.find(row => row.includes("● max2"))).toMatch(/34% +4d12h +X+ +n\/a/);
+  // No account has one: no column, the table from before.
+  const none = openScreen(snapshot({}, [claude("main", { usage: { ...usage(43), fable: null } }), claude("max2", { usage: { ...usage(34), fable: null } })]));
+  const noneRows = screenText(none.state);
+  expect(noneRows.find(row => row.includes("5-Hour"))).not.toContain("Fable");
+  expect(noneRows.find(row => row.includes("● max2"))).toMatch(/34% +4d12h +│/);
+
   // No account reports one: the table is the one from before.
   const before = openScreen(snapshot({}, [claude("main", { usage: usage(43) }), claude("max2", { usage: usage(34) })]));
   expect(screenText(before.state).find(row => row.includes("5-Hour"))).not.toContain("Fable");

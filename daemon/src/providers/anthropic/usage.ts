@@ -412,8 +412,10 @@ export function aggregateUsage(usages: Array<UsageData | null>, now = Date.now()
   const fiveHour = aggregateWindow(usages.map(usage => usage?.fiveHour ?? null), now);
   const sevenDay = aggregateWindow(usages.map(usage => usage?.sevenDay ?? null), now);
   const noLimit = usages.filter(usage => usage?.noFiveHourLimit).length;
-  // The Fable allowances together, on the same scale; an account with none reported adds capacity only.
+  // The Fable allowances together. Like the 5-hour bar, it leaves out accounts reported to have
+  // none (`fableCapacity`); one whose report is not in yet still counts.
   const fable = aggregateWindow(usages.map(usage => usage?.fable ?? null), now);
+  const noFable = usages.filter(usage => usage?.fable === null).length;
   const resetCredits = aggregateResetCredits(usages, now);
   return {
     fiveHour,
@@ -421,6 +423,7 @@ export function aggregateUsage(usages: Array<UsageData | null>, now = Date.now()
     capacity: usages.length * 100,
     ...(noLimit > 0 ? { fiveHourCapacity: (usages.length - noLimit) * 100 } : {}),
     ...(fable ? { fable } : {}),
+    ...(fable && noFable > 0 ? { fableCapacity: (usages.length - noFable) * 100 } : {}),
     ...(resetCredits ? { resetCredits } : {}),
   };
 }

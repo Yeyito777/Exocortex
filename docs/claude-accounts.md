@@ -457,9 +457,13 @@ Such an account always has full 5-hour headroom in routing.
 The Fable allowance (see "The Fable allowance") is a bar of its own, combined
 like the weekly one (`18/200%`, each account's reset). With no 5-hour limit on
 any account it takes the 5-Hour row's place, under Weekly; while that row is
-in use it sits beside the bars as two short rows (`Fable 18/200%` over
-`resets in 4d6h · 4d11h`). The Accounts screen has a Fable column while some
-account reports an allowance, and tags an account `Fable out` when a Fable
+in use (some account has a 5-hour limit) it sits beside the bars as two short
+rows (`Fable 18/200%` over `resets in 4d6h · 4d11h`), which go first when the
+terminal is too narrow for both. Like the 5-hour bar it counts only the
+accounts that have an allowance (`fableCapacity`) and crosses out the others'
+share; with no allowance on any account nothing of it shows. The Accounts
+screen has a Fable column while some account reports an allowance (crossed
+out for one that has none), and tags an account `Fable out` when a Fable
 request was refused though the bar reads under 100%; `/account claude` lists
 it after the weekly window.
 
