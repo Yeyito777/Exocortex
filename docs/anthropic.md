@@ -149,7 +149,6 @@ conversations:
 | --- | --- |
 | `claude-opus-5-5` | `opus` (default) |
 | `claude-fable-5-2` | `fable` |
-| `claude-fable-5-1` | |
 | `claude-sonnet-5-5` | `sonnet` |
 | `claude-haiku-5-5` | `haiku` (titles/summaries) |
 
