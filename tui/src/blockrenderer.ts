@@ -13,8 +13,8 @@ import { markdownWordWrap } from "./markdown";
 import { theme } from "./theme";
 import { wrapAnsiLine } from "./ansiwrap";
 import { sanitizeUntrustedText, sanitizeUntrustedTextKeepingSgr } from "./terminaltext";
-import { sliceByWidthFrom, termWidth } from "./textwidth";
-import { wordWrap, type WrapImage, type WrapResult } from "./textwrap";
+import { sliceByWidthFrom, termWidth, truncateToWidth } from "./textwidth";
+import { wordWrap, type WrapCopyLine, type WrapImage, type WrapResult } from "./textwrap";
 import { createDisplayMathImageRenderer, mathImageCacheKey, mathImageGeneration, type DisplayMathImageRenderer } from "./mathimages";
 import { renderToolCallLogicalLines, type ToolCallLogicalLine } from "./toolcalllogical";
 import { resolveToolDisplay } from "./toolstyles";
@@ -44,6 +44,8 @@ interface BlockCacheEntry {
   mathKey: string;
   /** A Chrono call's progress text while it runs and whether its target shows. */
   chronoKey: string;
+  /** Whether a tool call rendered as the folded view's one row. */
+  foldedRow: boolean;
   /** Math image generation when rendered; only matters while `result.mathPending`. */
   mathGeneration: number;
   /** Cached render result. */
@@ -285,6 +287,91 @@ function renderToolCallPayload(
   if (end) push(`${theme.dim}${end.text}`, false, "");
 }
 
+/** Columns of the command a folded row keeps before it drops its size note. */
+const FOLDED_ROW_MIN_COMMAND_COLS = 12;
+
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+/** The command a shell call runs, as its input holds it. */
+function shellCommand(block: Extract<Block, { type: "tool_call" }>): string | null {
+  if (!SHELL_TOOL_NAMES.has(block.toolName)) return null;
+  const command = block.input.command ?? block.input.cmd;
+  return typeof command === "string" && command.trim() ? sanitizeUntrustedText(command) : null;
+}
+
+/**
+ * A tool call as the folded view's one row: its label and the first line of
+ * its command (or, dim, of an `exo` call's text), cut with "…" to the width,
+ * then a dim note of what the row leaves out. A shell row is the command's
+ * first source line under the label of the tool it feeds. Whole-row copies
+ * (yy, a line or message yank) give the whole call; a charwise one what shows.
+ */
+function foldedToolCallRow(
+  block: Extract<Block, { type: "tool_call" }>,
+  logical: ToolCallLogicalLine[],
+  fullRows: number,
+  contentWidth: number,
+  toolCallErrored: boolean,
+): { line: string; copy: WrapCopyLine } {
+  const commands = logical.filter(entry => !entry.payload);
+  const body = logical.filter(entry => entry.payload?.role === "body");
+  const head = commands.find(entry => entry.text.trim()) ?? commands[0] ?? logical[0]!;
+  const meta = commands.find(entry => entry.meta)?.meta ?? "";
+  const command = shellCommand(block);
+  let display = head.display;
+  let headText = head.text.split("\n")[0]!;
+  let more: boolean;
+  let note: string;
+  if (command !== null) {
+    display = logical.find(entry => entry.payload?.block.kind === "tool")?.display
+      ?? commands.find(entry => entry.hasLabel && entry.display.cmd)?.display
+      ?? head.display;
+    const lines = command.split("\n").filter(line => line.trim());
+    const first = lines[0]!.trim();
+    const cmd = display.cmd;
+    headText = cmd && (first === cmd || first.startsWith(`${cmd} `)) ? `${display.label}${first.slice(cmd.length)}` : `${display.label} ${first}`;
+    more = lines.length > 1;
+    note = body.length > 0 ? `+ ${plural(body.length, "line")} of input` : plural(fullRows, "row");
+  } else {
+    const lines = commands.reduce((count, entry) => count + entry.text.split("\n").length, 0);
+    more = lines > 1 || body.length > 0;
+    note = body.length > 0 ? plural(body.length, "line") : lines > 1 ? plural(lines, "line") : plural(fullRows, "row");
+  }
+  // A non-shell call's body (an `exo` prompt or message) is its text: its first line shows dim.
+  const aside = command === null ? body.find(entry => entry.text.trim())?.text.trim() ?? "" : "";
+  const budget = Math.max(1, contentWidth - 2 - (toolCallErrored ? 2 : 0));
+  const room = (tail: string) => tail ? budget - 2 - termWidth(tail) : budget;
+  // A dim tail goes only whole, and only while the command keeps a few columns.
+  const fits = (tail: string) => room(tail) >= Math.min(termWidth(headText), FOLDED_ROW_MIN_COMMAND_COLS);
+  const whole = !more && termWidth(headText) <= room(meta);
+  // Nothing left out (the command fits, only its parameters wrapped): no note.
+  const tail = [whole ? [meta] : [meta, note], whole ? [] : [note]]
+    .map(parts => parts.filter(Boolean).join("  "))
+    .find(candidate => !candidate || fits(candidate)) ?? "";
+  const text = truncateToWidth(headText, room(tail));
+  const asideRoom = room(tail) - termWidth(text) - 2;
+  const asideText = aside && text === headText && asideRoom >= 2 ? truncateToWidth(aside, asideRoom) : "";
+
+  // The label in bold, as far as the cut leaves it (with its "…" on a very narrow screen).
+  const label = head.hasLabel || command !== null ? text.slice(0, display.label.length) : "";
+  const strongFrom = command === null ? head.strongFrom ?? Infinity : Infinity;
+  const styled = strongFrom >= text.length ? text : `${text.slice(0, strongFrom)}${theme.bold}${text.slice(strongFrom)}${theme.boldOff}`;
+  const fg = display.fg;
+  let line = label
+    ? `  ${fg}${theme.bold}${label}${theme.reset}${fg}${styled.slice(label.length)}${theme.reset}`
+    : `  ${fg}${styled}${theme.reset}`;
+  let plain = text;
+  for (const dim of [asideText, tail]) {
+    if (!dim) continue;
+    line += `  ${theme.dim}${dim}${theme.reset}`;
+    plain += `  ${dim}`;
+  }
+  if (toolCallErrored) plain += " ✗";
+  // A shell call copies as the command it ran; another as its label, detail and text.
+  const full = command ?? logical.map(entry => entry.meta ? `${entry.text}  ${entry.meta}` : entry.text).join("\n");
+  return { line, copy: { text: plain, displayStart: 2, source: full } };
+}
+
 export function renderBlockCached(
   block: Block,
   contentWidth: number,
@@ -299,12 +386,15 @@ export function renderBlockCached(
    * name its raw target under the line (expanded views).
    */
   chrono: ChronoCallView = {},
+  /** The folded view: a tool call takes one row (foldedToolCallRow). */
+  foldedRow = false,
 ): WrapResult {
   // Hidden results render nothing; do not key a cache on a possibly huge body.
   if (block.type === "tool_result" && !showToolOutput) return HIDDEN_TOOL_RESULT;
   const mathKey = mathImages && block.type === "text" ? mathImageCacheKey() : "";
   const chronoView = isChronoCallBlock(block) ? chrono : {};
   const chronoKey = `${chronoView.progress ? formatChronoProgress(chronoView.progress) : ""}|${chronoView.showTarget ? 1 : 0}`;
+  const oneRow = foldedRow && block.type === "tool_call";
   const own = blockRenderCache.get(block);
   const reusable = (entry: BlockCacheEntry, contentKey?: string): boolean => (contentKey === undefined ? sameSourceRefs(entry.sourceRefs, block) : entry.contentKey === contentKey)
     && entry.width === contentWidth
@@ -315,6 +405,7 @@ export function renderBlockCached(
     && entry.externalToolStylesRef === externalToolStyles
     && entry.mathKey === mathKey
     && entry.chronoKey === chronoKey
+    && entry.foldedRow === oneRow
     && (!entry.result.mathPending || entry.mathGeneration === mathImageGeneration());
   // Fast path: this exact block object with unchanged field references. Every
   // history frame passes here for every loaded block, so it must not
@@ -332,7 +423,7 @@ export function renderBlockCached(
 
   const mathGeneration = mathImageGeneration();
   const math = mathKey && mathKey !== "text" ? createDisplayMathImageRenderer() : undefined;
-  const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput, toolCallErrored, math, chronoView);
+  const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput, toolCallErrored, math, chronoView, oneRow);
   const entry: BlockCacheEntry = {
     contentKey,
     sourceRefs,
@@ -344,6 +435,7 @@ export function renderBlockCached(
     externalToolStylesRef: externalToolStyles,
     mathKey,
     chronoKey,
+    foldedRow: oneRow,
     mathGeneration,
     result,
   };
@@ -367,6 +459,7 @@ function renderBlock(
   toolCallErrored: boolean,
   math?: DisplayMathImageRenderer,
   chrono: ChronoCallView = {},
+  foldedRow = false,
 ): WrapResult {
   const lines: string[] = [];
   const cont: boolean[] = [];
@@ -483,6 +576,16 @@ function renderBlock(
             copy.splice(row + 1, 0, null);
           }
         }
+      }
+      const fullRows = lines.length - firstRow;
+      if (foldedRow && fullRows > 1) {
+        const row = foldedToolCallRow(block, logical, fullRows, contentWidth, toolCallErrored);
+        for (const rows of [lines, cont, join, copy]) rows.length = firstRow;
+        lines.push(toolCallErrored ? `${row.line} ${theme.error}✗${theme.reset}` : row.line);
+        cont.push(false);
+        join.push("");
+        copy.push(row.copy);
+        break;
       }
       collapseLongToolCallDetail(block.toolName, logical.some(entry => entry.payload), showToolOutput, firstRow, lines, cont, join, copy);
       if (toolCallErrored && lines.length > 0) {

@@ -626,6 +626,8 @@ export function buildMessageLines(
       block.type === "tool_call" && erroredToolCallIds.has(block.toolCallId),
       true,
       { ...(chrono ? { progress: { ...chrono, now } } : {}), showTarget: state.showTurnWork },
+      // Folded, every call in view (a split reply's, the live turn's newest step) is one row.
+      !state.showTurnWork && !state.showToolOutput,
     );
   };
 
