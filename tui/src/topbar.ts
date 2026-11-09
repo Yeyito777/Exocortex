@@ -10,6 +10,10 @@ import { convDisplayName, formatModelDisplayName } from "./messages";
 import { termWidth, truncateToWidth } from "./textwidth";
 import { theme } from "./theme";
 import { activeProviderProxy } from "./provider-proxies";
+import { ansiColorToRgb } from "./terminalcolors";
+import { terminalColorLevel } from "./theme";
+import { renderLadderSegment, type LadderPalette, type Rgb } from "./modelladder-anim";
+import type { EffortLevel, ModelId } from "./messages";
 
 /** Max visible length for a conversation preview used as label. */
 const PREVIEW_MAX = 30;
@@ -38,7 +42,30 @@ function convLabel(state: RenderState): string {
   return truncateToWidth(convDisplayName(conv), PREVIEW_MAX);
 }
 
-export function renderTopbar(state: RenderState, width?: number): string {
+/**
+ * The model label on the right of the bar, e.g. `Anthropic/Opus-5.5 — high`.
+ * `model`/`effort` give the label the conversation would have with them.
+ */
+export function topbarModelLabel(state: RenderState, model: ModelId = state.model, effort: EffortLevel = state.effort): string {
+  if (state.sshConnecting || !(state.hasChosenProvider || state.convId)) return "";
+  const providerId = typeof state.provider === "string" && state.provider.length > 0 ? state.provider : "unknown";
+  const providerLabel = state.providerRegistry.find((provider) => provider.id === providerId)?.label
+    ?? (providerId === "openai" ? "OpenAI" : providerId.charAt(0).toUpperCase() + providerId.slice(1));
+  return `${providerLabel}/${formatModelDisplayName(model)} — ${effort}${state.fastMode === "ultrafast" ? " — ultrafast" : state.fastMode ? " — fast" : ""}${proxyLabel(state)}`;
+}
+
+const WHITE: Rgb = [255, 255, 255];
+
+/** Colours the ladder animation blends between: the bar's background and its label colour. */
+export function topbarLadderPalette(): LadderPalette {
+  return {
+    bg: ansiColorToRgb(theme.topbarBg, 48) ?? [29, 155, 240],
+    fg: WHITE,
+    level: terminalColorLevel,
+  };
+}
+
+export function renderTopbar(state: RenderState, width?: number, now = Date.now()): string {
   const w = width ?? state.cols;
 
   // The daemon cannot reach the network; turns wait for it to come back.
@@ -49,13 +76,7 @@ export function renderTopbar(state: RenderState, width?: number): string {
   // A cached copy shown until the daemon confirms or updates it (cachedopen.ts).
   const updating = label && isStaleCopyMarked(state) ? " ↻ updating" : "";
 
-  let rightLabel = "";
-  if (!state.sshConnecting && (state.hasChosenProvider || state.convId)) {
-    const providerId = typeof state.provider === "string" && state.provider.length > 0 ? state.provider : "unknown";
-    const providerLabel = state.providerRegistry.find((provider) => provider.id === providerId)?.label
-      ?? (providerId === "openai" ? "OpenAI" : providerId.charAt(0).toUpperCase() + providerId.slice(1));
-    rightLabel = `${providerLabel}/${formatModelDisplayName(state.model)} — ${state.effort}${state.fastMode === "ultrafast" ? " — ultrafast" : state.fastMode ? " — fast" : ""}${proxyLabel(state)}`;
-  }
+  let rightLabel = topbarModelLabel(state);
 
   const maxLeftWidth = Math.max(0, w - (rightLabel ? termWidth(rightLabel) + 1 : 0));
   const maxLabelWidth = Math.max(0, maxLeftWidth - termWidth(titlePlain) - (label ? termWidth(" — ") + termWidth(updating) : 0));
@@ -71,5 +92,15 @@ export function renderTopbar(state: RenderState, width?: number): string {
 
   // SGR 22 ends dim (and bold) without resetting the bar's background.
   const markerStyled = marker ? `${theme.dim}${marker}\x1b[22m` : "";
+  // Shift+Up/Down: the model ladder plays over the right of the bar. It only
+  // takes cells the bar leaves blank, so nothing to its left moves.
+  const ladder = state.modelLadder?.anim;
+  if (ladder && rightLabel && ladder.convId === state.convId) {
+    const available = padding + rightWidth;
+    const segment = renderLadderSegment(ladder, rightLabel, now, topbarLadderPalette(), available);
+    if (segment) {
+      return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(available - segment.width)}${segment.text}${theme.reset}`;
+    }
+  }
   return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(padding)}${rightLabel}${rightLabel ? " " : ""}${theme.reset}`;
 }

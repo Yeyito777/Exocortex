@@ -40,6 +40,7 @@ import {
 } from "./instructions/controller";
 import { handleFocusedKey, toggleSidebar, type KeyResult } from "./focus";
 import { resolveAction } from "./keybinds";
+import { modelLadderFrameDelay, pressModelLadder } from "./modelladder";
 import { handleModifierEvent, handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { MACRO_COMMAND, MACRO_ERROR_DELAY_MS, tryCommand } from "./commands";
@@ -561,14 +562,19 @@ function renderDelayForEvent(event: Event): number {
 /** Re-render active stream/task durations on the next exact second boundary. */
 function resetStreamTick(): void {
   clearStreamTick();
+  // The model ladder's top-bar animation (Shift+Up/Down) rides this tick too.
+  const ladderDelay = modelLadderFrameDelay(state);
   if (state.sshConnecting || state.contextCompactionStartedAt != null || state.connectionWaitStartedAt != null
       || state.historyLoadingOlder
       || isActiveConversationLoading(state)
       || workingRowVisible(state)) {
-    streamTickTimer = setTimeout(scheduleRender, 80);
+    streamTickTimer = ladderDelay === null
+      ? setTimeout(scheduleRender, 80)
+      : setTimeout(() => scheduleRender(0), Math.min(80, ladderDelay));
     return;
   }
   const tickDelays: number[] = [];
+  if (ladderDelay !== null) tickDelays.push(ladderDelay);
   const startedAt = state.pendingAI?.metadata?.workTimerStartedAt ?? state.pendingAI?.metadata?.startedAt;
   if (isStreaming(state) && typeof startedAt === "number" && inlineSleepMetadataEndedAt(state) === null) {
     tickDelays.push(msUntilNextElapsedSecond(startedAt));
@@ -584,7 +590,9 @@ function resetStreamTick(): void {
   const chronoDelay = msUntilLiveChronoChange(state);
   if (chronoDelay !== null) tickDelays.push(chronoDelay);
   if (tickDelays.length > 0) {
-    streamTickTimer = setTimeout(scheduleRender, Math.min(...tickDelays));
+    const delay = Math.min(...tickDelays);
+    // A ladder frame is due at its time, not a frame later.
+    streamTickTimer = ladderDelay === delay ? setTimeout(() => scheduleRender(0), delay) : setTimeout(scheduleRender, delay);
   }
 }
 
@@ -2138,6 +2146,9 @@ function handleKey(key: KeyEvent): void {
       break;
     case "new_conversation":
       startNewConversation();
+      break;
+    case "model_ladder":
+      pressModelLadder(state, result.direction, daemon);
       break;
     case "delete_conversation":
       deleteConversationFromUi(result.convId);

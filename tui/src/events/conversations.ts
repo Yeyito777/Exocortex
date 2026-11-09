@@ -2,6 +2,7 @@ import { log } from "../log";
 import type { ConversationSummary } from "../messages";
 import type { Event } from "../protocol";
 import { syncChosenProvider } from "../providerselection";
+import { ladderHoldsSummary } from "../modelladder";
 import { clearAllQueuedMessagesForConversation } from "../queue";
 import {
   acknowledgeOptimisticConversation,
@@ -197,6 +198,11 @@ export function handleConversationUpdated(event: Extract<Event, { type: "convers
 }
 
 function syncActiveConversationSummary(state: RenderState, summary: ConversationSummary): void {
+  // A summary that predates a Shift+Up/Down step still on its way keeps the step on screen.
+  if (ladderHoldsSummary(state, summary)) {
+    state.goal = summary.goal ?? null;
+    return;
+  }
   const nextProvider = summary.provider ?? fallbackProvider(state);
   const nextModel = summary.model ?? state.model;
   const providerOrModelChanged = nextProvider !== state.provider || nextModel !== state.model;

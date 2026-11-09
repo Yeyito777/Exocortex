@@ -12,6 +12,7 @@ export interface KeyEvent {
   type: "char" | "enter" | "tab" | "backtab" | "backspace" | "delete"
       | "left" | "right" | "home" | "end"
       | "up" | "down"
+      | "shift-up" | "shift-down"
       | "ctrl-a" | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
       | "ctrl-i" | "ctrl-j" | "ctrl-k" | "ctrl-l" | "ctrl-m" | "ctrl-n"
       | "ctrl-o" | "ctrl-p" | "ctrl-q" | "ctrl-r" | "ctrl-s" | "ctrl-u" | "ctrl-v" | "ctrl-w" | "ctrl-y"
@@ -268,9 +269,12 @@ function csiKeyType(number: number, modifiers: number, final: string): KeyEvent[
       case "Z": return "backtab";
     }
   }
-  // Function keys F14-F16: CSI 1;2Q/R/S (Shift+F1/F2/F3 — st maps Ctrl+1/2/3)
+  // Function keys F14-F16: CSI 1;2Q/R/S (Shift+F1/F2/F3 — st maps Ctrl+1/2/3).
+  // Shift+Up/Down: CSI 1;2A/B.
   if (modifiers === 2) {
     switch (final) {
+      case "A": return "shift-up";
+      case "B": return "shift-down";
       case "Q": return "f14";
       case "R": return "f15";
       case "S": return "f16";

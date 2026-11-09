@@ -75,6 +75,7 @@ import { formatChronoResult } from "./chronoschedule";
 import { turnRequestStartedAt } from "./request-ids";
 import { applyMachineResources, machineResourcesBootstrapped } from "./machine-resources";
 import { scratchpadHash } from "@exocortex/shared/scratchpad";
+import { releaseLadderOnError } from "./modelladder";
 
 export type { DaemonActions } from "./events/types";
 
@@ -172,6 +173,8 @@ export function handleEvent(
 
     case "error": {
       if (handleUserMacroError(state, event)) break;
+      // A Shift+Up/Down step the daemon refused: the top bar shows what it has.
+      releaseLadderOnError(state, event.convId);
       if (isAccountsPrefetchError(state, event)) break;
       if (event.reqId && state.pendingTokenStatsView?.reqId === event.reqId) {
         // Daemons predating get_token_stats still push snapshots unprompted.
