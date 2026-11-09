@@ -40,9 +40,11 @@ describe("conversation action menu", () => {
     handleSidebarActionMenuKey(menu, { type: "down" });
     expect(menu.selection).toBe("toggle_pin");
     handleSidebarActionMenuKey(menu, { type: "char", char: "j" });
+    expect(menu.selection).toBe("toggle_mute");
+    handleSidebarActionMenuKey(menu, { type: "char", char: "j" });
     expect(menu.selection).toBe("delete");
     handleSidebarActionMenuKey(menu, { type: "up" });
-    expect(menu.selection).toBe("toggle_pin");
+    expect(menu.selection).toBe("toggle_mute");
     expect(handleSidebarActionMenuKey(menu, { type: "escape" })).toEqual({ type: "close" });
   });
 
@@ -94,7 +96,7 @@ describe("conversation action menu", () => {
 
     expect(handleSidebarActionMenuMouse(
       menu,
-      mouseEvent(31, 7, 0, "press"),
+      mouseEvent(31, 8, 0, "press"),
       3,
       29,
       20,
@@ -104,7 +106,7 @@ describe("conversation action menu", () => {
     expect(menu.deleteConfirmation).toBe(true);
     expect(handleSidebarActionMenuMouse(
       menu,
-      mouseEvent(31, 7, 0, "press"),
+      mouseEvent(31, 8, 0, "press"),
       3,
       29,
       20,
@@ -129,18 +131,20 @@ describe("conversation action menu", () => {
     expect(plain).toContain("Copy id");
     expect(plain).toContain("Star");
     expect(plain).toContain("Pin");
+    expect(plain).toContain("Mute");
     expect(plain).toContain("Delete");
     expect(rendered).toContain(theme.error);
     expect(rendered).toContain("\x1b[3;29H");
-    expect(rect).toEqual({ top: 3, bottom: 8, left: 29, right: 40 });
+    expect(rect).toEqual({ top: 3, bottom: 9, left: 29, right: 40 });
   });
 
-  test("shows inverse labels for an already starred and pinned conversation", () => {
-    const menu = createConversationActionMenu("conv-1", true, true);
+  test("shows inverse labels for an already starred, pinned and muted conversation", () => {
+    const menu = createConversationActionMenu("conv-1", true, true, true);
     const rendered = stripAnsi(renderSidebarActionMenu(menu, 3, 29, 20, 80).payload);
 
     expect(rendered).toContain("Unstar");
     expect(rendered).toContain("Unpin");
+    expect(rendered).toContain("Unmute");
   });
 });
 

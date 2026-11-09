@@ -20,7 +20,7 @@ import { rejectPendingSidebarMove } from "../sidebar/pendingmoves";
 import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
 import { removeConversationAt } from "../sidebar/state";
-import { clearUnreadLocally, isOpenRequested, pushSystemMessage, reapplyLocalStops, withLocalStop, type RenderState } from "../state";
+import { clearUnreadLocally, hidesUnread, pushSystemMessage, reapplyLocalStops, withLocalStop, type RenderState } from "../state";
 import { theme } from "../theme";
 import { preserveViewportAcrossHistoryPrepend } from "../chatscroll";
 import { markRelayout } from "../smoothscroll";
@@ -141,7 +141,7 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
   const rejectedMove = rejectPendingSidebarMove(state.sidebar, event.reqId);
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
   const openConvId = state.conversationOpenRequest?.convId;
-  if (openConvId) clearUnreadLocally(state, openConvId);
+  if (openConvId && hidesUnread(state, openConvId)) clearUnreadLocally(state, openConvId);
   reapplyLocalStops(state);
   // A first page carries every folder but not every conversation: what it
   // leaves out isn't gone, and arrives with the rest of the same bootstrap.
@@ -191,7 +191,7 @@ export function handleConversationUpdated(event: Extract<Event, { type: "convers
 
   // The open conversation's unread clears when our open lands, so a summary
   // sent before that must not bring the mark back.
-  updateConversation(state.sidebar, summary.unread && isOpenRequested(state, summary.id) ? { ...summary, unread: false } : summary);
+  updateConversation(state.sidebar, summary.unread && hidesUnread(state, summary.id) ? { ...summary, unread: false } : summary);
   // Sync provider/model/effort if this is the active conversation.
   if (summary.id === state.convId) syncActiveConversationSummary(state, summary);
 }

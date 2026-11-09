@@ -13,7 +13,7 @@
 
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
-import { focusHistory, focusPrompt } from "./state";
+import { focusHistory, focusPrompt, noteUnreadMarked } from "./state";
 import type { Action } from "./keybinds";
 import type { KeyResult } from "./focus";
 import {
@@ -262,6 +262,7 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
     case "undo_delete":
     case "redo_delete":
     case "mark":
+    case "toggle_unread":
     case "pin":
     case "move_up":
     case "move_down":
@@ -288,7 +289,9 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
  */
 function trySidebarAction(action: string, state: RenderState): KeyResult {
   if (state.panelFocus !== "sidebar") return { type: "handled" };
-  return mapSidebarResult(handleSidebarAction(action, state.sidebar));
+  const result = handleSidebarAction(action, state.sidebar);
+  if (result.type === "set_conversation_unread") noteUnreadMarked(state, result.convId, result.unread);
+  return mapSidebarResult(result);
 }
 
 /** Map a SidebarKeyResult to a KeyResult. */
@@ -301,7 +304,7 @@ export function mapSidebarResult(result: SidebarKeyResult): KeyResult {
       return { type: "handled" };
     default:
       // Remaining variants (delete_conversation, undo_delete, mark_conversation,
-      // mute_conversation, rename_conversation, pin_conversation, mute_folder, pin_sidebar_items, move_conversation,
+      // mute_conversation, set_conversation_unread, rename_conversation, pin_conversation, mute_folder, pin_sidebar_items, move_conversation,
       // clone_conversation) are directly valid KeyResult types — forward as-is.
       return result;
   }

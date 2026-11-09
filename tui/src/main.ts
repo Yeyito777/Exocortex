@@ -38,7 +38,7 @@ import {
   openToolInstructions,
   prefetchCurrentInstructions,
 } from "./instructions/controller";
-import { handleFocusedKey, toggleSidebar } from "./focus";
+import { handleFocusedKey, toggleSidebar, type KeyResult } from "./focus";
 import { resolveAction } from "./keybinds";
 import { handleModifierEvent, handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
@@ -2141,6 +2141,20 @@ function handleKey(key: KeyEvent): void {
       }
       break;
     }
+    case "handled":
+      break;
+    default:
+      sendSidebarMutation(result);
+      break;
+  }
+
+  maybeRequestOlderHistory();
+  renderAfterLocalUiMutation();
+}
+
+/** Send the daemon a sidebar change the key or mouse handler already showed locally. */
+function sendSidebarMutation(result: KeyResult): void {
+  switch (result.type) {
     case "delete_folder":
       daemon.deleteFolder(result.folderId, result.mode);
       break;
@@ -2155,6 +2169,9 @@ function handleKey(key: KeyEvent): void {
       break;
     case "mute_conversation":
       daemon.muteConversation(result.convId, result.muted);
+      break;
+    case "set_conversation_unread":
+      daemon.setConversationUnread(result.convId, result.unread);
       break;
     case "rename_conversation":
       daemon.renameConversation(result.convId, result.title);
@@ -2194,12 +2211,7 @@ function handleKey(key: KeyEvent): void {
       if (result.create.length > 0) daemon.createFolder(DONE_FOLDER_NAME, null, result.create);
       if (result.notice) pushSystemMessage(state, result.notice);
       break;
-    case "handled":
-      break;
   }
-
-  maybeRequestOlderHistory();
-  renderAfterLocalUiMutation();
 }
 
 /** Shift without moving the mouse: repaint only when the task panel's highlight changes. */
@@ -2274,12 +2286,6 @@ function handleMouse(ev: MouseEvent): void {
     case "delete_conversation":
       deleteConversationFromUi(result.convId);
       break;
-    case "mark_conversation":
-      daemon.markConversation(result.convId, result.marked);
-      break;
-    case "pin_conversation":
-      daemon.pinConversation(result.convId, result.pinned);
-      break;
     case "open_target":
       remoteFileLinks?.open(result.target);
       break;
@@ -2291,8 +2297,9 @@ function handleMouse(ev: MouseEvent): void {
       break;
     case "handled":
       break;
-    // Ignore result types that are not currently emitted by mouse interactions.
+    // The actions menu's clicks change the sidebar like its keys do.
     default:
+      sendSidebarMutation(result);
       break;
   }
 

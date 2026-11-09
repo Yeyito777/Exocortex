@@ -16,7 +16,7 @@ import { getSelectedSidebarItem } from "./selection";
 import { buildDisplayRows } from "./rows";
 import type { SidebarState } from "./state";
 
-export type ConversationAction = "copy_id" | "toggle_star" | "toggle_pin" | "delete";
+export type ConversationAction = "copy_id" | "toggle_star" | "toggle_pin" | "toggle_mute" | "delete";
 export type FolderAction = "edit_instructions" | "rename" | "toggle_pin" | "toggle_mute" | "unwrap" | "delete";
 export type SidebarAction = ConversationAction | FolderAction;
 
@@ -37,7 +37,7 @@ export type SidebarActionMenuKeyResult =
   | { type: "close" }
   | { type: "action"; action: SidebarAction };
 
-const CONVERSATION_ACTIONS: readonly ConversationAction[] = ["copy_id", "toggle_star", "toggle_pin", "delete"];
+const CONVERSATION_ACTIONS: readonly ConversationAction[] = ["copy_id", "toggle_star", "toggle_pin", "toggle_mute", "delete"];
 const FOLDER_ACTIONS: readonly FolderAction[] = ["edit_instructions", "rename", "toggle_pin", "toggle_mute", "unwrap", "delete"];
 
 /** Widest instructions preview beside "Edit instructions", so the menu stays narrow. */
@@ -56,13 +56,14 @@ export function createConversationActionMenu(
   convId: string,
   marked: boolean,
   pinned: boolean,
+  muted = false,
 ): SidebarActionMenuState {
   return {
     item: { type: "conversation", id: convId },
     actions: CONVERSATION_ACTIONS,
     marked,
     pinned,
-    muted: false,
+    muted,
     instructions: null,
     selection: "copy_id",
     deleteConfirmation: false,
@@ -111,7 +112,7 @@ export function openSelectedSidebarActionMenu(sidebar: SidebarState): void {
   let menu: SidebarActionMenuState | null = null;
   if (item?.type === "conversation") {
     const conv = sidebar.conversations.find(candidate => candidate.id === item.id);
-    if (conv) menu = createConversationActionMenu(conv.id, conv.marked, conv.pinned);
+    if (conv) menu = createConversationActionMenu(conv.id, conv.marked, conv.pinned, conv.muted === true);
   } else if (item?.type === "folder") {
     const folder = sidebar.folders.find(candidate => candidate.id === item.id);
     if (folder) menu = createFolderActionMenu(folder.id, folder.pinned, folder.muted === true, folderOwnInstructions(sidebar, folder.id));

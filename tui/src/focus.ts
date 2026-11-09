@@ -86,6 +86,7 @@ export type KeyResult =
   | { type: "redo_delete" }
   | { type: "mark_conversation"; convId: string; marked: boolean }
   | { type: "mute_conversation"; convId: string; muted: boolean }
+  | { type: "set_conversation_unread"; convId: string; unread: boolean }
   | { type: "rename_conversation"; convId: string; title: string }
   | { type: "pin_conversation"; convId: string; pinned: boolean }
   | { type: "pin_folder"; folderId: string; pinned: boolean }

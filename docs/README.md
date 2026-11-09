@@ -60,6 +60,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `Ctrl+I` | Detailed view: every turn's work with full tool output. Terminals without the kitty keyboard protocol send `Tab` for it, so there `Tab` in the history does the same |
 | `Shift+H` / `M` / `L` | In sidebar, jump to top / middle / bottom visible conversation |
 | `t` / `Shift+T` | In normal mode, open the next conversation with the green finished-and-unread dot below / above the open one in the sidebar, wrapping around (rows in collapsed folders are skipped) |
+| `m` | In sidebar normal mode, mark the selected conversation unread (the green dot), or read when it already is; muted conversations stay read. Star and Mute are in its `;` menu |
 | `Escape` | Normal mode (vim) |
 | `i` / `a` | Insert mode (vim) |
 | `v` / `V` | Visual / visual-line mode |

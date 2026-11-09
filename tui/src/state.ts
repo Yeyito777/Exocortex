@@ -252,6 +252,8 @@ export interface RenderState {
    * (nothing opened through the tracked path yet; loads apply as before).
    */
   conversationOpenRequest: { reqId: string | null; convId: string | null } | null;
+  /** A conversation the user marked unread (`m`) since this TUI last opened one; open, it keeps the mark. */
+  keptUnreadConvId: string | null;
   /**
    * Conversations this TUI stopped (Ctrl+Q, or an edit that cut a running
    * turn) and shows as stopped before the daemon confirms. Summaries still
@@ -516,6 +518,7 @@ export function noConversationOpen(): { reqId: null; convId: null } {
 /** Record the load_conversation request the user currently wants applied. */
 export function noteConversationOpenRequest(state: RenderState, convId: string, reqId: string): void {
   state.conversationOpenRequest = { reqId, convId };
+  state.keptUnreadConvId = null;
   // The daemon clears unread when this open lands. Over /ssh that is a round
   // trip away: drop the sidebar's unread mark now.
   clearUnreadLocally(state, convId);
@@ -563,6 +566,17 @@ export function releaseLocalStop(state: RenderState, convId: string, startedAt?:
 /** Whether `convId` is the open this TUI last asked the daemon for, which clears its unread. */
 export function isOpenRequested(state: RenderState, convId: string): boolean {
   return state.conversationOpenRequest?.convId === convId;
+}
+
+/** Whether a summary's unread for `convId` is stale: this TUI opened it, and the user has not marked it unread since. */
+export function hidesUnread(state: RenderState, convId: string): boolean {
+  return isOpenRequested(state, convId) && state.keptUnreadConvId !== convId;
+}
+
+/** The user marked `convId` unread or read (`m`): an open conversation keeps an unread mark from then on. */
+export function noteUnreadMarked(state: RenderState, convId: string, unread: boolean): void {
+  if (unread) state.keptUnreadConvId = convId;
+  else if (state.keptUnreadConvId === convId) state.keptUnreadConvId = null;
 }
 
 /** Show `convId` as read without waiting for the daemon's summary. */
@@ -821,6 +835,7 @@ export function createInitialState(): RenderState {
     conversationLoading: null,
     provisionalOpen: null,
     conversationOpenRequest: null,
+    keptUnreadConvId: null,
     locallyStopped: new Map(),
     sshRemote: null,
     macroEnvironment: null,
