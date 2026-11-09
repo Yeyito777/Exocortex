@@ -219,14 +219,17 @@ describe("what still glides", () => {
 });
 
 describe("the bottom growing and shrinking while following it", () => {
-  /** A live turn whose latest step (under its Working row) is a tool call of `rows` wrapped rows. */
+  /**
+   * A live turn whose latest step (under its Working row) is streaming text of
+   * `rows` wrapped rows (a tool call there is always one row).
+   */
   function liveTurn(state: RenderState, rows: number, step = 0): void {
-    const command = `run-step-${step} ${"--with-a-long-argument ".repeat(Math.max(0, rows * 5 - 1))}`.trim();
+    const text = `step-${step} ${"with-a-long-argument ".repeat(Math.max(0, rows * 5 - 1))}`.trim();
     state.pendingAI = createPendingAI(1, state.model);
     state.pendingAI.blocks.push(
       { type: "tool_call", toolCallId: "p0", toolName: "bash", input: { command: "echo first" }, summary: "echo first" },
       { type: "tool_result", toolCallId: "p0", toolName: "bash", output: "first", isError: false },
-      { type: "tool_call", toolCallId: `p${step + 1}`, toolName: "bash", input: { command }, summary: command },
+      { type: "text", text },
     );
   }
   /** Eased moves' easing rows (positive: drawn lower, the content moved up). */

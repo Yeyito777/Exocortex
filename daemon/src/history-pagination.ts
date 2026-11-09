@@ -298,8 +298,12 @@ function foldedReplyRows(entry: Extract<DisplayEntry, { type: "ai" }>, cols: num
     if (block.type === "tool_call" || block.type === "tool_result") break;
     if (block.type === "text" && block.text.trim()) rows += estimateBlockRows(block, cols);
   }
-  // A reply split by its last tool calls also shows its first part and those calls.
-  for (const index of splitReplyReveal(entry.blocks)) rows += estimateBlockRows(entry.blocks[index]!, cols);
+  // A reply split by its last tool calls also shows its first part and those
+  // calls, each on one row (tui/src/blockrenderer.ts foldedToolCallRow).
+  for (const index of splitReplyReveal(entry.blocks)) {
+    const block = entry.blocks[index]!;
+    rows += block.type === "tool_call" ? 1 : estimateBlockRows(block, cols);
+  }
   return rows;
 }
 

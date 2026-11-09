@@ -9,7 +9,9 @@ import { notificationLabel, notificationPreview, ownerWords } from "./turncollap
 import { theme } from "./theme";
 import { handleFocusedKey } from "./focus";
 import { parseInput } from "./input";
-import { stripAnsi } from "./historycursor";
+import { joinLogicalLines, stripAnsi } from "./historycursor";
+import { renderBlockCached } from "./blockrenderer";
+import { termWidth } from "./textwidth";
 import { handleSearchBarKey, jumpToSearchMatch, openSearchBar } from "./search";
 import { loadTurnWorkPreference, saveTurnWorkPreference } from "./diagnostics";
 
@@ -1245,6 +1247,131 @@ describe("images the attach tool added", () => {
     send({ type: "message_complete", endedAt: 9_000, tokens: 40, blocks: [{ type: "text", text: "B is better." }] });
     send({ type: "streaming_stopped" });
     expect(layout(state)).toEqual(["user_content", "assistant_image", "user_content", "assistant_block", "assistant_metadata"]);
+    freshMatchesIncremental(state);
+  });
+});
+
+describe("a tool call in the folded view takes one row", () => {
+  const registry = [{ name: "bash", label: "Bash", color: "#e5c07b" }, { name: "exo", label: "Exocortex", color: "#1d9bf0" }];
+  const styles = [{ cmd: "discord", label: "Discord", color: "#5865f2" }];
+  const message = ["Morning. Today:", "- 11-1: CSC Prep 9 (BSTs), due Wed 9am", "- 2-4: VIC187 essay, pick a topic + sources", "- 4:30-6: MAT Tutorial Quiz 3 prep", "- 7-8:30: CSC A1 quiz review", "Tomorrow: 10:10 CSC A1 quiz, EX 320.", "", "Claude main renews today.", "a", "b", "c", "d"];
+  const piped = `cat <<'EOF' | discord -a paramount send 1031060518775038003\n${message.join("\n")}\nEOF`;
+  const long = "cd ~/Workspace/exocortex && git pull -q --ff-only && git worktree add -q ~/Workspace/exocortex-worktrees/split-reveal -b split-reveal origin/main && cd ~/Workspace/exocortex-worktrees/split-reveal && grep -rn \"splitReplyReveal\" shared tui daemon | grep -v node_modules | head -20";
+  const short = "git -C ~/Desktop/Exocortex pull --ff-only";
+  const prompt = ["You are DECISIONAUDIT, a read-only research lane for PMV5 (Polymarket liquidity-rewards bot) at /home/yeyito/Workspace/active-development/PolymarketingV5.", "", ...Array.from({ length: 41 }, (_, line) => `WHY ${line}: Nov 7-9 2026 showed that six first explanations of live results were wrong.`)];
+  const answer = "Yes, one line is worth it. These mistakes came from habits, and an instruction is the cheapest way to change a habit. ".repeat(3).trim();
+  const exoCall = (id: string, text: string): Extract<Message, { role: "assistant" }>["blocks"] => [
+    { type: "tool_call", toolCallId: id, toolName: "exo", input: { subagent: text, args: { effort: "high" } }, summary: `subagent: ${text.slice(0, 100)}` },
+    { type: "tool_result", toolCallId: id, toolName: "exo", output: "started", isError: false },
+  ];
+  /** A reply split by its last call: the answer, the call, a short line. */
+  const splitReply = (calls: Extract<Message, { role: "assistant" }>["blocks"]) => {
+    const state = createInitialState();
+    state.toolRegistry = registry;
+    state.externalToolStyles = styles;
+    state.messages.push(user("go"), assistant([{ type: "text", text: answer }, ...calls, { type: "text", text: "Started." }]));
+    return state;
+  };
+  /** Rows between the answer and the line after the calls. */
+  const callRows = (state: RenderState, width = 100) => {
+    const shown = rows(state, width);
+    return shown.slice(shown.findLastIndex(row => row.endsWith("habit.")) + 1, shown.indexOf("  Started.")).filter(Boolean);
+  };
+  const built = (state: RenderState, width = 100) => buildMessageLines(state, width);
+  /** Rows the call takes rendered in full (Ctrl+O) at a history width. */
+  const fullRows = (block: Extract<Message, { role: "assistant" }>["blocks"][number], width: number) =>
+    renderBlockCached(block, width - 4, registry, styles, false, false, true).lines.length;
+
+  test("piped input: the command line, then how many lines it feeds", () => {
+    const state = splitReply(call("c1", piped));
+    expect(callRows(state)).toEqual(["  Discord cat <<'EOF' | discord -a paramount send 1031060518775038003  + 12 lines of input"]);
+    freshMatchesIncremental(state);
+  });
+
+  test("a long command: cut to one row, then the rows it takes in full", () => {
+    const state = splitReply(call("c1", long));
+    const [row] = callRows(state);
+    expect(callRows(state)).toHaveLength(1);
+    expect(fullRows(call("c1", long)[0]!, 100)).toBe(4);
+    expect(row).toMatch(/^ {2}Bash cd ~\/Workspace\/exocortex && git pull -q --ff-only && .*…  4 rows$/);
+    expect(termWidth(row!)).toBeLessThanOrEqual(96);
+    freshMatchesIncremental(state);
+    // A narrower screen re-cuts it, and counts the rows it takes there.
+    const narrow = callRows(state, 60);
+    expect(narrow).toEqual([expect.stringMatching(new RegExp(`^ {2}Bash cd ~/Workspace/exocortex && git pul.*…  ${fullRows(call("c1", long)[0]!, 60)} rows$`))]);
+    expect(termWidth(narrow[0]!)).toBeLessThanOrEqual(56);
+    freshMatchesIncremental(state, 60);
+  });
+
+  test("a short command is unchanged", () => {
+    const state = splitReply(call("c1", short));
+    expect(callRows(state)).toEqual([`  Bash ${short}`]);
+  });
+
+  test("a subagent prompt: the header, its first line dim, then its length", () => {
+    const state = splitReply(exoCall("c1", prompt.join("\n")));
+    const [row] = callRows(state, 120);
+    expect(callRows(state, 120)).toHaveLength(1);
+    expect(row).toMatch(/^ {2}Exocortex subagent \(high\) {2}You are DECISIONAUDIT, a read-only research lane for .*… {2}43 lines$/);
+    const raw = built(state, 120).lines.find(line => stripAnsi(line) === row)!;
+    expect(raw).toContain(`${theme.dim}You are DECISIONAUDIT`);
+    expect(raw).toContain(`${theme.dim}43 lines`);
+    freshMatchesIncremental(state, 120);
+  });
+
+  test("wide characters and escape bytes in a command do not break the cut", () => {
+    const state = splitReply(call("c1", `echo "${"漢字テスト ".repeat(30)}\x1b[31mred\x1b[0m" | tee out.txt`));
+    for (const width of [100, 61, 40, 12]) {
+      const callRow = callRows(state, width);
+      expect(callRow).toHaveLength(1);
+      expect(termWidth(callRow[0]!)).toBeLessThanOrEqual(width - 4);
+      // Too narrow for the note, the command keeps the row.
+      expect(callRow[0]).toMatch(width > 12 ? /…  \d+ rows$/ : /^ {2}Bash …$/);
+      freshMatchesIncremental(state, width);
+    }
+  });
+
+  test("copying the row gives the whole command or text", () => {
+    for (const [calls, full] of [[call("c1", piped), piped], [call("c1", long), long], [exoCall("c1", prompt.join("\n")), `Exocortex subagent (high)\n${prompt.join("\n")}`]] as const) {
+      const state = splitReply(calls);
+      const result = built(state);
+      const row = result.lines.findIndex(line => /Discord cat|Bash cd|Exocortex subagent/.test(stripAnsi(line)));
+      expect(joinLogicalLines(result.lines, result.wrapContinuation, row, row, result.wrapJoiners, result.copyLines)).toBe(full);
+    }
+  });
+
+  test("Ctrl+O and Ctrl+I keep the full rendering", () => {
+    for (const calls of [call("c1", piped), call("c1", long), exoCall("c1", prompt.join("\n"))]) {
+      const block = calls[0]!;
+      for (const [turnWork, toolOutput] of [[true, false], [false, true]]) {
+        const state = splitReply(calls);
+        state.showTurnWork = turnWork;
+        state.showToolOutput = toolOutput;
+        const full = renderBlockCached(block, 96, registry, styles, toolOutput, false, true).lines.map(line => stripAnsi(line).trimEnd());
+        expect(full.length).toBeGreaterThan(1);
+        const shown = rows(state);
+        const at = shown.indexOf(full[0]!);
+        expect(shown.slice(at, at + full.length)).toEqual(full);
+      }
+    }
+  });
+
+  test("the live turn's newest step is one row, streaming and committed", () => {
+    const state = createInitialState();
+    state.toolRegistry = registry;
+    state.externalToolStyles = styles;
+    state.messages.push(user("go"));
+    state.pendingAI = createPendingAI(Date.now(), MODEL);
+    state.pendingAI.blocks.push(...call("c1", "ls"), ...call("c2", long));
+    const working = (shown: string[]) => shown.slice(shown.findIndex(row => /Working/.test(row)) + 1).filter(Boolean);
+    expect(working(rows(state))[0]).toMatch(/^ {2}Bash cd ~\/Workspace.*…  4 rows$/);
+    expect(working(rows(state))[1]).toContain("GPT-6-Astra");
+    freshMatchesIncremental(state);
+    // Committed, before the next round streams.
+    state.messages.push(state.pendingAI);
+    state.pendingAI = createPendingAI(Date.now(), MODEL);
+    expect(working(rows(state))[0]).toMatch(/^ {2}Bash cd ~\/Workspace.*…  4 rows$/);
+    expect(working(rows(state))[1]).toContain("GPT-6-Astra");
     freshMatchesIncremental(state);
   });
 });

@@ -6,6 +6,7 @@ import {
   buildHistoryUpdatedEvents,
   buildStoredHistoryUpdatedEvent,
   elideFoldedWork,
+  estimateBlockRows,
   estimateEntryRows,
   estimateFoldedEntryRows,
   isValidHistoryViewport,
@@ -355,6 +356,23 @@ describe("viewport-sized opening windows", () => {
     const turns = (page: DisplayHistoryPage) => page.entries.filter((entry) => entry.type === "user").length;
     expect(turns(folded)).toBeGreaterThan(2 * turns(unfolded));
     expect(turns(folded)).toBe(Math.ceil(target / 5));
+  });
+
+  test("a folding client's split reply counts each revealed call as one row", () => {
+    const answer = "Yes, it's a straightforward bug fix. ".repeat(8).trim();
+    const prompt = Array.from({ length: 40 }, (_, line) => `Line ${line} of a long subagent prompt that wraps past the screen width.`).join("\n");
+    const command = `cd ~/Workspace/exocortex && ${"git pull -q --ff-only && ".repeat(20)}true`;
+    const entry: DisplayEntry = { type: "ai", metadata: { startedAt: 1, endedAt: 2, model: "m", tokens: 1 }, blocks: [
+      { type: "text", text: answer },
+      { type: "tool_call", toolCallId: "call-0", toolName: "exo", input: { subagent: prompt }, summary: `subagent\n${prompt}` },
+      { type: "tool_result", toolCallId: "call-0", toolName: "exo", output: "", isError: false },
+      { type: "tool_call", toolCallId: "call-1", toolName: "Bash", input: { command }, summary: command },
+      { type: "tool_result", toolCallId: "call-1", toolName: "Bash", output: "", isError: false },
+      { type: "text", text: "Started." },
+    ] };
+    const textRows = estimateBlockRows({ type: "text", text: answer }, viewport.cols) + estimateBlockRows({ type: "text", text: "Started." }, viewport.cols);
+    // Metadata and its gap, the two texts, and one row per call however long its input.
+    expect(estimateFoldedEntryRows(entry, viewport.cols, false)).toBe(2 + textRows + 2);
   });
 
   test("validates the viewport a client sends", () => {
