@@ -1,6 +1,7 @@
 /**
  * Resources status block — the connected daemon's machine: CPU and RAM, and
- * beside them GPU and VRAM where that machine reports them.
+ * beside them GPU and VRAM where that machine reports them and config.json
+ * has `tui.resourcesGpu: true` (off by default).
  *
  * The figures come from the daemon (machine_resources), so over /ssh they are
  * the remote's. The layout follows the route's shape (machine-resources.ts):
@@ -11,6 +12,7 @@
  * rest.
  */
 
+import { readExocortexConfig } from "@exocortex/shared/config";
 import type { ResourcesShape } from "../machine-resources";
 import type { MachineResources, MemoryUse } from "../protocol";
 import type { RenderState } from "../state";
@@ -98,15 +100,41 @@ function block(columns: Column[]): StatusBlock {
   return { id: "resources", priority: -1, width, height: 2, rows };
 }
 
-/** The block in `shape`'s layout, filled from `resources` (null: none yet); null without a shape. */
-export function resourcesBlockFor(resources: MachineResources | null, shape: ResourcesShape | null): StatusBlock | null {
+let gpuSetting: boolean | null = null;
+
+/** config.json `tui.resourcesGpu`; only `true` shows the GPU and VRAM column. */
+export function resolveResourcesGpuSetting(
+  readConfig: () => { tui?: { resourcesGpu?: unknown } } = readExocortexConfig,
+): boolean {
+  try {
+    return readConfig().tui?.resourcesGpu === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the block shows GPU and VRAM (read once per process). */
+export function resourcesGpuEnabled(): boolean {
+  return gpuSetting ??= resolveResourcesGpuSetting();
+}
+
+/** Override the setting (tests); null re-reads config.json on next use. */
+export function setResourcesGpuEnabled(enabled: boolean | null): void {
+  gpuSetting = enabled;
+}
+
+/**
+ * The block in `shape`'s layout, filled from `resources` (null: none yet); null
+ * without a shape. `showGpu: false` leaves the GPU column out whatever the machine reports.
+ */
+export function resourcesBlockFor(resources: MachineResources | null, shape: ResourcesShape | null, showGpu = true): StatusBlock | null {
   if (!shape) return null;
   const percentWidth = termWidth(formatPercent(100));
   const machine = column(
     [percentCell("CPU", resources?.cpuPercent ?? null), memoryCell("MEM", resources?.memory ?? null)],
     Math.max(percentWidth, memoryFigureWidth(shape.memoryTotalBytes)),
   );
-  if (!shape.gpu) return block([machine]);
+  if (!showGpu || !shape.gpu) return block([machine]);
   // A column's labels share one width: "GPU:  " over "VRAM: ".
   const gpu = column(
     [percentCell("GPU", resources?.gpuPercent ?? null), memoryCell("VRAM", resources?.vram ?? null)],
@@ -116,5 +144,5 @@ export function resourcesBlockFor(resources: MachineResources | null, shape: Res
 }
 
 export function resourcesBlock(state: RenderState): StatusBlock | null {
-  return resourcesBlockFor(state.machineResources, state.machineResourcesShape);
+  return resourcesBlockFor(state.machineResources, state.machineResourcesShape, resourcesGpuEnabled());
 }

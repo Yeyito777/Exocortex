@@ -291,6 +291,8 @@ export interface TuiConfig {
   math?: "auto" | "text" | "image";
   /** Scroll the message area with terminal scroll regions (DECSTBM + SU/SD) and draw only exposed rows; default true. */
   scrollRegions?: boolean;
+  /** Show the GPU and VRAM column of the status line's resources block; default false. */
+  resourcesGpu?: boolean;
 }
 
 /** The app API (docs/app-api.md). */
