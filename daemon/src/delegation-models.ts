@@ -28,7 +28,7 @@ export function latestSizeModel(size: string, models: readonly string[]): string
 
 const claudeModel = /^claude-([a-z]+)-(\d+(?:-\d+)*)$/;
 
-/** Latest catalog Claude model of a family (opus, sonnet, ...), e.g. claude-opus-5-5. */
+/** Latest catalog Claude model of a family (opus, fable, sonnet, ...), e.g. claude-opus-5-5. */
 export function latestClaudeModel(family: string, models: readonly string[]): string | undefined {
   const version = (id: string) => claudeModel.exec(id)![2].replaceAll("-", ".");
   return models.filter(id => claudeModel.exec(id)?.[1] === family)
