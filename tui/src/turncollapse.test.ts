@@ -130,6 +130,25 @@ describe("folded history", () => {
     expect(shown.some(row => row.includes("GPT-6-Astra"))).toBe(true);
   });
 
+  test("a long first part shows with its call even when the text after the call is longer", () => {
+    // Nov 8 (better E): an 800-character answer, a subagent delegation, then a longer report on it.
+    const answer = "Yes, one line is worth it, and here is why it changes the habit. ".repeat(12).trim();
+    const report = "The audit is running; this is what it checks and what it produces for you. ".repeat(13).trim();
+    const state = createInitialState();
+    state.messages.push(user("is a line worth it?"), assistant([
+      { type: "thinking", text: "Weigh the instruction." },
+      { type: "text", text: answer },
+      ...call("c1", "subagent DECISIONAUDIT"),
+      { type: "text", text: report },
+    ]));
+    const shown = rows(state, 2000).filter(Boolean);
+    expect(shown.some(row => row.includes("Yes, one line is worth it"))).toBe(true);
+    expect(shown.some(row => row.includes("subagent DECISIONAUDIT"))).toBe(true);
+    expect(shown.some(row => row.includes("The audit is running"))).toBe(true);
+    expect(shown.some(row => row.includes("Weigh the instruction"))).toBe(false);
+    freshMatchesIncremental(state, 2000);
+  });
+
   test("short interim text before the last call, or a longer final reply, keeps the usual fold", () => {
     const state = createInitialState();
     state.messages.push(...workTurn());

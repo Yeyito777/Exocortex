@@ -410,6 +410,22 @@ describe("folded-work elision", () => {
     expect(finished.blocks.slice(8)).toEqual(entry.blocks.slice(8));
   });
 
+  test("a long first part keeps its call even when the text after it is longer", () => {
+    const answer = "Yes, one line is worth it, and here is why it changes the habit. ".repeat(12).trim();
+    const entry: DisplayEntry = { type: "ai", metadata: null, blocks: [
+      { type: "thinking", text: "Weigh it." },
+      { type: "text", text: answer },
+      { type: "tool_call", toolCallId: "call-0", toolName: "exo", input: { subagent: "audit" }, summary: "subagent DECISIONAUDIT" },
+      { type: "tool_result", toolCallId: "call-0", toolName: "exo", output: "", isError: false },
+      { type: "text", text: "The audit is running; this is what it checks and what it produces for you. ".repeat(13).trim() },
+    ] };
+    const elided = elideFoldedWork(entry, 4, false);
+    if (elided.type !== "ai" || entry.type !== "ai") throw new Error("not ai");
+    expect(elided.blocks[2]).toBe(entry.blocks[2]);
+    expect(elided.blocks[1]).toBe(entry.blocks[1]);
+    expect(elided.blocks[0]).toMatchObject({ text: "", elided: { entry: 4, block: 0 } });
+  });
+
   test("a reply split by its last tool call keeps that call: the folded view shows it", () => {
     const answer = "Yes, it's a straightforward bug fix. ".repeat(8).trim();
     const entry: DisplayEntry = { type: "ai", metadata: null, blocks: [
