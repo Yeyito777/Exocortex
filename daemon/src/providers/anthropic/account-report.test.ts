@@ -37,4 +37,13 @@ describe("/account claude and the 5-hour limit", () => {
     expect(line({ fiveHour: null, sevenDay, capacity: 200, fiveHourCapacity: 0 })).toBe("Combined (the usage bars): 5-hour n/a · weekly 11/200%");
     expect(line({ fiveHour: limited.fiveHour, sevenDay, capacity: 200 })).toBe("Combined (the usage bars): 5-hour 1/200% · weekly 11/200%");
   });
+
+  test("the Fable allowance follows the weekly window where an account reports one, with a refusal said in words", () => {
+    const fable = { utilization: 97, resetsAt: NOW + 120 * H, allowanceOfWeekly: 50 };
+    const text = formatClaudeAccountReports([report("main", { ...verified, fable: { ...fable, limitedUntil: NOW + 120 * H } }), report("max2", { ...verified, fable: { ...fable, utilization: 5 } }), report("max3", verified)], { fiveHour: null, sevenDay, capacity: 300, fiveHourCapacity: 0, fable: { utilization: 102, resetsAt: NOW + 120 * H } }, NOW);
+    expect(text).toContain("5-hour n/a · weekly 11% (resets in 5d0h) · Fable 97% (resets in 5d0h), Fable refused for 5d0h");
+    expect(text).toContain("5-hour n/a · weekly 11% (resets in 5d0h) · Fable 5% (resets in 5d0h)\n");
+    expect(text.split("\n").filter(row => row.includes("Fable"))).toHaveLength(3);
+    expect(text).toContain("Combined (the usage bars): 5-hour n/a · weekly 11/300% · Fable 102/300%");
+  });
 });

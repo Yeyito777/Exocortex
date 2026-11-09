@@ -10,6 +10,7 @@ import {
   prefetchAccounts,
   renderAccountsScreen,
   requestAccountsScreen,
+  resetCell,
 } from "./accountsscreen";
 import { tryCommand } from "./commands";
 import { handleEvent } from "./events";
@@ -667,3 +668,83 @@ test("the crossed-out cell ends its dim, and the Accounts screen stays aligned a
   expect(weekly("main")).toBe(weekly("max2"));
 });
 
+
+test("a Fable column while some Claude account reports a Fable allowance; rows without one leave it blank", () => {
+  const usage = (weekly: number, fable?: number) => ({
+    fiveHour: null, sevenDay: { utilization: weekly, resetsAt: NOW + 108 * H }, noFiveHourLimit: true,
+    ...(fable !== undefined ? { fable: { utilization: fable, resetsAt: NOW + 108 * H, allowanceOfWeekly: 50 } } : {}),
+  });
+  const snap = snapshot({}, [claude("main", { usage: usage(43, 11) }), claude("max2", { usage: usage(34, 100) }), claude("max3", { usage: usage(5) })]);
+  snap.openai.accounts = [{ index: 1, email: "owner@example.com", displayName: null, plan: null, current: true }];
+  const { state } = openScreen(snap);
+  const rows = screenText(state);
+  const header = rows.find(row => row.includes("5-Hour"))!;
+  const main = rows.find(row => row.includes("● main"))!;
+  const max2 = rows.find(row => row.includes("● max2"))!;
+  expect(header).toMatch(/Claude +5-Hour +Weekly +Fable/);
+  expect(main).toMatch(/n\/a +━+ +43% +4d12h +━+ +11% +4d12h/);
+  expect(max2).toMatch(/34% +4d12h +━+ +100% +4d12h/);
+  // The column sits where its label is, in every row.
+  expect(main.indexOf("11%")).toBeGreaterThan(header.indexOf("Fable"));
+  expect(main.lastIndexOf("━", main.indexOf("11%"))).toBeGreaterThanOrEqual(header.indexOf("Fable"));
+  // No allowance reported for the account: nothing after its weekly cell.
+  expect(rows.find(row => row.includes("● max3"))).toMatch(/5% +4d12h +│/);
+  expect(rows.find(row => row.includes("owner@example.com"))).not.toContain("Fable");
+  // The card grows by the one column and still fits its content.
+  expect(Math.max(...rows.filter(row => row.includes("│")).map(row => row.trimEnd().length))).toBeLessThan(150);
+
+  // A refused Fable request while the bar still reads under 100% is said in a word.
+  const refused = openScreen(snapshot({}, [
+    claude("main", { usage: { ...usage(43, 97), fable: { utilization: 97, resetsAt: NOW + 108 * H, limitedUntil: NOW + 108 * H } } }),
+    claude("max2", { usage: usage(34, 100) }),
+  ]));
+  const refusedRows = screenText(refused.state);
+  expect(refusedRows.find(row => row.includes("● main"))).toMatch(/● main {2}Fable out /);
+  expect(refusedRows.find(row => row.includes("● max2"))).not.toContain("Fable out");
+
+  // An account reported to have no Fable allowance: crossed out, like a missing 5-hour limit.
+  const mixed = openScreen(snapshot({}, [claude("main", { usage: usage(43, 11) }), claude("max2", { usage: { ...usage(34), fable: null } })]));
+  const mixedRows = screenText(mixed.state);
+  expect(mixedRows.find(row => row.includes("● max2"))).toMatch(/34% +4d12h +X+ +n\/a/);
+  // No account has one: no column, the table from before.
+  const none = openScreen(snapshot({}, [claude("main", { usage: { ...usage(43), fable: null } }), claude("max2", { usage: { ...usage(34), fable: null } })]));
+  const noneRows = screenText(none.state);
+  expect(noneRows.find(row => row.includes("5-Hour"))).not.toContain("Fable");
+  expect(noneRows.find(row => row.includes("● max2"))).toMatch(/34% +4d12h +│/);
+
+  // No account reports one: the table is the one from before.
+  const before = openScreen(snapshot({}, [claude("main", { usage: usage(43) }), claude("max2", { usage: usage(34) })]));
+  expect(screenText(before.state).find(row => row.includes("5-Hour"))).not.toContain("Fable");
+});
+
+test("a Resets column while an account has free limit resets left: how many, and the nearest expiry", () => {
+  const usage = (resets?: { availableCount: number; nextExpiresAt: number | null }) => ({
+    fiveHour: null, sevenDay: { utilization: 43, resetsAt: NOW + 108 * H }, noFiveHourLimit: true,
+    fable: { utilization: 11, resetsAt: NOW + 108 * H },
+    ...(resets ? { resetCredits: resets } : {}),
+  });
+  const credits = { balanceUsd: 200, grantedUsd: 200, expiresAt: [NOW + 20 * 24 * H + 3 * H], active: false };
+  const snap = snapshot({}, [
+    claude("main", { usage: usage({ availableCount: 2, nextExpiresAt: NOW + 4 * 24 * H + 3 * H }), credits }),
+    claude("max2", { usage: usage(), credits }),
+  ]);
+  const { state } = openScreen(snap);
+  const rows = screenText(state);
+  const header = rows.find(row => row.includes("5-Hour"))!;
+  const main = rows.find(row => row.includes("● main"))!;
+  const max2 = rows.find(row => row.includes("● max2"))!;
+  expect(header).toMatch(/Fable +Resets +Credits/);
+  expect(main).toMatch(/11% +4d12h +2 4d +\$200 20d/);
+  expect(main.indexOf("2 4d")).toBe(header.indexOf("Resets"));
+  // An account with none keeps the column blank, and its credits stay in line.
+  expect(max2.indexOf("$200")).toBe(header.indexOf("Credits"));
+  expect(main.indexOf("$200")).toBe(header.indexOf("Credits"));
+
+  expect(resetCell({ availableCount: 1, nextExpiresAt: null }, NOW)).toEqual({ count: "1", expiry: "" });
+  expect(resetCell({ availableCount: 0, nextExpiresAt: NOW + H }, NOW)).toBeNull();
+  expect(resetCell({ availableCount: 2, nextExpiresAt: NOW - H }, NOW)).toBeNull();
+  expect(resetCell(null, NOW)).toBeNull();
+  // Without any, no column.
+  const none = openScreen(snapshot({}, [claude("main", { usage: usage() }), claude("max2", { usage: usage() })]));
+  expect(screenText(none.state).find(row => row.includes("5-Hour"))).not.toContain("Resets");
+});

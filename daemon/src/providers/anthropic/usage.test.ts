@@ -17,6 +17,7 @@ import {
   isFableScopedLimit,
   mergeUsage,
   noteAccountFableRefusal,
+  resetCreditsFromPlanRateLimits,
   usageFromPlanRateLimits,
   usageFromRateLimitInfo,
 } from "./usage";
@@ -529,5 +530,74 @@ describe("running out of Fable allowance limits Fable only", () => {
     } finally {
       clearUsage(account);
     }
+  });
+});
+
+describe("Claude's free limit resets (cedar_ember) and the combined Fable allowance", () => {
+  const NOW = Date.parse("2026-11-09T20:00:00Z");
+  /** The grants as claude.ai's usage page gets them; Claude Code's report had the key null on Nov 9 2026. */
+  const GRANTS = { grants: [
+    { label: "Limit reset", resets_left: 1, ends_at: "2027-03-09T00:00:00Z", usable_now: true, clears: ["seven_day_overage_included"], gives_back_weekly: false },
+    { label: "Limit reset", resets_left: 2, ends_at: "2026-12-01T00:00:00Z", usable_now: false, clears: ["seven_day_overage_included"], gives_back_weekly: true },
+    { label: "Used up", resets_left: 0, ends_at: "2026-11-20T00:00:00Z" },
+    { label: "Expired", resets_left: 3, ends_at: "2026-11-01T00:00:00Z" },
+  ] };
+
+  test("resets left in all and the nearest expiry; nothing while the report carries none", () => {
+    expect(resetCreditsFromPlanRateLimits({ cedar_ember: GRANTS }, NOW)).toEqual({ availableCount: 3, nextExpiresAt: Date.parse("2026-12-01T00:00:00Z") });
+    expect(resetCreditsFromPlanRateLimits({ cedar_ember: null }, NOW)).toBeNull();
+    expect(resetCreditsFromPlanRateLimits({}, NOW)).toBeNull();
+    expect(resetCreditsFromPlanRateLimits({ cedar_ember: { grants: "soon" } }, NOW)).toBeNull();
+    expect(resetCreditsFromPlanRateLimits({ cedar_ember: { grants: [{ resets_left: 1 }] } }, NOW)).toEqual({ availableCount: 1, nextExpiresAt: null });
+    expect(usageFromPlanRateLimits(FABLE_REPORT)).not.toHaveProperty("resetCredits");
+  });
+
+  test("kept with the account's usage through its turns' events, and gone when a full report lists none", () => {
+    const account = "test-reset-grants";
+    try {
+      applyPlanRateLimits(account, { ...FABLE_REPORT, cedar_ember: GRANTS }, NOW);
+      expect(getAccountUsage(account)?.resetCredits).toEqual({ availableCount: 3, nextExpiresAt: Date.parse("2026-12-01T00:00:00Z") });
+      const reset = Date.parse("2026-11-14T08:00:00Z") / 1000;
+      applyUsageHeaders(new Headers({ [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify({ status: "allowed", unifiedWindows: { seven_day: { utilization: 0.45, resetsAt: reset } } }), [CLAUDE_ACCOUNT_HEADER]: account }), NOW);
+      expect(getAccountUsage(account)?.resetCredits?.availableCount).toBe(3);
+      expect(JSON.parse(readFileSync(join(runtimeDir(), "usage-anthropic.json"), "utf-8")).accounts[account].usage.resetCredits.availableCount).toBe(3);
+      applyPlanRateLimits(account, FABLE_REPORT, NOW);
+      expect(getAccountUsage(account)).not.toHaveProperty("resetCredits");
+    } finally {
+      clearUsage(account);
+    }
+  });
+
+  test("combined over accounts: the allowances on the bars' scale with every reset, the grants together", () => {
+    const main = usageFromPlanRateLimits({ ...FABLE_REPORT, cedar_ember: GRANTS })!;
+    const max2 = usageFromPlanRateLimits({
+      seven_day: { utilization: 34, resets_at: "2026-11-14T02:59:59.699867+00:00" },
+      limits: [{ kind: "weekly_scoped", percent: 3, resets_at: "2026-11-14T02:59:59.700013+00:00", scope: { model: { display_name: "Fable" } } }],
+      cedar_ember: { grants: [{ resets_left: 1, ends_at: "2026-11-25T00:00:00Z" }] },
+    })!;
+    const combined = aggregateUsage([main, max2], NOW)!;
+    expect(combined.capacity).toBe(200);
+    expect(combined.fable).toEqual({
+      utilization: 14, resetsAt: Date.parse("2026-11-14T03:00:00Z"),
+      resets: [Date.parse("2026-11-14T03:00:00Z"), Date.parse("2026-11-14T08:00:00Z")],
+    });
+    expect(combined.resetCredits).toEqual({ availableCount: 4, nextExpiresAt: Date.parse("2026-11-25T00:00:00Z") });
+    expect(combined).not.toHaveProperty("fableCapacity");
+    // An account reported to have no Fable allowance is left out of the bar's capacity, as with the 5-hour limit.
+    const without = usageFromPlanRateLimits({ seven_day: { utilization: 20, resets_at: "2026-11-14T02:59:59Z" }, limits: [{ kind: "weekly_all", percent: 20, scope: null }] })!;
+    expect(without.fable).toBeNull();
+    const mixed = aggregateUsage([main, without], NOW)!;
+    expect(mixed).toMatchObject({ capacity: 200, fableCapacity: 100, fable: { utilization: 11 } });
+    expect(mixed.sevenDay?.utilization).toBe(63);
+    expect(aggregateUsage([main, max2, without], NOW)).toMatchObject({ capacity: 300, fableCapacity: 200, fable: { utilization: 14 } });
+    // No account has one: no Fable bar, and nothing about its capacity.
+    const none = aggregateUsage([without, without], NOW)!;
+    expect(none).not.toHaveProperty("fable");
+    expect(none).not.toHaveProperty("fableCapacity");
+    // An account with no allowance reported adds capacity only; with none anywhere there is no bar.
+    expect(aggregateUsage([main, { fiveHour: null, sevenDay: { utilization: 5, resetsAt: null } }], NOW)?.fable?.utilization).toBe(11);
+    const plain = aggregateUsage([{ fiveHour: null, sevenDay: { utilization: 5, resetsAt: null } }, { fiveHour: null, sevenDay: { utilization: 6, resetsAt: null } }], NOW)!;
+    expect(plain).not.toHaveProperty("fable");
+    expect(plain).not.toHaveProperty("resetCredits");
   });
 });

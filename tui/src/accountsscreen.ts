@@ -3,7 +3,10 @@
  * table on a card drawn over the chat, opened with /accounts or `g a` in
  * normal mode. A row is a state dot, the account, and its 5-hour and weekly
  * usage with the time to each reset; a short word replaces the bars when the
- * account cannot be used. A Credits column follows for accounts with prepaid
+ * account cannot be used. A Fable column follows while some Claude account
+ * reports a Fable allowance (the share of its weekly limit Fable models draw
+ * on), and a Resets column while one has free limit resets left (how many,
+ * and the time until the nearest expires). A Credits column follows for accounts with prepaid
  * API credits (a Claude plan's, through the API-credit fallback; OpenAI's
  * `providers.openai.credit`): the balance, then the time until each grant
  * expires, the balance in bold blue with a ◀ while turns spend it, red under
@@ -29,7 +32,7 @@
  */
 
 import type { AccountCredits, AccountsEvent, AccountsSnapshot, Event, ClaudeAccountInfo, ClaudeAccountsInfo } from "./protocol";
-import type { ApiKeyCredit, UsageData, UsageWindow } from "./messages";
+import type { ApiKeyCredit, UsageData, UsageResetCredits, UsageWindow } from "./messages";
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import type { ScreenRect } from "./historyimages";
@@ -266,21 +269,35 @@ export function openAICredits(credit: ApiKeyCredit | null | undefined): AccountC
   };
 }
 
+/** The Resets column of a row: free limit resets left, and the time until the nearest expires ("" when it does not say). */
+export interface ResetCell {
+  count: string;
+  expiry: string;
+}
+
+/** The Resets cell for these reset grants; null when none is left. */
+export function resetCell(credits: UsageResetCredits | null | undefined, now: number): ResetCell | null {
+  if (!credits || credits.availableCount <= 0) return null;
+  if (credits.nextExpiresAt !== null && credits.nextExpiresAt <= now) return null;
+  return { count: String(credits.availableCount), expiry: credits.nextExpiresAt === null ? "" : formatCreditCountdown(credits.nextExpiresAt - now) };
+}
+
 interface TableRow {
   dot: string;
   name: Segment;
   /** Short words after the name: "new work", "limited" ("limited 2h" when there are no usage columns). */
   tag?: Segment;
-  /** 5-hour and weekly cells; an unknown window is left blank. */
-  windows?: [UsageCell | null, UsageCell | null];
+  /** 5-hour and weekly cells, then the Fable allowance's when the account reports one; an unknown window is left blank. */
+  windows?: Array<UsageCell | null>;
   /** A state that takes the usage columns' place: "blocked", "signed out". */
   note?: Segment[];
+  resets?: ResetCell | null;
   credits?: CreditCell | null;
 }
 
 type ScreenLine =
-  /** `columns`: the usage columns' labels; `credits`: the Credits label (some row of the section has credits). */
-  | { kind: "heading"; label: string; columns: boolean; credits?: boolean }
+  /** `columns`: the usage columns' labels; `resets`, `credits`: those labels (some row of the section has the cell). */
+  | { kind: "heading"; label: string; columns: boolean; resets?: boolean; credits?: boolean }
   | { kind: "row"; row: TableRow }
   | { kind: "text"; segments: Segment[] }
   | { kind: "blank" };
@@ -291,10 +308,12 @@ function usageCell(window: UsageWindow | null | undefined, now: number): UsageCe
   return { pct, reset: window.resetsAt !== null && window.resetsAt > now ? formatDuration(window.resetsAt - now) : "" };
 }
 
-function usageCells(usage: UsageData | null | undefined, now: number): [UsageCell | null, UsageCell | null] | undefined {
+function usageCells(usage: UsageData | null | undefined, now: number): Array<UsageCell | null> | undefined {
   const fiveHour = usage?.noFiveHourLimit ? { pct: 0, reset: "", notApplicable: true } : usageCell(usage?.fiveHour, now);
-  const cells: [UsageCell | null, UsageCell | null] = [fiveHour, usageCell(usage?.sevenDay, now)];
-  return cells[0] || cells[1] ? cells : undefined;
+  // Reported to have no Fable allowance: crossed out like a missing 5-hour limit, where the column shows at all.
+  const fable = usage?.fable === null ? { pct: 0, reset: "", notApplicable: true } : usageCell(usage?.fable, now);
+  const cells = [fiveHour, usageCell(usage?.sevenDay, now), ...(fable ? [fable] : [])];
+  return cells[0] || cells[1] || (fable && !fable.notApplicable) ? cells : undefined;
 }
 
 function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: number): TableRow {
@@ -330,6 +349,9 @@ function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: 
       note = [[theme.muted, "checking…"]];
       break;
   }
+  // A Fable request was refused while the allowance still reads under 100%: the bar alone would not say.
+  const fable = account.usage?.fable;
+  if (fable?.limitedUntil != null && fable.limitedUntil > now && fable.utilization < 100) tags.push("Fable out");
   if (claude.nextNewWork?.account === account.id) tags.push("new work");
   return {
     dot,
@@ -337,6 +359,7 @@ function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: 
     tag: tags.length > 0 ? [tagColor, tags.join(" · ")] : undefined,
     windows: note ? undefined : windows,
     note,
+    resets: note ? null : resetCell(account.usage?.resetCredits, now),
     credits: note ? null : creditCell(account.credits, now),
   };
 }
@@ -371,10 +394,11 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
     lines.push({ kind: "heading", label: "Claude", columns: false });
     lines.push({ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] });
   } else if (claudeTable) {
-    const heading = { kind: "heading" as const, label: "Claude", columns: true, credits: false };
+    const heading = { kind: "heading" as const, label: "Claude", columns: true, resets: false, credits: false };
     lines.push(heading);
     for (const account of claude.accounts) {
       const row = claudeRow(account, claude, now);
+      if (row.resets) heading.resets = true;
       if (row.credits) heading.credits = true;
       lines.push({ kind: "row", row });
       if (account.loginCommand) notes.push([[theme.muted, `sign in ${account.id}${claude.remote ? ` on ${claude.remote.alias}` : ""}: `], [theme.command, account.loginCommand]]);
@@ -419,7 +443,10 @@ const PCT_WIDTH = 4;
 const MIN_BAR_WIDTH = 6;
 /** Bars stop growing here: shorter than the status bar's, so the card stays small. */
 const MAX_BAR_WIDTH = 14;
-const COLUMN_LABELS = ["5-Hour", "Weekly"] as const;
+/** The usage columns; the Fable one shows only while some row has a Fable cell. */
+const COLUMN_LABELS = ["5-Hour", "Weekly", "Fable"] as const;
+/** Usage columns every table has. */
+const BASE_USAGE_COLUMNS = 2;
 /** A thin bar: stacked rows of full blocks would merge into one slab. */
 const BAR_GLYPH = "━";
 
@@ -429,6 +456,10 @@ interface Columns {
   bar: number;
   /** Widest time to reset. */
   reset: number;
+  /** How many usage columns the table has: 5-Hour and Weekly, and Fable while some row has that cell. */
+  usage: number;
+  /** Widest Resets cell; 0 when no row has reset grants (no column). */
+  resets: number;
   /** Widest Credits cell; 0 when no row has credits (no column). */
   credits: number;
 }
@@ -438,10 +469,21 @@ function cellWidth(columns: Columns): number {
 }
 
 function tableWidth(columns: Columns): number {
-  return DOT_WIDTH + columns.name + 2 * (COLUMN_GAP + cellWidth(columns)) + (columns.credits > 0 ? COLUMN_GAP + columns.credits : 0);
+  return DOT_WIDTH + columns.name + columns.usage * (COLUMN_GAP + cellWidth(columns))
+    + (columns.resets > 0 ? COLUMN_GAP + columns.resets : 0)
+    + (columns.credits > 0 ? COLUMN_GAP + columns.credits : 0);
 }
 
+const RESETS_LABEL = "Resets";
 const CREDITS_LABEL = "Credits";
+
+function resetWidth(cell: ResetCell): number {
+  return termWidth(cell.count) + (cell.expiry ? 1 + termWidth(cell.expiry) : 0);
+}
+
+function resetSegments(cell: ResetCell): Segment[] {
+  return [[theme.accent, cell.count], ...(cell.expiry ? [[theme.muted, ` ${cell.expiry}`]] as Segment[] : [])];
+}
 const ACTIVE_MARK = " ◀";
 const SIGN_IN_NOTE = " sign-in needed";
 
@@ -454,6 +496,8 @@ function creditWidth(cell: CreditCell): number {
 function layoutColumns(lines: ScreenLine[], maxWidth: number): Columns {
   let name = 0;
   let reset = 0;
+  let usage = BASE_USAGE_COLUMNS;
+  let resets = 0;
   let credits = 0;
   for (const line of lines) {
     if (line.kind === "heading") name = Math.max(name, termWidth(line.label) - DOT_WIDTH);
@@ -461,11 +505,14 @@ function layoutColumns(lines: ScreenLine[], maxWidth: number): Columns {
     const { row } = line;
     name = Math.max(name, termWidth(row.name[1]) + (row.tag ? 2 + termWidth(row.tag[1]) : 0));
     for (const cell of row.windows ?? []) if (cell) reset = Math.max(reset, cell.reset.length);
+    // The Fable column shows only for an allowance some account has.
+    if (row.windows?.slice(BASE_USAGE_COLUMNS).some(cell => cell && !cell.notApplicable)) usage = COLUMN_LABELS.length;
+    if (row.resets) resets = Math.max(resets, termWidth(RESETS_LABEL), resetWidth(row.resets));
     if (row.credits) credits = Math.max(credits, termWidth(CREDITS_LABEL), creditWidth(row.credits));
   }
-  const fixed = tableWidth({ name, bar: 0, reset, credits });
-  const bar = Math.max(MIN_BAR_WIDTH, Math.min(MAX_BAR_WIDTH, Math.floor((maxWidth - fixed) / 2)));
-  return { name, bar, reset, credits };
+  const fixed = tableWidth({ name, bar: 0, reset, usage, resets, credits });
+  const bar = Math.max(MIN_BAR_WIDTH, Math.min(MAX_BAR_WIDTH, Math.floor((maxWidth - fixed) / usage)));
+  return { name, bar, reset, usage, resets, credits };
 }
 
 function cellSegments(cell: UsageCell | null, columns: Columns): Segment[] {
@@ -494,19 +541,36 @@ function creditSegments(cell: CreditCell): Segment[] {
 
 function lineSegments(line: ScreenLine, columns: Columns): Segment[] {
   const gap: Segment = [theme.text, " ".repeat(COLUMN_GAP)];
-  const blankCells: Segment = [theme.text, " ".repeat(2 * cellWidth(columns) + COLUMN_GAP)];
+  const blankCells: Segment = [theme.text, " ".repeat(columns.usage * cellWidth(columns) + (columns.usage - 1) * COLUMN_GAP)];
+  /** The cells after the usage columns: Resets, then Credits, each padded unless it is the last. */
+  const trailing = (resets: Segment[] | null, resetsWidth: number, credits: Segment[] | null): Segment[] => {
+    const cells: Segment[] = [];
+    if (columns.resets > 0 && (resets || credits)) {
+      const pad = credits ? columns.resets - resetsWidth : 0;
+      cells.push(gap, ...(resets ?? []), ...(pad > 0 ? [[theme.text, " ".repeat(pad)] as Segment] : []));
+    }
+    if (columns.credits > 0 && credits) cells.push(gap, ...credits);
+    return cells;
+  };
   switch (line.kind) {
     case "blank": return [];
     case "text": return line.segments;
     case "heading": {
       const label: Segment = [theme.bold + theme.text, line.label.padEnd(DOT_WIDTH + columns.name)];
-      const credits: Segment[] = columns.credits > 0 && line.credits ? [gap, [theme.muted, CREDITS_LABEL]] : [];
-      if (!line.columns) return credits.length > 0 ? [label, [theme.boldOff, ""], gap, blankCells, ...credits] : [label, [theme.boldOff, ""]];
+      const after = trailing(
+        line.resets ? [[theme.muted, RESETS_LABEL]] : null, termWidth(RESETS_LABEL),
+        line.credits ? [[theme.muted, CREDITS_LABEL]] : null,
+      );
+      if (!line.columns) return after.length > 0 ? [label, [theme.boldOff, ""], gap, blankCells, ...after] : [label, [theme.boldOff, ""]];
+      const labels = COLUMN_LABELS.slice(0, columns.usage);
       return [
-        label, [theme.boldOff, ""], gap,
-        [theme.muted, COLUMN_LABELS[0].padEnd(cellWidth(columns))], gap,
-        [theme.muted, credits.length > 0 ? COLUMN_LABELS[1].padEnd(cellWidth(columns)) : COLUMN_LABELS[1]],
-        ...credits,
+        label, [theme.boldOff, ""],
+        ...labels.flatMap((text, index): Segment[] => [
+          gap,
+          // The last label of a row with nothing after it is not padded.
+          [theme.muted, index < labels.length - 1 || after.length > 0 ? text.padEnd(cellWidth(columns)) : text],
+        ]),
+        ...after,
       ];
     }
     case "row": {
@@ -520,9 +584,13 @@ function lineSegments(line: ScreenLine, columns: Columns): Segment[] {
         gap,
       ];
       if (row.note) return [...segments, ...row.note];
-      const credits: Segment[] = row.credits && columns.credits > 0 ? [gap, ...creditSegments(row.credits)] : [];
-      if (!row.windows) return credits.length > 0 ? [...segments, blankCells, ...credits] : segments;
-      return [...segments, ...cellSegments(row.windows[0], columns), gap, ...cellSegments(row.windows[1], columns), ...credits];
+      const after = trailing(
+        row.resets ? resetSegments(row.resets) : null, row.resets ? resetWidth(row.resets) : 0,
+        row.credits ? creditSegments(row.credits) : null,
+      );
+      if (!row.windows) return after.length > 0 ? [...segments, blankCells, ...after] : segments;
+      const cells = Array.from({ length: columns.usage }, (_, index) => row.windows![index] ?? null);
+      return [...segments, ...cells.flatMap((cell, index): Segment[] => [...(index > 0 ? [gap] : []), ...cellSegments(cell, columns)]), ...after];
     }
   }
 }

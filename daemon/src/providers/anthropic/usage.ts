@@ -35,7 +35,7 @@ import { loadClaudeSdks } from "./sdk";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
-import type { FableUsage, UsageData, UsageWindow } from "../../messages";
+import type { FableUsage, UsageData, UsageResetCredits, UsageWindow } from "../../messages";
 import { emitClaudeAccountsChanged } from "./account-events";
 import { claudeDailyReset } from "../../usage-limit-wait";
 import { MAIN_ACCOUNT_ID } from "./accounts";
@@ -155,15 +155,18 @@ function mergeWindow(previous: UsageWindow | null | undefined, next: UsageWindow
  * (another reset time, or the old one past), a big drop (Anthropic reset the
  * usage) or a drop off a limit takes the report as it is.
  */
-export function mergeUsage(previous: UsageData | null, next: UsageData, now = Date.now()): UsageData {
+export function mergeUsage(previous: UsageData | null, next: UsageData, now = Date.now(), full = false): UsageData {
   if (!previous) return next.fable ? { ...next, fable: mergeFable(undefined, next.fable, now) } : next;
   const fable = mergeFable(previous.fable, next.fable, now);
-  const { fable: _reported, ...rest } = next;
+  // Only a full report (`/usage`) lists the reset grants: an event keeps the last ones.
+  const resetCredits = full ? next.resetCredits : next.resetCredits ?? previous.resetCredits;
+  const { fable: _reported, resetCredits: _grants, ...rest } = next;
   return {
     ...rest,
     fiveHour: mergeWindow(previous.fiveHour, next.fiveHour, now),
     sevenDay: mergeWindow(previous.sevenDay, next.sevenDay, now),
     ...(fable !== undefined ? { fable } : {}),
+    ...(resetCredits ? { resetCredits } : {}),
   };
 }
 
@@ -187,9 +190,9 @@ function mergeFable(previous: FableUsage | null | undefined, next: FableUsage | 
   };
 }
 
-function commitUsage(account: string, usage: UsageData, now = Date.now(), reported = true): void {
+function commitUsage(account: string, usage: UsageData, now = Date.now(), reported = true, full = false): void {
   const entry = entryFor(account);
-  entry.usage = mergeUsage(entry.usage, usage, now);
+  entry.usage = mergeUsage(entry.usage, usage, now, full);
   if (reported) entry.updatedAt = now;
   saveToDisk();
   emitClaudeAccountsChanged();
@@ -272,12 +275,35 @@ export function usageFromPlanRateLimits(rateLimits: Record<string, unknown> | nu
   // A report with the weekly window and no 5-hour one: the account has no 5-hour limit.
   const noLimit = rateLimits.five_hour == null ? sevenDay !== null : !fiveHour && previous?.noFiveHourLimit === true;
   const fable = fableFromPlanRateLimits(rateLimits);
+  const resetCredits = resetCreditsFromPlanRateLimits(rateLimits);
   return {
     fiveHour: fiveHour ?? (noLimit ? null : previous?.fiveHour ?? null),
     sevenDay: sevenDay ?? previous?.sevenDay ?? null,
     ...(noLimit ? { noFiveHourLimit: true } : {}),
     ...(fable !== undefined ? { fable } : {}),
+    ...(resetCredits ? { resetCredits } : {}),
   };
+}
+
+/**
+ * The account's free limit resets in a `/usage` report: `cedar_ember.grants`,
+ * each with the resets it has left and when it ends (the shape claude.ai's
+ * usage page reads; Claude Code's report had the key null on Nov 9 2026).
+ * How many are left in all, and the nearest end; null when there are none.
+ */
+export function resetCreditsFromPlanRateLimits(rateLimits: Record<string, unknown>, now = Date.now()): UsageResetCredits | null {
+  const grants = (rateLimits.cedar_ember as { grants?: unknown } | null | undefined)?.grants;
+  if (!Array.isArray(grants)) return null;
+  let count = 0;
+  let next: number | null = null;
+  for (const grant of grants as Array<Record<string, unknown> | null>) {
+    const left = typeof grant?.resets_left === "number" && Number.isFinite(grant.resets_left) ? Math.floor(grant.resets_left) : 0;
+    const ends = typeof grant?.ends_at === "string" ? Date.parse(grant.ends_at) : Number.NaN;
+    if (left <= 0 || (Number.isFinite(ends) && ends <= now)) continue;
+    count += left;
+    if (Number.isFinite(ends) && (next === null || ends < next)) next = ends;
+  }
+  return count > 0 ? { availableCount: count, nextExpiresAt: next } : null;
 }
 
 interface PlanLimitRow {
@@ -386,12 +412,33 @@ export function aggregateUsage(usages: Array<UsageData | null>, now = Date.now()
   const fiveHour = aggregateWindow(usages.map(usage => usage?.fiveHour ?? null), now);
   const sevenDay = aggregateWindow(usages.map(usage => usage?.sevenDay ?? null), now);
   const noLimit = usages.filter(usage => usage?.noFiveHourLimit).length;
+  // The Fable allowances together. Like the 5-hour bar, it leaves out accounts reported to have
+  // none (`fableCapacity`); one whose report is not in yet still counts.
+  const fable = aggregateWindow(usages.map(usage => usage?.fable ?? null), now);
+  const noFable = usages.filter(usage => usage?.fable === null).length;
+  const resetCredits = aggregateResetCredits(usages, now);
   return {
     fiveHour,
     sevenDay,
     capacity: usages.length * 100,
     ...(noLimit > 0 ? { fiveHourCapacity: (usages.length - noLimit) * 100 } : {}),
+    ...(fable ? { fable } : {}),
+    ...(fable && noFable > 0 ? { fableCapacity: (usages.length - noFable) * 100 } : {}),
+    ...(resetCredits ? { resetCredits } : {}),
   };
+}
+
+/** Every account's reset grants together, with the nearest expiry still ahead. */
+function aggregateResetCredits(usages: Array<UsageData | null>, now: number): UsageResetCredits | null {
+  let count = 0;
+  let next: number | null = null;
+  for (const usage of usages) {
+    const credits = usage?.resetCredits;
+    if (!credits || credits.availableCount <= 0 || (credits.nextExpiresAt !== null && credits.nextExpiresAt <= now)) continue;
+    count += credits.availableCount;
+    if (credits.nextExpiresAt !== null && (next === null || credits.nextExpiresAt < next)) next = credits.nextExpiresAt;
+  }
+  return count > 0 ? { availableCount: count, nextExpiresAt: next } : null;
 }
 
 /** Streaming input that stays silent until `signal` aborts, so Claude Code never prompts the model. */
@@ -448,7 +495,7 @@ export function applyPlanRateLimits(account: string, limits: Record<string, unkn
   const entry = entryFor(account);
   const freed = entry.limitedUntil != null && windows.length > 0 && windows.every(window => window.utilization < 100);
   if (freed) entry.limitedUntil = null;
-  if (usage) commitUsage(account, usage, now);
+  if (usage) commitUsage(account, usage, now, true, true);
   else if (freed) {
     saveToDisk();
     emitClaudeAccountsChanged();

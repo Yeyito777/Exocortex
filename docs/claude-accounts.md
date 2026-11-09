@@ -454,6 +454,25 @@ reason, but an event that leaves out a window the account still holds doesn't
 put off the next poll. An account whose usage isn't known yet stays counted.
 Such an account always has full 5-hour headroom in routing.
 
+The Fable allowance (see "The Fable allowance") is a bar of its own, combined
+like the weekly one (`18/200%`, each account's reset). With no 5-hour limit on
+any account it takes the 5-Hour row's place, under Weekly; while that row is
+in use (some account has a 5-hour limit) it sits beside the bars as two short
+rows (`Fable 18/200%` over `resets in 4d6h · 4d11h`), which go first when the
+terminal is too narrow for both. Like the 5-hour bar it counts only the
+accounts that have an allowance (`fableCapacity`) and crosses out the others'
+share; with no allowance on any account nothing of it shows. The Accounts
+screen has a Fable column while some account reports an allowance (crossed
+out for one that has none), and tags an account `Fable out` when a Fable
+request was refused though the bar reads under 100%; `/account claude` lists
+it after the weekly window.
+
+Free limit resets (Claude Code's report carries them as `cedar_ember.grants`,
+null on Nov 9 2026) show like OpenAI's reset credits once it does: the status
+bar's `Usage Resets` / `Next Expiry` block with every account's together, and a
+Resets column on the Accounts screen (`2 4d`: how many, and the time until the
+nearest expires). Exocortex only shows them; spending one is done on claude.ai.
+
 Idle usage comes from Claude Code's `/usage` data, fetched per account with a
 bare Claude Code process for that account (at most once a minute per account,
 only when a client connects or a turn ends). During turns, each
