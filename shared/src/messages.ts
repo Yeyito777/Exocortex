@@ -372,13 +372,15 @@ const LEGACY_AUTOMATED_PROMPT = /^\[(?:notification\]|chrono (?:hard )?wake[:\]]
  */
 /** Text before a reply's last tool calls that counts as the start of the reply. */
 export const SPLIT_REPLY_MIN_CHARS = 200;
+/** ...however long the text after the calls is (an answer, then a delegation and its own report). */
+export const SPLIT_REPLY_LONG_CHARS = 500;
 
 /**
  * A reply split by its last tool calls (the answer, then e.g. a scratchpad
  * write, then a line or nothing): the indices of the blocks a folded view shows
  * besides the trailing text, namely the text just before that last run of calls
  * and the run's tool calls, when that text is substantial and longer than the
- * text after it. Empty otherwise. Thinking and tool results stay folded. The
+ * text after it, or long whatever follows. Empty otherwise. Thinking and tool results stay folded. The
  * TUI's fold (tui/src/turncollapse.ts) and the daemon's folded-work elision
  * (daemon/src/history-pagination.ts) both use it, so what one shows the other sends.
  */
@@ -403,7 +405,7 @@ export function splitReplyReveal(blocks: readonly Block[]): number[] {
     textStart--;
     before += chars(blocks[textStart]!);
   }
-  if (before < SPLIT_REPLY_MIN_CHARS || before <= after) return [];
+  if (before < SPLIT_REPLY_MIN_CHARS || (before <= after && before < SPLIT_REPLY_LONG_CHARS)) return [];
   const reveal: number[] = [];
   for (let index = textStart; index <= last; index++) {
     const block = blocks[index]!;
