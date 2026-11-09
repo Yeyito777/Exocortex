@@ -12,7 +12,11 @@ import {
   getAccountUsage,
   getAccountUsageUpdatedAt,
   applyPlanRateLimits,
+  CLAUDE_FABLE_TURN_HEADER,
+  fableFromPlanRateLimits,
+  isFableScopedLimit,
   mergeUsage,
+  noteAccountFableRefusal,
   usageFromPlanRateLimits,
   usageFromRateLimitInfo,
 } from "./usage";
@@ -365,6 +369,165 @@ describe("one account's usage never goes back within a window", () => {
       expect(shown()).toEqual([42, 195]);
     } finally {
       clearUsage("test-flicker-main");
+    }
+  });
+});
+
+/** main's `/usage` report on Nov 9 2026 (Claude Code 2.1.321), the keys that matter. */
+const FABLE_REPORT = {
+  five_hour: null,
+  seven_day: { utilization: 43, resets_at: "2026-11-14T07:59:59.679428+00:00" },
+  extra_usage: { is_enabled: false, disabled_reason: "out_of_credits" },
+  limits: [
+    { kind: "weekly_all", group: "weekly", percent: 43, resets_at: "2026-11-14T07:59:59.679428+00:00", severity: "normal", is_active: true, scope: null },
+    { kind: "weekly_scoped", group: "weekly", percent: 11, resets_at: "2026-11-14T07:59:59.679591+00:00", severity: "normal", is_active: false, scope: { model: { display_name: "Fable", id: null }, surface: null } },
+  ],
+  cedar_ember: null,
+  weekly_scoped_shares: [{ limit_index: 1, used_percent_of_weekly: 6, allowance_percent_of_weekly: 50 }],
+  model_scoped: [{ display_name: "Fable", utilization: 11, resets_at: "2026-11-14T07:59:59.679591+00:00" }],
+};
+
+describe("the Fable allowance in Claude Code's /usage report", () => {
+  const RESET = Date.parse("2026-11-14T08:00:00Z");
+
+  test("is the weekly row scoped to Fable, with its share of the weekly limit", () => {
+    expect(usageFromPlanRateLimits(FABLE_REPORT)).toEqual({
+      fiveHour: null,
+      sevenDay: { utilization: 43, resetsAt: RESET },
+      noFiveHourLimit: true,
+      fable: { utilization: 11, resetsAt: RESET, allowanceOfWeekly: 50, limitedUntil: null },
+    });
+  });
+
+  test("matches the model's name in any case, and falls back to the report's model_scoped entry", () => {
+    const lower = { ...FABLE_REPORT, limits: [FABLE_REPORT.limits[0], { ...FABLE_REPORT.limits[1], scope: { model: { display_name: "fable 5.2" } } }] };
+    expect(fableFromPlanRateLimits(lower)?.utilization).toBe(11);
+    const { limits: _rows, ...noRows } = FABLE_REPORT;
+    expect(fableFromPlanRateLimits(noRows)).toEqual({ utilization: 11, resetsAt: RESET, limitedUntil: null });
+  });
+
+  test("absent from the plan's rows means no Fable limit; a report with no rows says nothing", () => {
+    expect(fableFromPlanRateLimits({ ...FABLE_REPORT, limits: [FABLE_REPORT.limits[0]], model_scoped: [] })).toBeNull();
+    expect(fableFromPlanRateLimits({ seven_day: FABLE_REPORT.seven_day })).toBeUndefined();
+    expect(usageFromPlanRateLimits({ seven_day: FABLE_REPORT.seven_day })).not.toHaveProperty("fable");
+  });
+
+  test("is kept per account with the usage snapshot, on disk too, and an event's window updates it", () => {
+    const account = "test-fable-report";
+    try {
+      const now = Date.parse("2026-11-09T20:00:00Z");
+      applyPlanRateLimits(account, FABLE_REPORT, now);
+      expect(getAccountUsage(account)?.fable).toEqual({ utilization: 11, resetsAt: RESET, allowanceOfWeekly: 50 });
+      const saved = JSON.parse(readFileSync(join(runtimeDir(), "usage-anthropic.json"), "utf-8"));
+      expect(saved.accounts[account].usage.fable).toEqual({ utilization: 11, resetsAt: RESET, allowanceOfWeekly: 50 });
+      // A turn's rate_limit_event carries the allowance as the seven_day_overage_included window.
+      const event = { status: "allowed", unifiedWindows: { seven_day: { utilization: 0.45, resetsAt: RESET / 1000 }, seven_day_overage_included: { utilization: 0.2, resetsAt: RESET / 1000 } } };
+      applyUsageHeaders(new Headers({ [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify(event), [CLAUDE_ACCOUNT_HEADER]: account }), now);
+      expect(getAccountUsage(account)?.fable).toEqual({ utilization: 20, resetsAt: RESET, allowanceOfWeekly: 50 });
+      // An event without it keeps what is known.
+      applyUsageHeaders(new Headers({ [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify({ status: "allowed", unifiedWindows: { seven_day: { utilization: 0.46, resetsAt: RESET / 1000 } } }), [CLAUDE_ACCOUNT_HEADER]: account }), now);
+      expect(getAccountUsage(account)?.fable?.utilization).toBe(20);
+    } finally {
+      clearUsage(account);
+    }
+  });
+});
+
+describe("running out of Fable allowance limits Fable only", () => {
+  const account = "test-fable-limit";
+  const NOW = Date.parse("2026-11-12T12:00:00Z");
+  const RESET = Date.parse("2026-11-14T08:00:00Z");
+  const windows = { seven_day: { utilization: 0.6, resetsAt: RESET / 1000 }, seven_day_overage_included: { utilization: 1, resetsAt: RESET / 1000, status: "rejected" } };
+  function event(info: Record<string, unknown>, fableTurn = false, at = NOW): void {
+    const headers = new Headers({ [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify(info), [CLAUDE_ACCOUNT_HEADER]: account });
+    if (fableTurn) headers.set(CLAUDE_FABLE_TURN_HEADER, "1");
+    applyUsageHeaders(headers, at);
+  }
+
+  test("a refusal naming the allowance keeps the account usable and holds Fable until the allowance resets", () => {
+    try {
+      event({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: RESET / 1000, overageStatus: "rejected", overageDisabledReason: "out_of_credits", isUsingOverage: false, unifiedWindows: windows }, true);
+      // Not an account at a usage limit: its other models go on, and nothing sends turns to API credits.
+      expect(getAccountLimitedUntil(account, NOW)).toBeNull();
+      expect(getAccountUsage(account)?.fable).toEqual({ utilization: 100, resetsAt: RESET, limitedUntil: RESET });
+      expect(getAccountUsage(account)?.sevenDay?.utilization).toBe(60);
+    } finally {
+      clearUsage(account);
+    }
+  });
+
+  test("a refusal that names no window is Fable's on a Fable turn with plan usage left, and the account's otherwise", () => {
+    const open = { five_hour: { utilization: 0.3, resetsAt: NOW / 1000 + 3600 }, seven_day: { utilization: 0.6, resetsAt: RESET / 1000 } };
+    expect(isFableScopedLimit({ status: "rejected", errorCode: "credits_required", unifiedWindows: open }, true)).toBe(true);
+    expect(isFableScopedLimit({ status: "rejected", rateLimitType: "overage", unifiedWindows: open }, true)).toBe(true);
+    // Another model's turn, a named plan window, or a full plan window: the account's limit.
+    expect(isFableScopedLimit({ status: "rejected", unifiedWindows: open }, false)).toBe(false);
+    expect(isFableScopedLimit({ status: "rejected", rateLimitType: "seven_day", unifiedWindows: open }, true)).toBe(false);
+    expect(isFableScopedLimit({ status: "rejected", unifiedWindows: { ...open, seven_day: { utilization: 1, resetsAt: RESET / 1000 } } }, true)).toBe(false);
+    expect(isFableScopedLimit({ status: "rejected", unifiedWindows: { ...open, five_hour: { utilization: 0.97, resetsAt: 1, status: "rejected" } } }, true)).toBe(false);
+    // Named, it is the allowance's whatever the turn.
+    expect(isFableScopedLimit({ status: "rejected", rateLimitType: "seven_day_overage_included" }, false)).toBe(true);
+    try {
+      event({ status: "rejected", resetsAt: RESET / 1000, unifiedWindows: open }, false);
+      expect(getAccountLimitedUntil(account, NOW)).toBe(RESET);
+      expect(getAccountUsage(account)?.fable).toBeUndefined();
+    } finally {
+      clearUsage(account);
+    }
+  });
+
+  test("Fable billed to extra usage holds Fable, not the account", () => {
+    try {
+      event({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: RESET / 1000, overageStatus: "allowed", isUsingOverage: true, unifiedWindows: windows }, true);
+      expect(getAccountLimitedUntil(account, NOW)).toBeNull();
+      expect(getAccountUsage(account)?.fable?.limitedUntil).toBe(RESET);
+    } finally {
+      clearUsage(account);
+    }
+  });
+
+  test("the hold ends when a Fable request goes through, a full report shows allowance left, or its time passes", () => {
+    try {
+      const refuse = () => event({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: RESET / 1000, unifiedWindows: windows }, true);
+      refuse();
+      // Another model's allowed request says nothing about Fable.
+      event({ status: "allowed", unifiedWindows: windows });
+      expect(getAccountUsage(account)?.fable?.limitedUntil).toBe(RESET);
+      event({ status: "allowed", unifiedWindows: windows }, true);
+      expect(getAccountUsage(account)?.fable?.limitedUntil).toBeUndefined();
+
+      refuse();
+      // A report still at 100% keeps it; one under 100% ends it.
+      const full = { ...FABLE_REPORT, limits: [FABLE_REPORT.limits[0], { ...FABLE_REPORT.limits[1], percent: 100 }] };
+      applyPlanRateLimits(account, full, NOW);
+      expect(getAccountUsage(account)?.fable).toMatchObject({ utilization: 100, limitedUntil: RESET });
+      applyPlanRateLimits(account, { ...FABLE_REPORT, limits: [FABLE_REPORT.limits[0], { ...FABLE_REPORT.limits[1], percent: 96 }] }, NOW);
+      expect(getAccountUsage(account)?.fable).toEqual({ utilization: 96, resetsAt: RESET, allowanceOfWeekly: 50 });
+
+      refuse();
+      // Past the reset the next reading drops it.
+      event({ status: "allowed", unifiedWindows: { seven_day: { utilization: 0.01, resetsAt: RESET / 1000 + 7 * 86_400 }, seven_day_overage_included: { utilization: 0, resetsAt: RESET / 1000 + 7 * 86_400 } } }, false, RESET + 60_000);
+      expect(getAccountUsage(account)?.fable).toEqual({ utilization: 0, resetsAt: RESET + 7 * 86_400_000, allowanceOfWeekly: 50 });
+    } finally {
+      clearUsage(account);
+    }
+  });
+
+  test("a refusal known only from a turn's error is held too: until the allowance's known reset, else briefly", () => {
+    try {
+      noteAccountFableRefusal(account, null, NOW);
+      expect(getAccountUsage(account)?.fable).toEqual({ utilization: 100, resetsAt: null, limitedUntil: NOW + 15 * 60_000 });
+      expect(getAccountLimitedUntil(account, NOW)).toBeNull();
+      clearUsage(account);
+      applyPlanRateLimits(account, FABLE_REPORT, NOW);
+      noteAccountFableRefusal(account, null, NOW);
+      expect(getAccountUsage(account)?.fable).toEqual({ utilization: 11, resetsAt: RESET, allowanceOfWeekly: 50, limitedUntil: RESET });
+      // Under /proxy the hold is capped: the remote judges, and a later turn finds out.
+      clearUsage(account);
+      noteAccountFableRefusal(account, RESET, NOW, 15 * 60_000);
+      expect(getAccountUsage(account)?.fable?.limitedUntil).toBe(NOW + 15 * 60_000);
+    } finally {
+      clearUsage(account);
     }
   });
 });

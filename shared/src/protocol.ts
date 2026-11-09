@@ -1440,6 +1440,8 @@ export interface ClaudeRoutingInfo {
   fiveHourComfort: number;
   scoreTie: number;
   coldMoveRatio: number;
+  /** New Fable work needs at least this much of the account's Fable allowance left (percent points). Omitted by older daemons. */
+  fableFloor?: number;
 }
 
 export interface ClaudeAccountsInfo {

@@ -11,6 +11,7 @@ import { setClaudeAuthProbeForTests } from "../providers/anthropic/auth-cache";
 import { applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, CLAUDE_RATE_LIMIT_HEADER, clearUsage, getAccountLimitedUntil, getAccountUsage } from "../providers/anthropic/usage";
 import type { ClaudeAuthStatus } from "../providers/anthropic/types";
 import { createProxiedClaudeRouter, proxiedConversationKey, rateLimitInfoFromHeaders } from "./claude-routing";
+import { requestModel } from "./endpoint";
 import { ProviderProxyLink } from "./link";
 import { fakeSsh, stubAuth, type UpstreamCall } from "./testing";
 import { UpstreamAuthError } from "./upstream-auth";
@@ -73,13 +74,13 @@ async function proxied(upstream: Upstream, authOverrides: Parameters<typeof stub
   const link = new ProviderProxyLink("whale", { providers: () => ["anthropic"], spawnProcess: ssh.spawn, reconnectDelaysMs: [20], helloTimeoutMs: 2_000 });
   links.push(link);
   await link.waitReady(2_000);
-  const send = async (conversation: string | null, headers: Record<string, string> = {}) => {
+  const send = async (conversation: string | null, headers: Record<string, string> = {}, body = "{}") => {
     const response = await link.openHttp({
       provider: "anthropic",
       method: "POST",
       target: "/v1/messages",
       headers: { ...(conversation ? { [PROVIDER_PROXY_CONVERSATION_HEADER]: conversation } : {}), ...headers },
-      body: new TextEncoder().encode("{}"),
+      body: new TextEncoder().encode(body),
     });
     return { status: response.status, text: await new Response(response.body).text(), headers: response.headers };
   };
@@ -198,7 +199,95 @@ describe("proxied Claude requests are routed across the remote's pool", () => {
   });
 });
 
+describe("proxied Fable requests are routed by the Fable allowance", () => {
+  const FABLE = JSON.stringify({ model: "claude-fable-5-2", max_tokens: 1, messages: [] });
+  const OPUS = JSON.stringify({ model: "claude-opus-5-5", max_tokens: 1, messages: [] });
+  /** api.anthropic.com's refusal of a Fable request past the allowance: the plan windows have room, the claim is the allowance's. */
+  const fableRefusal = () => new Response(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "limit", details: { error_code: "credits_required" } } }), {
+    status: 429,
+    headers: limiterHeaders("rejected", 0.2, 0.4, {
+      "anthropic-ratelimit-unified-representative-claim": "seven_day_overage_included",
+      "anthropic-ratelimit-unified-reset": String(Math.floor(Date.now() / 1000) + 48 * H),
+      "anthropic-ratelimit-unified-7d_oi-utilization": "1.0",
+      "anthropic-ratelimit-unified-7d_oi-reset": String(Math.floor(Date.now() / 1000) + 48 * H),
+      "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+      "anthropic-ratelimit-unified-overage-status": "rejected",
+      "anthropic-ratelimit-unified-overage-disabled-reason": "out_of_credits",
+    }),
+  });
+
+  test("an account out of Fable allowance passes the request to one that has some, and keeps serving other models", async () => {
+    report("main", 10, 2 * H, 20, 30 * H);
+    report("max2", 10, 3 * H, 20, 96 * H);
+    const upstream: Upstream = {
+      calls: [],
+      answer: (account, call) => account === "main" && String(upstream.calls[call - 1].init.body).includes("fable") ? fableRefusal() : ok(account),
+    };
+    const { send } = await proxied(upstream);
+    expect((await send("macbook/opus-conv", {}, OPUS)).text).toBe("served by main");
+    const moved = await send("macbook/fable-conv", {}, FABLE);
+    expect(moved).toMatchObject({ status: 200, text: "served by max2" });
+    expect(JSON.parse(decodeURIComponent(moved.headers[PROVIDER_PROXY_ACCOUNT_MOVE_HEADER]!))).toMatchObject({ from: "main", to: "max2" });
+    // main is not at a usage limit: it only has no Fable to give until the allowance resets.
+    expect(getAccountLimitedUntil("main")).toBeNull();
+    expect(claudeAccountsInfo().accounts.find(account => account.id === "main")).toMatchObject({ state: "ready", usage: { fable: { utilization: 100 } } });
+    expect((await send("macbook/opus-conv", {}, OPUS)).text).toBe("served by main");
+    // Later Fable requests go straight to max2: no refusal first.
+    const calls = upstream.calls.length;
+    expect((await send("macbook/fable-conv-2", {}, FABLE)).text).toBe("served by max2");
+    expect(upstream.calls).toHaveLength(calls + 1);
+  });
+
+  test("with no Fable allowance anywhere the refusal goes back to the client, which runs another model; nothing is marked limited", async () => {
+    report("main", 10, 2 * H, 20, 30 * H);
+    report("max2", 10, 3 * H, 20, 96 * H);
+    const upstream: Upstream = { calls: [], answer: (account, call) => String(upstream.calls[call - 1].init.body).includes("fable") ? fableRefusal() : ok(account) };
+    const { send } = await proxied(upstream);
+    const refused = await send("macbook/fable-conv", {}, FABLE);
+    expect(refused.status).toBe(429);
+    // Each account was asked once.
+    expect(upstream.calls).toHaveLength(2);
+    expect(getAccountLimitedUntil("main")).toBeNull();
+    expect(getAccountLimitedUntil("max2")).toBeNull();
+    // The pool the client reads says so: no account has Fable left.
+    expect(claudeAccountsInfo().accounts.map(account => [account.state, account.usage?.fable?.limitedUntil != null])).toEqual([["ready", true], ["ready", true]]);
+    expect((await send("macbook/fable-conv", {}, OPUS)).status).toBe(200);
+  });
+});
+
 describe("helpers", () => {
+  test("a Messages request's model is read from the head of its body, or parsed out when it mentions Fable", () => {
+    const body = (value: unknown) => Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
+    expect(requestModel(body({ model: "claude-fable-5-2", messages: [{ role: "user", content: "hi" }] }))).toBe("claude-fable-5-2");
+    expect(requestModel(body({ messages: [], model: "claude-fable-5-2" }))).toBe("claude-fable-5-2");
+    // A conversation about Fable on another model is not a Fable request.
+    expect(requestModel(body({ model: "claude-opus-5-5", messages: [{ role: "user", content: "\"model\":\"claude-fable-5-2\"" }] }))).toBe("claude-opus-5-5");
+    expect(requestModel(body({ messages: [{ role: "user", content: "hello" }], model: "claude-opus-5-5" }))).toBeNull();
+    expect(requestModel(body("not json about fable"))).toBeNull();
+    expect(requestModel(undefined)).toBeNull();
+  });
+
+  test("limiter headers name the limit a verdict is about, and carry the Fable allowance's window", () => {
+    expect(rateLimitInfoFromHeaders(new Headers({
+      "anthropic-ratelimit-unified-status": "rejected",
+      "anthropic-ratelimit-unified-reset": "1800000000",
+      "anthropic-ratelimit-unified-representative-claim": "seven_day_overage_included",
+      "anthropic-ratelimit-unified-7d-utilization": "0.4",
+      "anthropic-ratelimit-unified-7d-reset": "1800000000",
+      "anthropic-ratelimit-unified-7d_oi-utilization": "1.0",
+      "anthropic-ratelimit-unified-7d_oi-reset": "1800000000",
+      "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+    }))).toEqual({
+      status: "rejected",
+      resetsAt: 1800000000,
+      rateLimitType: "seven_day_overage_included",
+      unifiedWindows: {
+        seven_day: { utilization: 0.4, resetsAt: 1800000000 },
+        seven_day_overage_included: { utilization: 1, resetsAt: 1800000000, status: "rejected" },
+      },
+    });
+  });
+
   test("conversation names are validated", () => {
     expect(proxiedConversationKey("macbook.local/1792090615628-gj1mo3")).toBe("proxy:macbook.local/1792090615628-gj1mo3");
     expect(proxiedConversationKey(undefined)).toBeNull();

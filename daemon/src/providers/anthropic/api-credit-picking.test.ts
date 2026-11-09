@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { writeExocortexConfig } from "@exocortex/shared/config";
 import { setClaudeAccountsFileForTests } from "./accounts";
-import { apiCreditSwitchNotice, getCombinedUsage, refreshClaudeAccountStatuses, routeClaudeTurn, setAssignmentsFileForTests, touchConversationCredit } from "./account-pool";
+import { apiCreditFallbackActive, apiCreditSwitchNotice, fableFallbackNotice, getCombinedUsage, refreshClaudeAccountStatuses, routeClaudeTurn, setAssignmentsFileForTests, touchConversationCredit } from "./account-pool";
 import {
   API_CREDIT_CACHE_TTL_MS,
   apiCreditConfig,
@@ -18,7 +18,9 @@ import {
 } from "./api-credits";
 import { setClaudeAuthProbeForTests } from "./auth-cache";
 import { setCreditSyncForTests, syncConsoleCredits, type ConsoleFetcher } from "./credit-sync";
-import { applyUsageHeaders, CLAUDE_RATE_LIMIT_HEADER, clearUsage } from "./usage";
+import { applyUsageHeaders, CLAUDE_FABLE_TURN_HEADER, CLAUDE_RATE_LIMIT_HEADER, clearUsage } from "./usage";
+import { claudeTurnModel } from "./api";
+import { claudeUsageAvailability } from "./availability";
 import { resetApiKeyUsageForTest } from "../openai/api-key-usage";
 
 const MAIN_KEY = "ANTHROPIC_API_KEY_MAIN_CREDITS";
@@ -233,6 +235,44 @@ describe("credit routing for conversations", () => {
     touchConversationCredit("conv-sub", null);
     touchConversationCredit("conv-old", null);
     expect((await routeClaudeTurn("conv-old", null)).apiCreditMovedFrom).toBeNull();
+  });
+
+  test("running out of Fable allowance never sends a turn to API credits: it runs Opus on the subscription", async () => {
+    // The account has plan usage left; only its Fable allowance is used up (the refusal Claude Code reports for it).
+    clearUsage("main");
+    const at = Math.floor(Date.now() / 1000);
+    applyUsageHeaders(new Headers({
+      [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify({
+        status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: at + 86_400,
+        overageStatus: "rejected", overageDisabledReason: "out_of_credits", isUsingOverage: false,
+        unifiedWindows: { seven_day: { utilization: 0.6, resetsAt: at + 86_400 }, seven_day_overage_included: { utilization: 1, resetsAt: at + 86_400, status: "rejected" } },
+      }),
+      [CLAUDE_FABLE_TURN_HEADER]: "1",
+    }));
+    expect(apiCreditFallbackActive()).toBe(false);
+    expect(getCombinedUsage()?.apiCredits?.active).toBe(false);
+    // The turn does not wait either: there is a model to run.
+    expect(claudeUsageAvailability()).toEqual({ ready: true, resetAt: null });
+    const fable = await routeClaudeTurn("conv-fable", null, undefined, null, "conv-fable", "claude-fable-5-2");
+    expect(fable.apiCredit).toBeNull();
+    expect(fable.fableFallback?.reason).toBe("allowance");
+    expect(claudeTurnModel("claude-fable-5-2" as never, fable)).toBe("claude-opus-5-5");
+    expect(apiCreditSwitchNotice("conv-fable", fable)).toBeNull();
+    // Nor does it send anything else there.
+    expect((await routeClaudeTurn("conv-opus", null, undefined, null, "conv-opus", "claude-opus-5-5")).apiCredit).toBeNull();
+  });
+
+  test("a Fable conversation that gets to API credits for the usual reason pays Opus prices there, not Fable's", async () => {
+    // beforeEach: the only subscription account is at its weekly limit.
+    const route = await routeClaudeTurn("conv-fable", null, undefined, null, "conv-fable", "claude-fable-5-2");
+    expect(route.apiCredit?.id).toBe(MAX2_KEY);
+    expect(route.fableFallback).toEqual({ reason: "api-credits", resetAt: null });
+    expect(claudeTurnModel("claude-fable-5-2" as never, route)).toBe("claude-opus-5-5");
+    expect(fableFallbackNotice("conv-fable", route, "claude-fable-5-2", "Opus 5.5")).toBe("On Claude API credits this conversation runs on Opus 5.5, not Fable.");
+    // Another model's turn on credits keeps its model.
+    const opus = await routeClaudeTurn("conv-opus", null, undefined, null, "conv-opus", "claude-sonnet-5-5");
+    expect(opus.apiCredit?.id).toBe(MAX2_KEY);
+    expect(claudeTurnModel("claude-sonnet-5-5" as never, opus)).toBe("claude-sonnet-5-5");
   });
 
   test("the usage data names the key new credit turns take and why", async () => {

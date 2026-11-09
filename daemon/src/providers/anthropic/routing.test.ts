@@ -5,7 +5,10 @@ import {
   accountUsableAt,
   chooseAccountForNewWork,
   DEFAULT_ROUTING_POLICY,
+  fableAllowanceBackAt,
+  fableAllowanceOpen,
   isAccountLimited,
+  isFableLimited,
   routeConversation,
   routeNewWork,
   subscriptionsUsableAt,
@@ -384,5 +387,75 @@ describe("an account with no 5-hour limit", () => {
     const other = account("max2", usage([100, HOUR], [100, DAY]));
     expect(chooseAccountForNewWork([account("main", verified([50, 6 * DAY])), other], NOW)?.id).toBe("main");
     expect(chooseAccountForNewWork([weekly, other], NOW)).toBeNull();
+  });
+});
+
+describe("Fable turns are routed by the Fable allowance too", () => {
+  /** Plan usage with room everywhere, and a Fable allowance at `percent` resetting with the week. */
+  function withFable(weekly: number, percent: number, extra: Partial<NonNullable<UsageData["fable"]>> = {}): UsageData {
+    return { ...usage([10, 2 * HOUR], [weekly, 3 * DAY]), fable: { utilization: percent, resetsAt: NOW + 3 * DAY, allowanceOfWeekly: 50, ...extra } };
+  }
+
+  test("an account out of Fable allowance is limited for Fable only", () => {
+    const out = account("main", withFable(40, 100));
+    const refused = account("max2", withFable(40, 97, { limitedUntil: NOW + DAY }));
+    expect(isFableLimited(out, NOW)).toBe(true);
+    expect(isFableLimited(refused, NOW)).toBe(true);
+    expect(isAccountLimited(out, NOW)).toBe(false);
+    // Past its reset the allowance starts over; so does a refusal past its time.
+    expect(isFableLimited(out, NOW + 3 * DAY + 1)).toBe(false);
+    expect(isFableLimited(refused, NOW + DAY + 1)).toBe(false);
+    // No Fable limit on the account, or nothing known of it: not limited.
+    expect(isFableLimited(account("a", { ...usage([10, HOUR], [40, DAY]), fable: null }), NOW)).toBe(false);
+    expect(isFableLimited(account("a", usage([10, HOUR], [40, DAY])), NOW)).toBe(false);
+    expect(fableAllowanceOpen([out, refused], NOW)).toBe(false);
+    expect(fableAllowanceBackAt([out, refused], NOW)).toBe(NOW + DAY);
+    expect(fableAllowanceOpen([out, account("c", withFable(40, 20))], NOW)).toBe(true);
+    // An account at a plan limit has no Fable to give either.
+    expect(fableAllowanceOpen([out, account("c", withFable(100, 20))], NOW)).toBe(false);
+  });
+
+  test("a Fable conversation leaves an account out of Fable allowance, even with a warm cache; another model's stays", () => {
+    const accounts = [account("main", withFable(40, 100)), account("max2", withFable(40, 30))];
+    expect(routeConversation(warm("main"), accounts, NOW, DEFAULT_ROUTING_POLICY, true)).toEqual({
+      account: "max2", reason: "account-limited", movedFrom: "main", detail: "\"main\" is out of Fable allowance",
+    });
+    expect(routeConversation(warm("main"), accounts, NOW)).toMatchObject({ account: "main", reason: "cache-warm" });
+  });
+
+  test("background tasks do not hold a Fable conversation on an account that cannot run its turn", () => {
+    const accounts = [account("main", withFable(40, 100)), account("max2", withFable(40, 30))];
+    const busy = conversation({ account: "main", lastUsedAt: NOW - MIN, liveProcess: true, backgroundWork: true });
+    expect(routeConversation(busy, accounts, NOW, DEFAULT_ROUTING_POLICY, true)).toMatchObject({ account: "max2", movedFrom: "main" });
+    // With allowance left they hold it, as for any turn.
+    expect(routeConversation(busy, [account("main", withFable(40, 60)), accounts[1]], NOW, DEFAULT_ROUTING_POLICY, true)).toMatchObject({ account: "main", reason: "background-tasks" });
+  });
+
+  test("new Fable work skips an account out of allowance or under its floor, and says why", () => {
+    const out = [account("main", withFable(10, 100)), account("max2", withFable(60, 30))];
+    expect(routeNewWork(out, NOW, DEFAULT_ROUTING_POLICY, true)).toEqual({ account: "max2", detail: "\"main\" is out of Fable allowance" });
+    // Any other model's new work still prefers main, which has far more of its week left.
+    expect(routeNewWork(out, NOW)?.account).toBe("main");
+    const low = [account("main", withFable(10, 95)), account("max2", withFable(60, 30))];
+    expect(routeNewWork(low, NOW, DEFAULT_ROUTING_POLICY, true)).toEqual({ account: "max2", detail: "\"main\" is below the Fable floor" });
+    expect(chooseAccountForNewWork(low, NOW, DEFAULT_ROUTING_POLICY, true)?.id).toBe("max2");
+  });
+
+  test("Fable work is paced by the tighter of the week and the allowance", () => {
+    // main has more of its week left (90 vs 60 points) but less Fable: 20% of a 50-point allowance is 10 weekly points, max2's 80% is 40.
+    const accounts = [account("main", withFable(10, 80)), account("max2", withFable(40, 20))];
+    expect(routeNewWork(accounts, NOW)?.account).toBe("main");
+    const fable = routeNewWork(accounts, NOW, DEFAULT_ROUTING_POLICY, true)!;
+    expect(fable.account).toBe("max2");
+    expect(fable.detail).toBe("it is furthest behind its weekly pace (40% left over 3 days vs 10% over 3 days)");
+    // A cold Fable conversation moves for the same reason.
+    expect(routeConversation(cold("main"), accounts, NOW, DEFAULT_ROUTING_POLICY, true)).toMatchObject({ account: "max2", reason: "cold-move", movedFrom: "main" });
+  });
+
+  test("with no Fable allowance anywhere a Fable-aware route has nowhere to go: the pool then routes it as another model", () => {
+    const accounts = [account("main", withFable(40, 100)), account("max2", withFable(40, 100))];
+    expect(routeNewWork(accounts, NOW, DEFAULT_ROUTING_POLICY, true)).toBeNull();
+    expect(routeConversation(warm("main"), accounts, NOW, DEFAULT_ROUTING_POLICY, true)).toMatchObject({ account: "main", reason: "no-alternative" });
+    expect(routeConversation(warm("main"), accounts, NOW)).toMatchObject({ account: "main", reason: "cache-warm" });
   });
 });

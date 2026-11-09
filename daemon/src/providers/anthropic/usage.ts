@@ -22,6 +22,12 @@
  * and their rate_limit_events leave it out. Only `/usage` is a full report, so
  * only it clears the window (noFiveHourLimit); an event may leave a window out
  * for no reason.
+ *
+ * Fable models draw on an allowance of their own, a share of the weekly limit
+ * (`usage.fable`): `/usage` lists it as a `weekly_scoped` row and the
+ * rate_limit_events as the `seven_day_overage_included` window. A refusal
+ * scoped to it keeps only Fable turns off the account (isFableScopedLimit);
+ * its other models go on, so it never counts as an account at a usage limit.
  */
 
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -29,7 +35,7 @@ import { loadClaudeSdks } from "./sdk";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
-import type { UsageData, UsageWindow } from "../../messages";
+import type { FableUsage, UsageData, UsageWindow } from "../../messages";
 import { emitClaudeAccountsChanged } from "./account-events";
 import { claudeDailyReset } from "../../usage-limit-wait";
 import { MAIN_ACCOUNT_ID } from "./accounts";
@@ -38,6 +44,19 @@ import { claudeProcessOptions } from "./cli";
 export const CLAUDE_RATE_LIMIT_HEADER = "x-exocortex-claude-rate-limit";
 /** The Claude account (accounts.ts) the rate limit event came from; absent means `main`. */
 export const CLAUDE_ACCOUNT_HEADER = "x-exocortex-claude-account";
+/** "1" when the request behind the rate limit event ran a Fable model: scopes a refusal that names no window. */
+export const CLAUDE_FABLE_TURN_HEADER = "x-exocortex-claude-fable-turn";
+/** The Fable allowance's name in Claude Code's limiter: a rate_limit_event's `rateLimitType` and `unifiedWindows` key. */
+export const FABLE_RATE_LIMIT_TYPE = "seven_day_overage_included";
+/**
+ * Under /proxy a Fable refusal that reaches this machine is the remote's to
+ * judge (it routes by its accounts' allowance): this daemon holds the
+ * fallback model this long, then goes by the remote's shared pool again, or
+ * lets a turn find out.
+ */
+export const PROXIED_FABLE_HOLD_MS = 15 * 60_000;
+/** Limits of the whole plan (or another model family): a refusal naming one is never the Fable allowance's. */
+const PLAN_LIMIT_TYPES = new Set(["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"]);
 
 const USAGE_FILE = join(runtimeDir(), "usage-anthropic.json");
 const REMOTE_USAGE_TIMEOUT_MS = 30_000;
@@ -137,11 +156,34 @@ function mergeWindow(previous: UsageWindow | null | undefined, next: UsageWindow
  * usage) or a drop off a limit takes the report as it is.
  */
 export function mergeUsage(previous: UsageData | null, next: UsageData, now = Date.now()): UsageData {
-  if (!previous) return next;
+  if (!previous) return next.fable ? { ...next, fable: mergeFable(undefined, next.fable, now) } : next;
+  const fable = mergeFable(previous.fable, next.fable, now);
+  const { fable: _reported, ...rest } = next;
   return {
-    ...next,
+    ...rest,
     fiveHour: mergeWindow(previous.fiveHour, next.fiveHour, now),
     sevenDay: mergeWindow(previous.sevenDay, next.sevenDay, now),
+    ...(fable !== undefined ? { fable } : {}),
+  };
+}
+
+/**
+ * The Fable allowance of a new report over the last one: the window merges
+ * like any other; a report that says nothing of it (`undefined`) keeps what
+ * was known, and so does its refusal (`limitedUntil`) until a report clears
+ * it (`null`) or it passes.
+ */
+function mergeFable(previous: FableUsage | null | undefined, next: FableUsage | null | undefined, now: number): FableUsage | null | undefined {
+  if (next === undefined) return previous;
+  if (next === null) return null;
+  const window = mergeWindow(previous, next, now) ?? next;
+  const allowance = next.allowanceOfWeekly ?? previous?.allowanceOfWeekly;
+  const limitedUntil = next.limitedUntil !== undefined ? next.limitedUntil : previous?.limitedUntil;
+  return {
+    utilization: window.utilization,
+    resetsAt: window.resetsAt,
+    ...(allowance !== undefined ? { allowanceOfWeekly: allowance } : {}),
+    ...(limitedUntil != null && limitedUntil > now ? { limitedUntil } : {}),
   };
 }
 
@@ -176,12 +218,33 @@ export function usageFromRateLimitInfo(info: Record<string, unknown>, previous: 
   const noLimit = previous?.noFiveHourLimit === true && reported?.resetsAt == null;
   const fiveHour = noLimit ? null : reported;
   const sevenDay = toWindow(windows.seven_day);
-  if (!fiveHour && !sevenDay) return null;
+  const fable = toWindow(windows[FABLE_RATE_LIMIT_TYPE]);
+  if (!fiveHour && !sevenDay && !fable) return null;
   return {
     fiveHour: fiveHour ?? previous?.fiveHour ?? null,
     sevenDay: sevenDay ?? previous?.sevenDay ?? null,
     ...(noLimit ? { noFiveHourLimit: true } : {}),
+    // An event carries the allowance's window, not its share or a refusal: those stay as known.
+    ...(fable ? { fable } : {}),
   };
+}
+
+/**
+ * Whether a refused request (or one moved onto extra usage) ran out of the
+ * Fable allowance only, which leaves the account's other models usable.
+ * Claude Code names the allowance's window when the response did. A refusal
+ * that names no window (a `credits_required` body) or only the extra usage
+ * is the allowance's when the request ran Fable and neither plan window is
+ * full: an account with plan usage left refuses nothing else.
+ */
+export function isFableScopedLimit(info: Record<string, unknown>, fableTurn: boolean): boolean {
+  const type = info.rateLimitType;
+  if (type === FABLE_RATE_LIMIT_TYPE) return true;
+  if (!fableTurn || (typeof type === "string" && PLAN_LIMIT_TYPES.has(type))) return false;
+  const windows = (info.unifiedWindows ?? {}) as Record<string, (RateLimitWindow & { status?: unknown }) | undefined>;
+  const full = (window: (RateLimitWindow & { status?: unknown }) | undefined) =>
+    window?.status === "rejected" || (toWindow(window)?.utilization ?? 0) >= 100;
+  return !full(windows.five_hour) && !full(windows.seven_day);
 }
 
 interface PlanRateLimitWindow {
@@ -208,10 +271,51 @@ export function usageFromPlanRateLimits(rateLimits: Record<string, unknown> | nu
   if (!fiveHour && !sevenDay) return null;
   // A report with the weekly window and no 5-hour one: the account has no 5-hour limit.
   const noLimit = rateLimits.five_hour == null ? sevenDay !== null : !fiveHour && previous?.noFiveHourLimit === true;
+  const fable = fableFromPlanRateLimits(rateLimits);
   return {
     fiveHour: fiveHour ?? (noLimit ? null : previous?.fiveHour ?? null),
     sevenDay: sevenDay ?? previous?.sevenDay ?? null,
     ...(noLimit ? { noFiveHourLimit: true } : {}),
+    ...(fable !== undefined ? { fable } : {}),
+  };
+}
+
+interface PlanLimitRow {
+  percent?: unknown;
+  resets_at?: unknown;
+  scope?: { model?: { display_name?: unknown } | null } | null;
+}
+
+function isFableName(name: unknown): boolean {
+  return typeof name === "string" && /fable/i.test(name);
+}
+
+/**
+ * The Fable allowance in a `/usage` report: the row of `limits` scoped to a
+ * model named Fable, with its share of the weekly limit from
+ * `weekly_scoped_shares` (or, failing that row, the report's `model_scoped`
+ * entry). Null: the report lists the plan's rows and none is Fable's (no
+ * Fable limit); undefined: it lists no rows at all, which says nothing.
+ */
+export function fableFromPlanRateLimits(rateLimits: Record<string, unknown>): FableUsage | null | undefined {
+  const rows = Array.isArray(rateLimits.limits) ? rateLimits.limits as Array<PlanLimitRow | null> : null;
+  const index = rows?.findIndex(row => isFableName(row?.scope?.model?.display_name)) ?? -1;
+  const scoped = Array.isArray(rateLimits.model_scoped)
+    ? (rateLimits.model_scoped as Array<Record<string, unknown> | null>).find(entry => isFableName(entry?.display_name)) : undefined;
+  const row = index >= 0 ? rows![index]! : null;
+  const percent = row ? row.percent : scoped?.utilization;
+  if (!row && !scoped) return rows ? null : undefined;
+  if (typeof percent !== "number" || !Number.isFinite(percent)) return undefined;
+  const reset = row ? row.resets_at : scoped?.resets_at;
+  const resetsAt = typeof reset === "string" ? Date.parse(reset) : Number.NaN;
+  const shares = Array.isArray(rateLimits.weekly_scoped_shares) ? rateLimits.weekly_scoped_shares as Array<Record<string, unknown> | null> : [];
+  const allowance = index >= 0 ? shares.find(share => share?.limit_index === index)?.allowance_percent_of_weekly : undefined;
+  return {
+    utilization: Math.round(percent * 10) / 10,
+    resetsAt: Number.isFinite(resetsAt) ? Math.round(resetsAt / 1000) * 1000 : null,
+    ...(typeof allowance === "number" && allowance > 0 ? { allowanceOfWeekly: allowance } : {}),
+    // Allowance left: a full report ends an earlier refusal, as it frees a limited account.
+    ...(percent < 100 ? { limitedUntil: null } : {}),
   };
 }
 
@@ -388,20 +492,66 @@ function epochSecondsToMs(value: unknown): number | null {
  * turn moved onto extra usage) keeps the account out of new turns until the
  * window resets; an allowed one clears that.
  */
-function noteRateLimitStatus(entry: AccountUsageEntry, info: Record<string, unknown>, now: number): void {
+function noteRateLimitStatus(entry: AccountUsageEntry, info: Record<string, unknown>, now: number, fableTurn: boolean, fableHoldMs?: number): void {
   const overage = info.isUsingOverage === true || info.overageInUse === true;
   if (info.status === "rejected" || overage) {
-    entry.limitedUntil = epochSecondsToMs(info.resetsAt) ?? now + UNKNOWN_LIMIT_MS;
+    // Out of Fable allowance only: the account's other models go on.
+    if (isFableScopedLimit(info, fableTurn)) markFableLimited(entry, epochSecondsToMs(info.resetsAt), now, fableHoldMs);
+    else entry.limitedUntil = epochSecondsToMs(info.resetsAt) ?? now + UNKNOWN_LIMIT_MS;
   } else if (info.status === "allowed" || info.status === "allowed_warning") {
     entry.limitedUntil = null;
+    // A Fable request went through: the allowance is back.
+    if (fableTurn && entry.usage?.fable?.limitedUntil != null) {
+      const { limitedUntil: _ended, ...fable } = entry.usage.fable;
+      entry.usage = { ...entry.usage, fable };
+    }
   }
 }
 
 /**
- * Apply a forwarded rate_limit_event to the account it came from. Returns the
- * account, or null when the header carried nothing usable.
+ * Keep Fable turns off the account until its allowance resets: at `resetAt`
+ * when the refusal said, else at the allowance's known reset, else after a
+ * short hold that lets a later turn find out.
  */
-export function applyUsageHeaders(headers: Headers, now = Date.now()): string | null {
+function markFableLimited(entry: AccountUsageEntry, resetAt: number | null, now: number, maxHoldMs?: number): void {
+  const usage = entry.usage ?? { fiveHour: null, sevenDay: null };
+  const known = usage.fable ?? null;
+  const knownReset = known?.resetsAt != null && known.resetsAt > now ? known.resetsAt : null;
+  const reset = resetAt !== null && resetAt > now ? resetAt : knownReset;
+  const until = Math.min(reset ?? now + UNKNOWN_LIMIT_MS, maxHoldMs !== undefined ? now + maxHoldMs : Infinity);
+  entry.usage = {
+    ...usage,
+    fable: {
+      // A refusal with no reading of the allowance: it is used up.
+      utilization: known?.utilization ?? 100,
+      resetsAt: knownReset ?? reset,
+      ...(known?.allowanceOfWeekly !== undefined ? { allowanceOfWeekly: known.allowanceOfWeekly } : {}),
+      limitedUntil: until,
+    },
+  };
+}
+
+/**
+ * A Fable turn was refused for lack of Fable allowance without a
+ * rate_limit_event saying so (a result's error text, Claude Code switching
+ * the session off Fable by itself). `maxHoldMs` caps the hold where the
+ * refusal is another machine's to judge (/proxy).
+ */
+export function noteAccountFableRefusal(account: string, resetAt: number | null = null, now = Date.now(), maxHoldMs?: number): void {
+  const entry = entryFor(account);
+  const held = entry.usage?.fable?.limitedUntil;
+  if (held != null && held > now) return;
+  markFableLimited(entry, resetAt, now, maxHoldMs);
+  saveToDisk();
+  emitClaudeAccountsChanged();
+}
+
+/**
+ * Apply a forwarded rate_limit_event to the account it came from. Returns the
+ * account, or null when the header carried nothing usable. `fableHoldMs`
+ * caps how long a Fable refusal holds (PROXIED_FABLE_HOLD_MS under /proxy).
+ */
+export function applyUsageHeaders(headers: Headers, now = Date.now(), fableHoldMs?: number): string | null {
   const raw = headers.get(CLAUDE_RATE_LIMIT_HEADER);
   if (!raw) return null;
   const account = headers.get(CLAUDE_ACCOUNT_HEADER) || MAIN_ACCOUNT_ID;
@@ -409,14 +559,16 @@ export function applyUsageHeaders(headers: Headers, now = Date.now()): string | 
     const info = JSON.parse(raw) as Record<string, unknown>;
     const entry = entryFor(account);
     const before = entry.limitedUntil;
-    noteRateLimitStatus(entry, info, now);
+    const fableBefore = entry.usage?.fable?.limitedUntil ?? null;
+    noteRateLimitStatus(entry, info, now, headers.get(CLAUDE_FABLE_TURN_HEADER) === "1", fableHoldMs);
+    const fableChanged = fableBefore !== (entry.usage?.fable?.limitedUntil ?? null);
     const usage = usageFromRateLimitInfo(info, entry.usage);
     if (usage) {
       // An event without the 5-hour window still held is not a fresh report:
       // the limit may be gone, and only the next `/usage` poll can say so.
       const held = usage.fiveHour !== null && usage.fiveHour === entry.usage?.fiveHour;
       commitUsage(account, usage, now, !held);
-    } else if (before !== entry.limitedUntil) {
+    } else if (before !== entry.limitedUntil || fableChanged) {
       saveToDisk();
       emitClaudeAccountsChanged();
     } else {

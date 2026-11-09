@@ -34,10 +34,12 @@ import { AuthError } from "../errors";
 import { getClaudeAccount, MAIN_ACCOUNT_ID, mainClaudeConfigDir } from "./accounts";
 import { CLAUDE_SESSION_ALIASES_FILE, claudeProjectDirName, claudeSessionAlias } from "./session-prune";
 import { dataDir } from "@exocortex/shared/paths";
-import { apiCreditSwitchNotice, beginAccountTurn, beginApiCreditTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount, touchConversationCredit, type ClaudeTurnRoute } from "./account-pool";
+import { apiCreditSwitchNotice, fableFallbackNotice, beginAccountTurn, beginApiCreditTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount, touchConversationCredit, type ClaudeTurnRoute } from "./account-pool";
 import { ApiCreditExhaustedError, ApiCreditUsageMeter, classifyApiCreditError, noteApiCreditFailure, type ApiCreditKey } from "./api-credits";
 import { isUsageLimitError } from "../../usage-limit-wait";
-import { noteAccountUsageRefusal } from "./usage";
+import { noteAccountFableRefusal, noteAccountUsageRefusal, PROXIED_FABLE_HOLD_MS } from "./usage";
+import { FABLE_FALLBACK_MODEL, isFableModel } from "./models";
+import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { noteClaudeAccountWorking } from "./auth-cache";
 import { accountSwitchNotice } from "./routing";
 import { isProviderProxied, onProxiedClaudeApiCredits, onProxiedClaudeMove, providerProxyRoute } from "../../provider-proxy/route";
@@ -50,7 +52,7 @@ import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, trai
 import { ClaudeRelay, reconnectRelays, relaysEnabled } from "./relay-client";
 import type { RelayMeta } from "./relay-protocol";
 import { claudeSessionKey, getClaudeCodeSession, HEARTBEAT_INTERVAL_MS, historyMark, openClaudeCodeSession } from "./session";
-import { createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage, type ClaudeStreamState } from "./stream";
+import { ClaudeFableLimitError, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage, type ClaudeStreamState } from "./stream";
 
 /** Claude Code tools that need an interactive answer Exocortex cannot give. */
 const INTERACTIVE_ONLY_TOOLS = ["AskUserQuestion"];
@@ -278,10 +280,11 @@ function accountCallbacks(callbacks: StreamCallbacks, account: string): StreamCa
   };
 }
 
-function accountStreamState(callbacks: StreamCallbacks, cwd: string, account: string, apiCredit: ApiCreditKey | null, promptUuid: string | null = null, appConvId?: string): ClaudeStreamState {
+function accountStreamState(callbacks: StreamCallbacks, cwd: string, account: string, apiCredit: ApiCreditKey | null, model: ModelId, promptUuid: string | null = null, appConvId?: string): ClaudeStreamState {
   const state = createClaudeStreamState(callbacks, cwd, promptUuid);
   state.account = account === MAIN_ACCOUNT_ID ? null : account;
   state.apiCredit = apiCredit !== null;
+  state.fableTurn = apiCredit === null && isFableModel(model);
   if (appConvId) state.appToolCall = appToolCallView(appConvId);
   return state;
 }
@@ -318,6 +321,15 @@ export function creditSwitchNotices(convId: string | undefined, route: ClaudeTur
   });
 }
 
+/**
+ * The model a turn routed as `route` runs: the conversation's, except that a
+ * Fable conversation with no Fable allowance to run on, or on API credits,
+ * runs the fallback model (account-pool.ts).
+ */
+export function claudeTurnModel(model: ModelId, route: Pick<ClaudeTurnRoute, "fableFallback">): ModelId {
+  return route.fableFallback && isFableModel(model) ? FABLE_FALLBACK_MODEL as ModelId : model;
+}
+
 export async function streamMessage(
   messages: ApiMessage[],
   model: ModelId,
@@ -337,9 +349,15 @@ export async function streamMessage(
     open: true,
     backgroundWork: live.hasBackgroundWork,
     apiCredit: live.apiCredit,
-  } : null, signal, plan?.resume ? plan.resume.account ?? MAIN_ACCOUNT_ID : null, options.tracking?.conversationId);
+  } : null, signal, plan?.resume ? plan.resume.account ?? MAIN_ACCOUNT_ID : null, options.tracking?.conversationId, model);
   const account = route.account;
   const apiCredit = route.apiCredit;
+  const runModel = claudeTurnModel(model, route);
+  if (route.fableFallback) {
+    log("info", `anthropic: ${convId ?? "a helper request"} runs on ${runModel} instead of ${model} (${route.fableFallback.reason === "api-credits" ? "on API credits" : `no account has Fable allowance left${route.fableFallback.resetAt ? `; back ${new Date(route.fableFallback.resetAt).toISOString()}` : ""}`})`);
+  }
+  const fableNotice = fableFallbackNotice(convId, route, model, formatModelDisplayName(FABLE_FALLBACK_MODEL));
+  if (fableNotice) callbacks.onProviderNotice?.(fableNotice);
   // A turn on API credits does not use the account's login, only its configuration directory.
   if (!apiCredit) await requireSubscriptionAuth(signal, account);
   await loadClaudeSdks();
@@ -364,7 +382,7 @@ export async function streamMessage(
     callbacks.onProviderNotice?.(accountSwitchNotice({ account: move.to, movedFrom: move.from, reason: "new", detail: move.detail }), { kind: "account", account: move.to, movedFrom: move.from });
   }) : null;
   try {
-    return await runStreamMessage(messages, model, callbacks, options, cwd, plan, convId, live, account, apiCredit);
+    return await runStreamMessage(messages, runModel, callbacks, options, cwd, plan, convId, live, account, apiCredit);
   } catch (error) {
     if (apiCredit) {
       // The key's refusal, never the subscription account's: out of credits, rejected, or rate-limited.
@@ -376,7 +394,11 @@ export async function streamMessage(
       throw error;
     }
     if (error instanceof AuthError && !signal?.aborted) noteAccountAuthFailure(account, error.message);
-    if (!signal?.aborted && isUsageLimitError(error) && !proxied) noteAccountUsageRefusal(account, (error as Error).message);
+    if (error instanceof ClaudeFableLimitError) {
+      // Fable's allowance only: the account's other models go on, and the retry is routed by it.
+      // Recorded here too, since not every refusal comes with a rate limit event that says so.
+      if (!signal?.aborted) noteAccountFableRefusal(account, error.resetAt, Date.now(), proxied ? PROXIED_FABLE_HOLD_MS : undefined);
+    } else if (!signal?.aborted && isUsageLimitError(error) && !proxied) noteAccountUsageRefusal(account, (error as Error).message);
     throw error;
   } finally {
     stopMoveNotices?.();
@@ -406,7 +428,7 @@ async function runStreamMessage(
 
   if (!agentPlan) {
     log("info", `anthropic: Claude Code helper request (model=${model}, effort=${options.effort ?? "default"}, account=${account}${apiCredit ? `, api-credits=${apiCredit.label}` : ""})`);
-    const state = accountStreamState(callbacks, cwd, account, apiCredit);
+    const state = accountStreamState(callbacks, cwd, account, apiCredit, model);
     return runClaudeQuery(buildClaudeHelperPrompt(messages), helperOptions(model, options, cwd, onStderr, account, apiCredit), state, signal, () => stderr, apiCredit);
   }
 
@@ -422,7 +444,7 @@ async function runStreamMessage(
   if (live?.canContinue(key, plan.resume, plan.pending, system)) {
     const input = live.planInput(plan.pending);
     log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}${apiCredit ? `, api-credits=${apiCredit.label}` : ""}, session=${live.sessionId}, input=${input.kind})`);
-    const state = accountStreamState(callbacks, cwd, account, apiCredit, input.kind === "prompt" ? randomUUID() : null, appConvId);
+    const state = accountStreamState(callbacks, cwd, account, apiCredit, model, input.kind === "prompt" ? randomUUID() : null, appConvId);
     live.rememberAgentTitles(messages);
     if (input.kind === "none") {
       state.done = true;
@@ -479,7 +501,7 @@ async function runStreamMessage(
   // a new process starts from the whole history instead of a session file that was never written.
   const startPlan: ClaudePromptPlan = app?.ephemeral && agentPlan.resume ? { resume: null, pending: messages } : agentPlan;
   log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}${apiCredit ? `, api-credits=${apiCredit.label}` : ""}, resume=${startPlan.resume?.sessionId ?? "none"}, pending=${startPlan.pending.length})`);
-  const state = accountStreamState(callbacks, cwd, account, apiCredit, randomUUID(), appConvId);
+  const state = accountStreamState(callbacks, cwd, account, apiCredit, model, randomUUID(), appConvId);
   const session = start(startPlan);
   try {
     return await session.run(state, buildClaudeUserContent(plan.pending), options.toolExecutor, signal, trailingUserMessages(plan.pending), options.queuedInput);
@@ -495,7 +517,7 @@ async function runStreamMessage(
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };
     stderr = "";
     try {
-      return await start(fresh).run(accountStreamState(callbacks, cwd, account, apiCredit, randomUUID(), appConvId), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending), options.queuedInput);
+      return await start(fresh).run(accountStreamState(callbacks, cwd, account, apiCredit, model, randomUUID(), appConvId), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending), options.queuedInput);
     } catch (freshError) {
       if (!signal?.aborted) logStderr(freshError, stderr);
       throw freshError;

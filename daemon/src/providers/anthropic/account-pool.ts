@@ -14,7 +14,8 @@ import { runtimeDir } from "@exocortex/shared/paths";
 import type { UsageData } from "../../messages";
 import type { AccountConversationInfo, ClaudeAccountInfo, ClaudeAccountsInfo, ClaudeAccountState } from "@exocortex/shared/protocol";
 import { log } from "../../log";
-import { isProviderProxied, providerProxyConnect, providerProxyOutage, providerProxyRoute } from "../../provider-proxy/route";
+import { isProviderProxied, providerProxyConnect, providerProxyOutage, providerProxyRoute, proxiedClaudeAccounts } from "../../provider-proxy/route";
+import { isFableModel } from "./models";
 import type { ProviderProxyApiCredits } from "@exocortex/shared/provider-proxy";
 import { emitClaudeAccountsChanged } from "./account-events";
 import { claudeLoginCommand, displayPath, listClaudeAccounts, MAIN_ACCOUNT_ID, type ClaudeAccount } from "./accounts";
@@ -30,7 +31,10 @@ import {
 import { isSubscriptionAuth } from "./cli";
 import {
   DEFAULT_ROUTING_POLICY,
+  fableAllowanceBackAt,
+  fableAllowanceOpen,
   isAccountLimited,
+  isFableLimited,
   routeConversation,
   routeNewWork,
   subscriptionsUsableAt,
@@ -59,11 +63,13 @@ import {
   getAccountLimitedUntil,
   getAccountUsage,
   getAccountUsageUpdatedAt,
+  PROXIED_FABLE_HOLD_MS,
   refreshAccountUsage,
 } from "./usage";
 
 const ASSIGNMENTS_FILE_NAME = "anthropic-conversation-accounts.json";
 const CREDITS_FILE_NAME = "anthropic-conversation-credits.json";
+const FABLE_FILE_NAME = "anthropic-conversation-fable.json";
 /** Assignments unused this long are forgotten. */
 const ASSIGNMENT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const SAVE_DELAY_MS = 2_000;
@@ -94,6 +100,17 @@ const activeCreditTurns = new Map<string, number>();
 /** Each conversation's CreditState, for the switch notices; saved, so a restart is no switch. */
 let conversationCredits: Map<string, CreditState> | null = null;
 
+/** Why a Fable conversation's turns run on the fallback model instead: no account has Fable allowance left, or the turn is on API credits. */
+export type FableFallbackReason = "allowance" | "api-credits";
+
+/** A Fable conversation whose last turn ran on the fallback model, and since when; saved, so a restart announces nothing. */
+interface FableFallbackState {
+  reason: FableFallbackReason;
+  at: number;
+}
+
+let conversationFable: Map<string, FableFallbackState> | null = null;
+
 export function setAssignmentsFileForTests(path: string | null): void {
   assignmentsFileOverride = path;
   assignments = null;
@@ -101,6 +118,7 @@ export function setAssignmentsFileForTests(path: string | null): void {
   runningConversations.clear();
   activeCreditTurns.clear();
   conversationCredits = null;
+  conversationFable = null;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
 }
@@ -111,6 +129,27 @@ function assignmentsFile(): string {
 
 function creditsFile(): string {
   return assignmentsFileOverride ? `${assignmentsFileOverride.replace(/\.json$/, "")}-credits.json` : join(runtimeDir(), CREDITS_FILE_NAME);
+}
+
+function fableFile(): string {
+  return assignmentsFileOverride ? `${assignmentsFileOverride.replace(/\.json$/, "")}-fable.json` : join(runtimeDir(), FABLE_FILE_NAME);
+}
+
+function loadFable(): Map<string, FableFallbackState> {
+  if (conversationFable) return conversationFable;
+  conversationFable = new Map();
+  try {
+    const path = fableFile();
+    if (existsSync(path)) {
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, FableFallbackState>;
+      for (const [convId, entry] of Object.entries(parsed)) {
+        if ((entry?.reason === "allowance" || entry?.reason === "api-credits") && typeof entry.at === "number") conversationFable.set(convId, entry);
+      }
+    }
+  } catch {
+    // start empty
+  }
+  return conversationFable;
 }
 
 function loadCredits(): Map<string, CreditState> {
@@ -173,6 +212,7 @@ export function flushAssignments(): void {
   const cutoff = Date.now() - ASSIGNMENT_RETENTION_MS;
   if (assignments) writeJsonFile(assignmentsFile(), retained(assignments, entry => entry.lastUsedAt, cutoff), "conversation accounts");
   if (conversationCredits) writeJsonFile(creditsFile(), retained(conversationCredits, entry => entry.at, cutoff), "conversation API-credit states");
+  if (conversationFable) writeJsonFile(fableFile(), retained(conversationFable, entry => entry.at, cutoff), "conversation Fable fallbacks");
 }
 
 function scheduleSave(): void {
@@ -185,7 +225,8 @@ function scheduleSave(): void {
 export function forgetConversationAccount(convId: string): void {
   runningConversations.delete(convId);
   const hadCredits = loadCredits().delete(convId);
-  if (loadAssignments().delete(convId) || hadCredits) flushAssignments();
+  const hadFable = loadFable().delete(convId);
+  if (loadAssignments().delete(convId) || hadCredits || hadFable) flushAssignments();
 }
 
 export function getConversationAccount(convId: string): Assignment | null {
@@ -317,6 +358,12 @@ export interface ClaudeTurnRoute extends RouteDecision {
   apiCreditMovedFrom?: ApiCreditKey | null;
   /** On that key because the /proxy link through this alias is down (`whenProxyDown`). */
   proxyDownAlias?: string;
+  /**
+   * Set for a Fable turn that must run on the fallback model instead
+   * (models.ts): no account has Fable allowance left (`resetAt`: when one
+   * does again, if known), or the turn runs on API credits.
+   */
+  fableFallback?: { reason: FableFallbackReason; resetAt: number | null };
 }
 
 type CreditChoice = Pick<ClaudeTurnRoute, "apiCredit" | "apiCreditDetail" | "apiCreditMovedFrom" | "proxyDownAlias">;
@@ -418,6 +465,13 @@ export function apiCreditSwitchNotice(convId: string | undefined, route: ClaudeT
  * anything. `sessionAccount` is the account that wrote the Claude Code
  * session the turn resumes, for conversations this daemon has no record of.
  * `owner` is the conversation a helper request (no `convId`) is for.
+ *
+ * A Fable `model` is routed by the accounts' Fable allowance too: an account
+ * out of it passes the turn to one that has some, and when none has, the turn
+ * stays where any other model's would run, on the fallback model
+ * (`fableFallback`). Running out of Fable allowance never sends a turn to API
+ * credits; a Fable turn that gets there for the usual reason runs the
+ * fallback model too.
  */
 export async function routeClaudeTurn(
   convId: string | undefined,
@@ -425,26 +479,35 @@ export async function routeClaudeTurn(
   signal?: AbortSignal,
   sessionAccount: string | null = null,
   owner: string | undefined = convId,
+  model?: string,
 ): Promise<ClaudeTurnRoute> {
+  const fable = isFableModel(model);
   if (isProviderProxied("anthropic")) {
-    return { account: MAIN_ACCOUNT_ID, reason: "new", detail: "single account", ...await proxyDownCredit(convId, owner, live) };
+    const route: ClaudeTurnRoute = { account: MAIN_ACCOUNT_ID, reason: "new", detail: "single account", ...await proxyDownCredit(convId, owner, live) };
+    return fable ? withFableFallback(route, proxiedFableFallback(route, Date.now())) : route;
   }
   const fallback = apiCreditFallbackEnabled();
   if (fallback) await refreshApiCreditSecrets();
   if (!multipleClaudeAccounts()) {
     const decision: RouteDecision = { account: MAIN_ACCOUNT_ID, reason: "new", detail: "single account" };
-    if (!fallback) return { ...decision, ...NO_CREDIT };
+    if (!fallback && !fable) return { ...decision, ...NO_CREDIT };
     // Whether `main` is signed in decides between credits and a sign-in error: checked as for several accounts.
-    await refreshClaudeAccountStatuses({ signal });
+    if (fallback) await refreshClaudeAccountStatuses({ signal });
     const now = Date.now();
-    return { ...decision, ...apiCreditFor(decision, applyDevRoutingOverrides(claudeAccountStates(now), now).states, now, live, convId) };
+    const states = applyDevRoutingOverrides(claudeAccountStates(now), now).states;
+    const route = { ...decision, ...(fallback ? apiCreditFor(decision, states, now, live, convId) : NO_CREDIT) };
+    // Unchecked yet, `main` counts as signed in here, as it does for the turn itself.
+    const main = states.map(state => state.id === MAIN_ACCOUNT_ID ? { ...state, available: true } : state);
+    return fable ? withFableFallback(route, fableFallbackFor(route, main, now)) : route;
   }
   await refreshClaudeAccountStatuses({ signal });
   const now = Date.now();
   const { states: accounts, policy } = applyDevRoutingOverrides(claudeAccountStates(now), now);
+  // With no Fable allowance anywhere the turn runs another model: routed as that model's would be.
+  const byFable = fable && fableAllowanceOpen(accounts, now);
   let decision: RouteDecision;
   if (!convId) {
-    const choice = routeNewWork(accounts, now, policy);
+    const choice = routeNewWork(accounts, now, policy, byFable);
     decision = { account: choice?.account ?? MAIN_ACCOUNT_ID, reason: "new", detail: choice?.detail ?? "no account can take it" };
   } else {
     const assignment = getConversationAccount(convId);
@@ -453,9 +516,84 @@ export async function routeClaudeTurn(
       lastUsedAt: assignment && (!live || live.account === assignment.account) ? assignment.lastUsedAt : null,
       liveProcess: live?.open ?? false,
       backgroundWork: live?.backgroundWork ?? false,
-    }, accounts, now, policy);
+    }, accounts, now, policy, byFable);
   }
-  return { ...decision, ...apiCreditFor(decision, accounts, now, live, convId) };
+  const route = { ...decision, ...apiCreditFor(decision, accounts, now, live, convId) };
+  return fable ? withFableFallback(route, fableFallbackFor(route, accounts, now)) : route;
+}
+
+function withFableFallback(route: ClaudeTurnRoute, fableFallback: ClaudeTurnRoute["fableFallback"] | null): ClaudeTurnRoute {
+  return fableFallback ? { ...route, fableFallback } : route;
+}
+
+/** Whether a Fable turn routed as `route` runs the fallback model instead, and why. */
+function fableFallbackFor(route: ClaudeTurnRoute, states: AccountRouteState[], now: number): ClaudeTurnRoute["fableFallback"] | null {
+  // API credits pay per token: the fallback model's price, not Fable's.
+  if (route.apiCredit) return { reason: "api-credits", resetAt: null };
+  if (fableAllowanceOpen(states, now)) return null;
+  // No account can take any turn (plan limits, sign-ins): not Fable's doing, and the turn waits or fails as any other.
+  if (!states.some(state => state.available && !isAccountLimited(state, now) && isFableLimited(state, now))) return null;
+  return { reason: "allowance", resetAt: fableAllowanceBackAt(states, now) };
+}
+
+/**
+ * Under /proxy the remote routes each request across its accounts, by their
+ * Fable allowance too (claude-routing.ts), but only this daemon can run the
+ * turn on another model. It does while a Fable refusal reached this machine
+ * (the remote had no other account for it; held on `main`'s usage here), or
+ * the remote's shared pool shows no account with Fable allowance left.
+ */
+function proxiedFableFallback(route: ClaudeTurnRoute, now: number): ClaudeTurnRoute["fableFallback"] | null {
+  if (route.apiCredit) return { reason: "api-credits", resetAt: null };
+  const pool = proxiedClaudeAccounts()?.pool;
+  const remote: AccountRouteState[] = (pool?.accounts ?? []).map(account => ({
+    id: account.id, available: account.state === "ready" || account.state === "limited",
+    limitedUntil: account.limitedUntil, usage: account.usage, activeTurns: account.activeTurns,
+  }));
+  // The remote's turns run on its API credits now: so would this one.
+  if (pool?.combined?.apiCredits?.active) return { reason: "api-credits", resetAt: null };
+  const local: AccountRouteState = { id: MAIN_ACCOUNT_ID, available: true, limitedUntil: null, usage: getAccountUsage(MAIN_ACCOUNT_ID), activeTurns: 0 };
+  const held = local.usage?.fable?.limitedUntil != null && local.usage.fable.limitedUntil > now;
+  // A remote from before the Fable allowance shares no reading of it: only a refusal here says.
+  const shared = remote.some(account => account.usage?.fable !== undefined);
+  if (!held && !shared) return null;
+  if (!held) return fableFallbackFor(route, remote, now);
+  return { reason: "allowance", resetAt: (shared ? fableAllowanceBackAt(remote, now) : null) ?? fableAllowanceBackAt([local], now) };
+}
+
+/** "6.2 days", "5 hours", "40 minutes". */
+function formatSpan(ms: number): string {
+  const hour = 60 * 60_000;
+  const [value, unit] = ms >= 24 * hour ? [ms / (24 * hour), "day"] : ms >= hour ? [ms / hour, "hour"] : [Math.max(1, ms / 60_000), "minute"];
+  const shown = Number(value.toFixed(unit === "minute" ? 0 : 1));
+  return `${shown} ${unit}${shown === 1 ? "" : "s"}`;
+}
+
+/**
+ * The transcript notice for a Fable conversation whose turns move onto or off
+ * the fallback model; null when nothing changed. `model`: the conversation's
+ * model; `fallbackLabel`: the fallback model's name.
+ */
+export function fableFallbackNotice(convId: string | undefined, route: ClaudeTurnRoute, model: string | undefined, fallbackLabel: string, now = Date.now()): string | null {
+  if (!convId) return null;
+  const states = loadFable();
+  const last = states.get(convId)?.reason ?? null;
+  const next = isFableModel(model) ? route.fableFallback?.reason ?? null : null;
+  if (next === last) return null;
+  if (next) states.set(convId, { reason: next, at: now });
+  else states.delete(convId);
+  scheduleSave();
+  // A conversation switched to another model by its user is not back on Fable.
+  if (!isFableModel(model)) return null;
+  if (next === "allowance") {
+    const resetAt = route.fableFallback?.resetAt ?? null;
+    const where = multipleClaudeAccounts() || isProviderProxied("anthropic") ? " on every Claude account" : "";
+    const resets = resetAt !== null && resetAt > now ? `, in ${formatSpan(resetAt - now)}` : "";
+    return `Fable's allowance has run out${where}: this conversation runs on ${fallbackLabel} until it resets${resets}.`;
+  }
+  // Onto API credits from the allowance fallback: already on the fallback model, and the credits notice says the rest.
+  if (next === "api-credits") return last === null ? `On Claude API credits this conversation runs on ${fallbackLabel}, not Fable.` : null;
+  return last === "allowance" ? "Back on Fable: its allowance is available again." : "Back on Fable.";
 }
 
 /** Accounts whose usage the bars combine: signed in and not blocked. */
@@ -529,7 +667,7 @@ export function refreshRemoteUsage(): Promise<UsageData | null> {
 }
 
 export function handleUsageHeaders(headers: Headers, onUpdate: (usage: UsageData) => void): void {
-  if (!applyUsageHeaders(headers)) return;
+  if (!applyUsageHeaders(headers, Date.now(), isProviderProxied("anthropic") ? PROXIED_FABLE_HOLD_MS : undefined)) return;
   const usage = getCombinedUsage();
   if (usage) onUpdate(usage);
 }

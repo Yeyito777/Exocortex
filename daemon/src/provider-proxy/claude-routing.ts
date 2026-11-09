@@ -9,7 +9,9 @@
  * blocked accounts are skipped. The proxied conversation is identified by the
  * client's PROVIDER_PROXY_CONVERSATION_HEADER (`<client host>/<conversation
  * id>`), kept here as `proxy:<that>`. Each response's rate-limit headers
- * update the account that served it.
+ * update the account that served it. A request for a Fable model is routed
+ * by the accounts' Fable allowance too; with none left anywhere it goes out
+ * as any other and the client, told by the refusal, runs another model.
  *
  * While every account is at a usage limit, Messages API requests run on an
  * API-credit key instead (providers/anthropic/api-credits.ts), as this
@@ -17,7 +19,8 @@
  * request with it, and what it spends is counted from the response stream.
  */
 
-import { CLAUDE_RATE_LIMIT_HEADER, CLAUDE_ACCOUNT_HEADER, applyUsageHeaders } from "../providers/anthropic/usage";
+import { CLAUDE_RATE_LIMIT_HEADER, CLAUDE_ACCOUNT_HEADER, CLAUDE_FABLE_TURN_HEADER, FABLE_RATE_LIMIT_TYPE, applyUsageHeaders } from "../providers/anthropic/usage";
+import { isFableModel } from "../providers/anthropic/models";
 import { beginAccountTurn, beginApiCreditTurn, getConversationAccount, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount, touchConversationCredit } from "../providers/anthropic/account-pool";
 import type { RouteDecision } from "../providers/anthropic/routing";
 import { MAIN_ACCOUNT_ID } from "../providers/anthropic/accounts";
@@ -66,8 +69,9 @@ export interface ProxiedClaudeRouter {
    * Pick the account for a request of `conversation` (null: not tied to one,
    * e.g. a title). `apiCredits`: the request may run on API credits (Messages
    * API requests; Claude Code's account endpoints need the subscription login).
+   * `model`: the model a Messages API request asks for.
    */
-  lease(conversation: string | null, signal?: AbortSignal, options?: { apiCredits?: boolean }): Promise<ProxiedClaudeLease>;
+  lease(conversation: string | null, signal?: AbortSignal, options?: { apiCredits?: boolean; model?: string | null }): Promise<ProxiedClaudeLease>;
 }
 
 function number(value: string | null): number | undefined {
@@ -84,18 +88,23 @@ function number(value: string | null): number | undefined {
 export function rateLimitInfoFromHeaders(headers: Headers): Record<string, unknown> | null {
   const status = headers.get("anthropic-ratelimit-unified-status");
   if (!status) return null;
-  const windows: Record<string, { utilization?: number; resetsAt?: number }> = {};
-  for (const [name, short] of [["five_hour", "5h"], ["seven_day", "7d"]] as const) {
+  const windows: Record<string, { utilization?: number; resetsAt?: number; status?: string }> = {};
+  // `7d_oi`: the Fable allowance (the weekly window that includes what overage would otherwise pay).
+  for (const [name, short] of [["five_hour", "5h"], ["seven_day", "7d"], [FABLE_RATE_LIMIT_TYPE, "7d_oi"]] as const) {
     const utilization = number(headers.get(`anthropic-ratelimit-unified-${short}-utilization`));
     const resetsAt = number(headers.get(`anthropic-ratelimit-unified-${short}-reset`));
+    const windowStatus = headers.get(`anthropic-ratelimit-unified-${short}-status`);
     if (utilization === undefined && resetsAt === undefined) continue;
-    windows[name] = { ...(utilization !== undefined ? { utilization } : {}), ...(resetsAt !== undefined ? { resetsAt } : {}) };
+    windows[name] = { ...(utilization !== undefined ? { utilization } : {}), ...(resetsAt !== undefined ? { resetsAt } : {}), ...(windowStatus ? { status: windowStatus } : {}) };
   }
   const overage = headers.get("anthropic-ratelimit-unified-overage-status");
   const resetsAt = number(headers.get("anthropic-ratelimit-unified-reset"));
+  // Which limit the verdict is about: a refusal naming the Fable allowance leaves the account's other models usable.
+  const claim = headers.get("anthropic-ratelimit-unified-representative-claim");
   return {
     status,
     ...(resetsAt !== undefined ? { resetsAt } : {}),
+    ...(claim ? { rateLimitType: claim } : {}),
     // Refused by the plan but carried on extra usage: Exocortex keeps work off such an account, as for its own turns.
     ...(status === "rejected" && (overage === "allowed" || overage === "allowed_warning") ? { isUsingOverage: true } : {}),
     unifiedWindows: windows,
@@ -103,16 +112,17 @@ export function rateLimitInfoFromHeaders(headers: Headers): Record<string, unkno
 }
 
 export interface ProxiedClaudeRouterDeps {
-  route?: (key: string | undefined, signal?: AbortSignal) => Promise<RouteDecision & { apiCredit?: ApiCreditKey | null; apiCreditDetail?: string; apiCreditMovedFrom?: ApiCreditKey | null }>;
+  route?: (key: string | undefined, signal?: AbortSignal, model?: string) => Promise<RouteDecision & { apiCredit?: ApiCreditKey | null; apiCreditDetail?: string; apiCreditMovedFrom?: ApiCreditKey | null }>;
 }
 
 export function createProxiedClaudeRouter(deps: ProxiedClaudeRouterDeps = {}): ProxiedClaudeRouter {
-  const route = deps.route ?? ((key, signal) => routeClaudeTurn(key, null, signal));
+  const route = deps.route ?? ((key, signal, model) => routeClaudeTurn(key, null, signal, null, key, model));
   return {
     async lease(conversation, signal, options = {}) {
       const key = conversation ?? undefined;
       const previous = key ? getConversationAccount(key)?.account ?? null : null;
-      const decision = await route(key, signal);
+      const fable = isFableModel(options.model);
+      const decision = await route(key, signal, options.model ?? undefined);
       const account = decision.account;
       const apiCredit = options.apiCredits ? decision.apiCredit ?? null : null;
       if (apiCredit) {
@@ -175,6 +185,7 @@ export function createProxiedClaudeRouter(deps: ProxiedClaudeRouterDeps = {}): P
             applyUsageHeaders(new Headers({
               [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify(info),
               ...(account !== MAIN_ACCOUNT_ID ? { [CLAUDE_ACCOUNT_HEADER]: account } : {}),
+              ...(fable ? { [CLAUDE_FABLE_TURN_HEADER]: "1" } : {}),
             }));
           }
           return status === 429 && info?.status === "rejected";
