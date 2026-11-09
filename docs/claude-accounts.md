@@ -171,6 +171,61 @@ still keeps them in place.
   figure, so the bars never step back; a new window, a bigger drop or a drop
   from 100% to under it takes the report as it is.
 
+## The Fable allowance
+
+Fable models draw on an allowance of their own: a share of the account's
+weekly limit (50% on Max, Nov 2026). Claude Code's `/usage` report lists it as
+the `weekly_scoped` row of `limits` whose scope names the model Fable (percent
+of the allowance, its reset, and its share in `weekly_scoped_shares`); a
+turn's `rate_limit_event` carries it as the `seven_day_overage_included`
+window, which Claude Code itself calls the "Fable limit". Each account's
+reading is kept with its usage (`usage.fable`, `usage.ts`).
+
+Past the allowance the API refuses Fable requests, or bills them to paid
+extra usage where the account has that on, which Exocortex never lets a turn
+do. Either is a limit of Fable alone: the account's other models go on, so it
+is **not** an account at a usage limit, and never a reason to use API
+credits. What a Fable conversation's turn does (`routeClaudeTurn`,
+`account-pool.ts`; rules in `routing.ts`):
+
+1. **Another account with allowance takes it.** A Fable turn is routed by the
+   Fable allowance as well as the plan's windows: an account out of it cannot
+   serve the turn, whatever its cache or background tasks, and new Fable work
+   keeps `fableFloor` (10% of the allowance) clear and is paced by the tighter
+   of the week and the allowance. The move is announced like any account switch.
+2. **No account has any: the turn runs on Opus** (`FABLE_FALLBACK_MODEL`,
+   `models.ts`) where any other model's turn would run, on the subscription,
+   with one notice in the conversation saying so and when the allowance
+   resets. The conversation's model stays Fable: each turn is routed again,
+   and the first one after an account has allowance runs Fable, with a notice.
+3. **On API credits a Fable conversation runs Opus too**, so credits pay
+   Opus prices. It gets there only as any conversation does: every account at
+   a plan limit, or the /proxy link down.
+
+How a turn learns the allowance ran out, in Claude Code 2.1.321 (read from its
+binary and docs; no account had run out when this was written, so the first
+real one is logged raw as `Fable allowance signal`): a `rate_limit_event`
+with `status: "rejected"` and `rateLimitType: "seven_day_overage_included"`;
+an assistant API error of kind `model_requires_usage_credits`; and the
+result's text (`You've reached your Fable limit`, `You're out of usage
+credits`, `Fable 5.2 requires usage credits`). Any one is enough
+(`stream.ts`), on a Fable turn only. The turn ends as a `ClaudeFableLimitError`,
+which is retried like a usage limit; the retry is routed as above. A refusal
+holds until the allowance's reset, a full `/usage` report showing allowance
+left, or a Fable request going through.
+
+Claude Code has a model switch of its own for this ("Switched to … · Fable
+requires usage credits"), which needs a host that answers its consent
+dialog. Exocortex declares no dialog kinds, so Claude Code sends the request
+and the API decides. Should Claude Code switch a session anyway
+(`model_consent_fallback`), the turn is stopped and starts over under the
+routing above, so only one mechanism picks the model.
+
+Under /proxy the remote routes each request by its model (read from the
+request body, `endpoint.ts`), and its shared pool carries every account's
+allowance. The proxying daemon runs Opus while that pool shows no account
+with allowance left, or for 15 minutes after a Fable refusal reached it.
+
 ## API credits when every account is at a limit
 
 App conversations are routed the same way; an app can keep its turns off
@@ -357,10 +412,12 @@ and `/account claude` keep showing real usage
 ```
 
 `policy` takes any `RoutingPolicy` field (`routing.ts`): `cacheTtlMs`,
-`fiveHourFloor`, `weeklyFloor`, `fiveHourComfort`, `scoreTie` and
+`fiveHourFloor`, `weeklyFloor`, `fableFloor`, `fiveHourComfort`, `scoreTie` and
 `coldMoveRatio`. Per account, `usage`
 replaces its usage snapshot (windows take `resetsAt` or `resetsInMs`),
-`limitedForMs` / `limitedUntil` mark it rejected at a limit, and
+`limitedForMs` / `limitedUntil` mark it rejected at a limit,
+`usage.fable` sets its Fable allowance and `fableLimitedForMs` marks a Fable
+request refused (on top of its real usage when `usage` is not given), and
 `available: false` treats it as signed out or blocked. To try the API-credit
 fallback, mark every account limited; turns then run on the first key. Start a worktree's
 daemon with it, for example

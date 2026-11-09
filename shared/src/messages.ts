@@ -944,6 +944,24 @@ export interface UsageWindow {
   resets?: number[];
 }
 
+/**
+ * Claude: an account's Fable allowance, the share of its weekly limit that
+ * Fable models may use (a `weekly_scoped` row of Claude Code's usage report).
+ */
+export interface FableUsage {
+  /** Percent of the allowance used, 0–100. */
+  utilization: number;
+  /** Unix timestamp (ms) when the allowance resets. Null if unknown. */
+  resetsAt: number | null;
+  /** The allowance as a percent of the weekly limit (50), when the report says. */
+  allowanceOfWeekly?: number;
+  /**
+   * A Fable request was refused for lack of allowance, or moved onto paid
+   * extra usage: no Fable turns on this account until this time (ms).
+   */
+  limitedUntil?: number | null;
+}
+
 export interface UsageResetCredits {
   /** Number of earned rate-limit resets currently available. */
   availableCount: number;
@@ -979,6 +997,8 @@ export interface UsageData {
   apiKey?: ApiKeyUsage | null;
   /** Claude: the API-credit fallback (providers.anthropic.apiCreditFallback), when it is configured. */
   apiCredits?: ApiCreditsUsage | null;
+  /** One Claude account: its Fable allowance. Null: the account has none; omitted: not reported. */
+  fable?: FableUsage | null;
 }
 
 /** Claude turns running on API credits while every subscription account is at a limit. */

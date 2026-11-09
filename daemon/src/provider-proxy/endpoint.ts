@@ -77,6 +77,24 @@ function isMessagesRequest(url: string): boolean {
   }
 }
 
+/**
+ * The model a Messages API request asks for, for routing (a Fable request is
+ * routed by the accounts' Fable allowance). Claude Code writes `model` first;
+ * a body that does not is parsed only when it mentions Fable at all.
+ */
+export function requestModel(body: Buffer | undefined): string | null {
+  if (!body || body.length === 0) return null;
+  const head = /^\s*\{\s*"model"\s*:\s*"([^"\\]{1,200})"/.exec(body.subarray(0, 512).toString("utf-8"));
+  if (head) return head[1];
+  if (!body.includes("fable")) return null;
+  try {
+    const model = (JSON.parse(body.toString("utf-8")) as { model?: unknown }).model;
+    return typeof model === "string" ? model : null;
+  } catch {
+    return null;
+  }
+}
+
 /** What a lease bills: the account, or the API-credit key in its place. */
 function leaseIdentity(lease: ProxiedClaudeLease): string {
   return lease.apiCredit ? `api-credit:${lease.apiCredit.id}` : `account:${lease.account}`;
@@ -303,7 +321,7 @@ export class ProviderProxyEndpoint {
     const body = command.body ? Buffer.from(command.body, "base64") : undefined;
     const router = provider === "anthropic" ? this.claudeRouter : null;
     // Only Messages API requests may run on API credits; Claude Code's account endpoints need its login.
-    const leaseOptions = { apiCredits: isMessagesRequest(url) && !noApiCredits };
+    const leaseOptions = { apiCredits: isMessagesRequest(url) && !noApiCredits, model: isMessagesRequest(url) ? requestModel(body) : null };
     let lease: ProxiedClaudeLease | null = null;
     try {
       let response: Response;

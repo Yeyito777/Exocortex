@@ -19,6 +19,8 @@ export function isUsageLimitError(error: unknown): boolean {
   if (!(error instanceof Error) || error.name === "AbortError") return false;
   // A Claude turn's API credits ran out: wait for another key or a subscription like any limit.
   if (error.name === "ApiCreditExhaustedError") return true;
+  // A Fable turn out of Fable allowance: the retry runs on an account that has some, or on the fallback model.
+  if (error.name === "ClaudeFableLimitError") return true;
   return /you['’]ve hit your .*limit|usage.limit.reached|usage limit|rate.limit|API error[: ]*\(?429\b|HTTP 429/i.test(error.message);
 }
 

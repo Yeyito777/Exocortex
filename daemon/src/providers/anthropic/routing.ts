@@ -17,6 +17,11 @@
  * 5-hour window blocks. Near-ties go to the account running fewer turns,
  * since usage readings lag a burst. Floors keep an account out of new work
  * before a window blocks it.
+ *
+ * A Fable turn (`fable`) is judged by the account's Fable allowance too
+ * (`usage.fable`, a share of its weekly limit): an account out of it cannot
+ * serve the turn though its other models go on, and its pace is that of the
+ * tighter of the weekly limit and the allowance.
  */
 
 import type { UsageData, UsageWindow } from "../../messages";
@@ -56,6 +61,8 @@ export interface RoutingPolicy {
   scoreTie: number;
   /** A cold conversation moves only to an account scoring at least this many times its own. */
   coldMoveRatio: number;
+  /** New Fable work needs at least this much of the account's Fable allowance left (percent points of the allowance). */
+  fableFloor: number;
 }
 
 /**
@@ -72,6 +79,7 @@ export const DEFAULT_ROUTING_POLICY: RoutingPolicy = {
   fiveHourComfort: 40,
   scoreTie: 0.1,
   coldMoveRatio: 1.25,
+  fableFloor: 10,
 };
 
 const HOUR = 60 * 60_000;
@@ -116,6 +124,12 @@ interface AccountView {
   index: number;
   fiveHour: WindowView;
   weekly: WindowView;
+  /** A Fable turn: the account's Fable allowance; null otherwise. */
+  fable: WindowView | null;
+  /** A Fable turn on an account whose plan limits allow it but whose Fable allowance is used up. */
+  fableOut: boolean;
+  /** The weekly headroom the pace counts: for a Fable turn no more than the allowance has left, in weekly points. */
+  paceHeadroom: number;
   /** Time left to use the weekly headroom: until its reset, or a full week from first use. */
   weeklySpan: number;
   /** Weekly headroom per hour left: the pace that uses it up right at its reset. */
@@ -135,6 +149,40 @@ export function isAccountLimited(state: AccountRouteState, now: number): boolean
     if (window && window.utilization >= 100 && (window.resetsAt === null || window.resetsAt > now)) return true;
   }
   return false;
+}
+
+/** Whether the account is out of Fable allowance: a Fable request was refused, or the allowance reads full. */
+export function isFableLimited(state: AccountRouteState, now: number): boolean {
+  const fable = state.usage?.fable;
+  if (!fable) return false;
+  if (fable.limitedUntil != null && fable.limitedUntil > now) return true;
+  return fable.utilization >= 100 && (fable.resetsAt === null || fable.resetsAt > now);
+}
+
+/** When an account out of Fable allowance has some again; `now` when it is not out, null when it does not say. */
+export function fableUsableAt(state: AccountRouteState, now: number): number | null {
+  const fable = state.usage?.fable;
+  if (!fable || !isFableLimited(state, now)) return now;
+  let at = fable.limitedUntil != null && fable.limitedUntil > now ? fable.limitedUntil : now;
+  if (fable.utilization >= 100) {
+    if (fable.resetsAt === null) return at > now ? at : null;
+    if (fable.resetsAt > now) at = Math.max(at, fable.resetsAt);
+  }
+  return at;
+}
+
+/** Whether some signed-in account can take a Fable turn now: under its plan limits and with Fable allowance left. */
+export function fableAllowanceOpen(states: readonly AccountRouteState[], now: number): boolean {
+  return states.some(state => state.available && !isAccountLimited(state, now) && !isFableLimited(state, now));
+}
+
+/** The soonest a signed-in account has Fable allowance again; null when none says. */
+export function fableAllowanceBackAt(states: readonly AccountRouteState[], now: number): number | null {
+  const times = states
+    .filter(state => state.available)
+    .map(state => fableUsableAt(state, now))
+    .filter((at): at is number => at !== null && at > now);
+  return times.length > 0 ? Math.min(...times) : null;
 }
 
 /**
@@ -170,17 +218,23 @@ function fiveHourDamping(headroom: number, policy: RoutingPolicy): number {
   return Math.min(1, Math.max(0, (headroom - policy.fiveHourFloor) / span));
 }
 
-function viewOf(state: AccountRouteState, index: number, now: number, policy: RoutingPolicy): AccountView {
+function viewOf(state: AccountRouteState, index: number, now: number, policy: RoutingPolicy, forFable: boolean): AccountView {
   const fiveHour = windowView(state.usage?.fiveHour, now);
   const weekly = windowView(state.usage?.sevenDay, now);
-  const usable = state.available && !isAccountLimited(state, now);
-  const eligible = usable && fiveHour.headroom >= policy.fiveHourFloor && weekly.headroom >= policy.weeklyFloor;
+  const fable = forFable ? windowView(state.usage?.fable, now) : null;
+  const usable = state.available && !isAccountLimited(state, now) && !(forFable && isFableLimited(state, now));
+  const eligible = usable && fiveHour.headroom >= policy.fiveHourFloor && weekly.headroom >= policy.weeklyFloor
+    && (fable === null || fable.headroom >= policy.fableFloor);
+  // The allowance is a share of the weekly limit: what it has left, in weekly points.
+  const paceHeadroom = fable === null ? weekly.headroom
+    : Math.min(weekly.headroom, fable.headroom * (state.usage?.fable?.allowanceOfWeekly ?? 100) / 100);
   // A window not started yet begins a full week at first use; at least a
   // minute, so an imminent reset ranks high without dividing by zero.
   const weeklySpan = Math.max(60_000, weekly.resetsIn ?? WEEK);
-  const urgency = weekly.headroom / (weeklySpan / HOUR);
+  const urgency = paceHeadroom / (weeklySpan / HOUR);
   const score = urgency * fiveHourDamping(fiveHour.headroom, policy);
-  return { state, index, fiveHour, weekly, weeklySpan, urgency, score, usable, eligible };
+  const fableOut = forFable && state.available && !isAccountLimited(state, now) && isFableLimited(state, now);
+  return { state, index, fiveHour, weekly, fable, fableOut, paceHeadroom, weeklySpan, urgency, score, usable, eligible };
 }
 
 /**
@@ -205,15 +259,16 @@ function best(views: AccountView[], policy: RoutingPolicy): AccountView | null {
   const usable = views.filter(view => view.usable);
   if (usable.length === 0) return null;
   return [...usable].sort((a, b) =>
-    Math.min(b.weekly.headroom, b.fiveHour.headroom) - Math.min(a.weekly.headroom, a.fiveHour.headroom)
-    || b.weekly.headroom - a.weekly.headroom || a.index - b.index)[0];
+    Math.min(b.paceHeadroom, b.fiveHour.headroom) - Math.min(a.paceHeadroom, a.fiveHour.headroom)
+    || b.paceHeadroom - a.paceHeadroom || a.index - b.index)[0];
 }
 
 function whyUnfit(view: AccountView, policy: RoutingPolicy): string {
   const id = `"${view.state.id}"`;
   if (!view.state.available) return `${id} is signed out or blocked`;
-  if (!view.usable) return `${id} is at a usage limit`;
+  if (!view.usable) return view.fable !== null && view.fableOut ? `${id} is out of Fable allowance` : `${id} is at a usage limit`;
   if (view.weekly.headroom < policy.weeklyFloor) return `${id} is below the weekly floor`;
+  if (view.fable !== null && view.fable.headroom < policy.fableFloor) return `${id} is below the Fable floor`;
   return `${id} is below the 5-hour floor`;
 }
 
@@ -232,7 +287,7 @@ function formatSpan(ms: number): string {
  */
 function paceReason(ahead: AccountView, behind: AccountView, subject: string, fiveHourOf: string): string {
   if (ahead.urgency > behind.urgency) {
-    const pace = (view: AccountView) => `${Math.round(view.weekly.headroom)}%`;
+    const pace = (view: AccountView) => `${Math.round(view.paceHeadroom)}%`;
     return `${subject} behind its weekly pace (${pace(ahead)} left over ${formatSpan(ahead.weeklySpan)} vs ${pace(behind)} over ${formatSpan(behind.weeklySpan)})`;
   }
   return `${fiveHourOf} 5-hour usage is at ${Math.round(100 - behind.fiveHour.headroom)}%`;
@@ -256,6 +311,7 @@ function explainChoice(chosen: AccountView, views: AccountView[], policy: Routin
 
 function describeWindowLimit(view: AccountView, policy: RoutingPolicy): string {
   if (view.weekly.headroom < policy.weeklyFloor) return `its weekly usage is at ${Math.round(100 - view.weekly.headroom)}%`;
+  if (view.fable !== null && view.fable.headroom < policy.fableFloor) return `its Fable allowance is at ${Math.round(100 - view.fable.headroom)}%`;
   if (view.fiveHour.headroom < policy.fiveHourFloor) return `its 5-hour usage is at ${Math.round(100 - view.fiveHour.headroom)}%`;
   return "it is near a limit";
 }
@@ -265,8 +321,9 @@ export function chooseAccountForNewWork(
   accounts: AccountRouteState[],
   now: number,
   policy: RoutingPolicy = DEFAULT_ROUTING_POLICY,
+  fable = false,
 ): AccountRouteState | null {
-  const views = accounts.map((state, index) => viewOf(state, index, now, policy));
+  const views = accounts.map((state, index) => viewOf(state, index, now, policy, fable));
   return best(views, policy)?.state ?? null;
 }
 
@@ -275,20 +332,22 @@ export function routeNewWork(
   accounts: AccountRouteState[],
   now: number,
   policy: RoutingPolicy = DEFAULT_ROUTING_POLICY,
+  fable = false,
 ): { account: string; detail: string } | null {
-  const views = accounts.map((state, index) => viewOf(state, index, now, policy));
+  const views = accounts.map((state, index) => viewOf(state, index, now, policy, fable));
   const chosen = best(views, policy);
   return chosen ? { account: chosen.state.id, detail: explainChoice(chosen, views, policy) } : null;
 }
 
-/** Pick the account for a conversation's next turn. */
+/** Pick the account for a conversation's next turn; `fable`: the turn runs a Fable model. */
 export function routeConversation(
   conversation: ConversationRouteState,
   accounts: AccountRouteState[],
   now: number,
   policy: RoutingPolicy = DEFAULT_ROUTING_POLICY,
+  fable = false,
 ): RouteDecision {
-  const views = accounts.map((state, index) => viewOf(state, index, now, policy));
+  const views = accounts.map((state, index) => viewOf(state, index, now, policy, fable));
   const fallback = views[0]?.state.id ?? "main";
   const current = conversation.account ? views.find(view => view.state.id === conversation.account) : undefined;
   const target = best(views, policy);
@@ -308,8 +367,9 @@ export function routeConversation(
   }
 
   const id = current.state.id;
-  // Moving would stop its running background tasks.
-  if (conversation.backgroundWork) return { account: id, reason: "background-tasks", detail: "background tasks are running" };
+  // Moving would stop its running background tasks. Out of Fable allowance its
+  // process cannot run the turn at all, so the tasks do not hold it there.
+  if (conversation.backgroundWork && !current.fableOut) return { account: id, reason: "background-tasks", detail: "background tasks are running" };
 
   const stay = (reason: RouteReason, detail: string): RouteDecision => ({ account: id, reason, detail });
   const move = (to: AccountView, reason: RouteReason, detail: string): RouteDecision => ({
@@ -318,7 +378,8 @@ export function routeConversation(
 
   if (!current.usable) {
     const reason: RouteReason = current.state.available ? "account-limited" : "account-unavailable";
-    const detail = current.state.available ? `"${id}" is at a usage limit` : `"${id}" is signed out or blocked`;
+    const detail = !current.state.available ? `"${id}" is signed out or blocked`
+      : current.fableOut ? `"${id}" is out of Fable allowance` : `"${id}" is at a usage limit`;
     if (!target || target.state.id === id) return stay("no-alternative", `${detail} and no other account can take it`);
     return move(target, reason, detail);
   }

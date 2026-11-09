@@ -23,12 +23,15 @@
  * Account fields: `usage` replaces the account's usage snapshot (each window
  * `{ utilization, resetsAt }` or `{ utilization, resetsInMs }`, `null` for no
  * data); `limitedForMs` / `limitedUntil` mark it rejected at a usage limit;
+ * `usage.fable` (`{ utilization, resetsAt | resetsInMs }`) sets its Fable
+ * allowance and `fableLimitedForMs` marks a Fable request refused, on top of
+ * its real usage when `usage` is not given;
  * `available: false` treats it as signed out or blocked. See
  * docs/claude-accounts.md ("Testing routing live").
  */
 
 import { readFileSync } from "fs";
-import type { UsageData, UsageWindow } from "../../messages";
+import type { FableUsage, UsageData, UsageWindow } from "../../messages";
 import { log } from "../../log";
 import { DEFAULT_ROUTING_POLICY, type AccountRouteState, type RoutingPolicy } from "./routing";
 
@@ -41,9 +44,10 @@ interface WindowOverride {
 }
 
 interface AccountOverride {
-  usage?: { fiveHour?: WindowOverride | null; sevenDay?: WindowOverride | null } | null;
+  usage?: { fiveHour?: WindowOverride | null; sevenDay?: WindowOverride | null; fable?: WindowOverride | null } | null;
   limitedUntil?: number | null;
   limitedForMs?: number;
+  fableLimitedForMs?: number;
   available?: boolean;
 }
 
@@ -80,7 +84,14 @@ function toWindow(window: WindowOverride | null | undefined, now: number): Usage
 
 function toUsage(usage: AccountOverride["usage"], now: number): UsageData | null {
   if (!usage) return null;
-  return { fiveHour: toWindow(usage.fiveHour, now), sevenDay: toWindow(usage.sevenDay, now) };
+  const fable = toWindow(usage.fable, now);
+  return { fiveHour: toWindow(usage.fiveHour, now), sevenDay: toWindow(usage.sevenDay, now), ...(fable ? { fable } : {}) };
+}
+
+/** The account's Fable allowance with a refusal that holds for `ms`. */
+function fableLimited(usage: UsageData | null, ms: number, now: number): UsageData {
+  const fable: FableUsage = { ...(usage?.fable ?? { utilization: 100, resetsAt: now + ms }), limitedUntil: now + ms };
+  return { ...(usage ?? { fiveHour: null, sevenDay: null }), fable };
 }
 
 /** Routing's view of the accounts and its policy, with the dev overrides applied when the env var is set. */
@@ -99,6 +110,7 @@ export function applyDevRoutingOverrides(
       if (!override) return state;
       const next = { ...state };
       if ("usage" in override) next.usage = toUsage(override.usage, now);
+      if (typeof override.fableLimitedForMs === "number") next.usage = fableLimited(next.usage, override.fableLimitedForMs, now);
       if (typeof override.limitedForMs === "number") next.limitedUntil = now + override.limitedForMs;
       else if ("limitedUntil" in override) next.limitedUntil = override.limitedUntil ?? null;
       if (typeof override.available === "boolean") next.available = override.available;

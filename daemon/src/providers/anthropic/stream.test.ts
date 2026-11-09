@@ -4,8 +4,9 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { warmToolManifestCache } from "../../helper-tool-manifest";
 import type { ProviderRound, StreamCallbacks } from "../types";
-import { agentTitlesInHistory, ClaudeOverageError, commitInterruptedRound, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./stream";
-import { applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, getAccountUsage } from "./usage";
+import { agentTitlesInHistory, ClaudeFableLimitError, ClaudeOverageError, commitInterruptedRound, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./stream";
+import { applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, CLAUDE_FABLE_TURN_HEADER, clearUsage, getAccountLimitedUntil, getAccountUsage } from "./usage";
+import { isUsageLimitError } from "../../usage-limit-wait";
 
 function recorder() {
   const events: string[] = [];
@@ -405,5 +406,133 @@ describe("Claude Code stream translation", () => {
 
     expect(() => pushClaudeMessage(state, { type: "rate_limit_event", rate_limit_info: { ...info, isUsingOverage: true } }))
       .toThrow(ClaudeOverageError);
+  });
+});
+
+describe("a Fable turn that runs out of Fable allowance", () => {
+  const RESET = Math.floor(Date.now() / 1000) + 2 * 86_400;
+  /** What Claude Code 2.1.321 reports for a Fable request the API refuses past the allowance, with extra usage off. */
+  const REFUSAL = {
+    status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: RESET,
+    overageStatus: "rejected", overageDisabledReason: "out_of_credits", isUsingOverage: false,
+    unifiedWindows: { seven_day: { utilization: 0.6, resetsAt: RESET }, seven_day_overage_included: { utilization: 1, resetsAt: RESET, status: "rejected" } },
+  };
+  const TEXT = "You're out of usage credits. /model to switch models.";
+  const apiError = (extra: Record<string, unknown> = {}) => ({
+    type: "assistant", uuid: "err-1", session_id: SESSION, parent_tool_use_id: null, error: "rate_limit",
+    message: { model: "<synthetic>", content: [{ type: "text", text: TEXT }] }, ...extra,
+  });
+  const result = (text = TEXT) => ({ type: "result", subtype: "success", is_error: true, result: text, session_id: SESSION });
+  function fableState(account = "test-fable-stream") {
+    const recorded = recorder();
+    const rounds: ProviderRound[] = [];
+    const state = createClaudeStreamState({ ...recorded.callbacks, onProviderRound: round => rounds.push(round) }, "/work");
+    state.account = account;
+    state.fableTurn = true;
+    return { state, rounds, ...recorded };
+  }
+  const thrown = (run: () => void): unknown => {
+    try { run(); } catch (error) { return error; }
+    return null;
+  };
+
+  test("ends as a Fable limit, retried like a usage limit, without marking the account limited or showing Claude Code's error as the model's words", () => {
+    const { state, rounds, headers, events } = fableState();
+    try {
+      pushClaudeMessage(state, se({ type: "content_block_delta", delta: { type: "text_delta", text: "Work so far." } }));
+      pushClaudeMessage(state, { type: "rate_limit_event", rate_limit_info: REFUSAL });
+      pushClaudeMessage(state, apiError({ is_api_error_message: true, api_error: "model_requires_usage_credits", api_error_params: { rate_limit_info: REFUSAL } }));
+      const error = thrown(() => pushClaudeMessage(state, result()));
+      expect(error).toBeInstanceOf(ClaudeFableLimitError);
+      expect((error as ClaudeFableLimitError).resetAt).toBe(RESET * 1000);
+      expect((error as Error).message).toBe(`Claude Code: ${TEXT}`);
+      expect(isUsageLimitError(error)).toBe(true);
+      // The turn's own output is kept for the retry; the error text is not part of it.
+      expect(rounds.map(round => round.messages)).toEqual([[{ role: "assistant", content: [{ type: "text", text: "Work so far." }] }]]);
+      expect(events).not.toContain(`text:${TEXT}`);
+      // The event names the turn as Fable's, so the account keeps its other models.
+      expect(headers[0].get(CLAUDE_FABLE_TURN_HEADER)).toBe("1");
+      applyUsageHeaders(headers[0]);
+      expect(getAccountLimitedUntil("test-fable-stream")).toBeNull();
+      expect(getAccountUsage("test-fable-stream")?.fable?.limitedUntil).toBe(RESET * 1000);
+    } finally {
+      clearUsage("test-fable-stream");
+    }
+  });
+
+  test("is recognized by any one sign: the error's kind, the refusal's record, or the text alone", () => {
+    const texts = [
+      TEXT,
+      "You've reached your Fable limit. /model to switch models.",
+      "You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.",
+      "Fable 5.2 requires usage credits. Switch to another model to continue.",
+      "You've hit your Fable limit · resets Nov 14, 3am",
+      "Fable limit reached · continuing on Fable 5.2 uses usage credits, and the prompt to confirm went unanswered — nothing was sent · answer it where this session is running, or /model to change",
+    ];
+    for (const text of texts) {
+      expect(thrown(() => pushClaudeMessage(fableState().state, result(text)))).toBeInstanceOf(ClaudeFableLimitError);
+    }
+    // The kind alone, whatever the wording becomes.
+    const byKind = fableState().state;
+    pushClaudeMessage(byKind, apiError({ api_error: "model_requires_usage_credits", message: { content: [{ type: "text", text: "Reworded." }] } }));
+    expect(thrown(() => pushClaudeMessage(byKind, result("Reworded.")))).toBeInstanceOf(ClaudeFableLimitError);
+    // The refusal's own record, with no kind this build knows.
+    const byRecord = fableState().state;
+    pushClaudeMessage(byRecord, apiError({ is_api_error_message: true, api_error: "usage_limit_reached", api_error_params: { rate_limit_info: REFUSAL }, message: { content: [{ type: "text", text: "Reworded." }] } }));
+    const error = thrown(() => pushClaudeMessage(byRecord, result("Reworded.")));
+    expect(error).toBeInstanceOf(ClaudeFableLimitError);
+    expect((error as ClaudeFableLimitError).resetAt).toBe(RESET * 1000);
+    // The rejecting event alone.
+    const byEvent = fableState().state;
+    pushClaudeMessage(byEvent, { type: "rate_limit_event", rate_limit_info: REFUSAL });
+    expect(thrown(() => pushClaudeMessage(byEvent, result("Reworded.")))).toBeInstanceOf(ClaudeFableLimitError);
+  });
+
+  test("the same signs on another model's turn, or on API credits, are not a Fable limit", () => {
+    const { callbacks } = recorder();
+    const opus = createClaudeStreamState(callbacks, "/work");
+    const error = thrown(() => pushClaudeMessage(opus, result()));
+    expect(error).not.toBeInstanceOf(ClaudeFableLimitError);
+    expect(isUsageLimitError(error)).toBe(false);
+    // A plan limit on a Fable turn stays the account's usage limit.
+    const { state } = fableState();
+    pushClaudeMessage(state, { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "seven_day", resetsAt: RESET, unifiedWindows: { seven_day: { utilization: 1, resetsAt: RESET } } } });
+    const weekly = thrown(() => pushClaudeMessage(state, result("You've hit your weekly limit · resets Nov 14, 3am")));
+    expect(weekly).not.toBeInstanceOf(ClaudeFableLimitError);
+    expect(isUsageLimitError(weekly)).toBe(true);
+    // Even when its wording speaks of usage credits (the plan ran out and extra usage has none).
+    const { state: spent } = fableState();
+    pushClaudeMessage(spent, { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "seven_day", resetsAt: RESET, overageStatus: "rejected", overageDisabledReason: "out_of_credits" } });
+    expect(thrown(() => pushClaudeMessage(spent, result("You're out of usage credits · resets Nov 14, 3am")))).not.toBeInstanceOf(ClaudeFableLimitError);
+    // The 1M context window needing usage credits is about the window, not Fable's allowance.
+    expect(thrown(() => pushClaudeMessage(fableState().state, result("API Error: Usage credits required for 1M context · run /usage-credits to turn them on")))).not.toBeInstanceOf(ClaudeFableLimitError);
+  });
+
+  test("Fable billed to paid extra usage stops the turn as a Fable limit; any other overage stops it for good", () => {
+    const { state, headers } = fableState();
+    try {
+      const overage = { ...REFUSAL, overageStatus: "allowed", isUsingOverage: true };
+      const error = thrown(() => pushClaudeMessage(state, { type: "rate_limit_event", rate_limit_info: overage }));
+      expect(error).toBeInstanceOf(ClaudeFableLimitError);
+      expect((error as ClaudeFableLimitError).resetAt).toBe(RESET * 1000);
+      applyUsageHeaders(headers[0]);
+      expect(getAccountLimitedUntil("test-fable-stream")).toBeNull();
+      // The whole plan on overage: not Fable's doing.
+      const plan = { status: "rejected", rateLimitType: "seven_day", resetsAt: RESET, isUsingOverage: true, unifiedWindows: { seven_day: { utilization: 1, resetsAt: RESET } } };
+      const other = thrown(() => pushClaudeMessage(fableState("test-fable-stream-2").state, { type: "rate_limit_event", rate_limit_info: plan }));
+      expect(other).toBeInstanceOf(ClaudeOverageError);
+      expect(other).not.toBeInstanceOf(ClaudeFableLimitError);
+    } finally {
+      clearUsage("test-fable-stream");
+    }
+  });
+
+  test("Claude Code switching the session off Fable by itself restarts the turn under Exocortex's routing", () => {
+    const { state } = fableState();
+    const switched = { type: "system", subtype: "model_consent_fallback", choice: "cancelled", original_model: "claude-fable-5-2", fallback_model: "claude-opus-5-5", content: "Switched to Opus 5.5 for this session · Fable 5.2 requires usage credits · /model to change", session_id: SESSION };
+    expect(thrown(() => pushClaudeMessage(state, switched))).toBeInstanceOf(ClaudeFableLimitError);
+    // Another model's session is left alone.
+    const { callbacks } = recorder();
+    expect(thrown(() => pushClaudeMessage(createClaudeStreamState(callbacks, "/work"), switched))).toBeNull();
   });
 });

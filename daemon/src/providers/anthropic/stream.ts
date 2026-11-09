@@ -26,12 +26,45 @@ import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from 
 import { REPLAYED_FIELD } from "./relay-protocol";
 import { takeHostToolAttachments } from "./host-tool-attachments";
 import type { AnthropicAssistantProviderData } from "./types";
-import { CLAUDE_ACCOUNT_HEADER, CLAUDE_RATE_LIMIT_HEADER } from "./usage";
+import { CLAUDE_ACCOUNT_HEADER, CLAUDE_FABLE_TURN_HEADER, CLAUDE_RATE_LIMIT_HEADER, isFableScopedLimit } from "./usage";
 import { MAIN_ACCOUNT_ID } from "./accounts";
 
 type SdkRecord = Record<string, unknown>;
 
 export class ClaudeOverageError extends Error {}
+
+/**
+ * A Fable turn was refused for lack of Fable allowance (or was about to draw
+ * on paid extra usage for it). A usage limit of Fable's alone: the turn is
+ * retried, and routing gives it an account that has allowance or the
+ * fallback model (account-pool.ts). `resetAt`: when the allowance resets (ms), if said.
+ */
+export class ClaudeFableLimitError extends Error {
+  override readonly name = "ClaudeFableLimitError";
+  constructor(message: string, readonly resetAt: number | null = null) {
+    super(message);
+  }
+}
+
+/** Claude Code's error kinds (an assistant message's `api_error`) for a model that needs usage credits the account does not give it. */
+const USAGE_CREDIT_ERROR_KINDS = new Set(["model_requires_usage_credits", "consent_unanswered", "no_allowed_fallback", "model_substitution_disabled"]);
+/**
+ * Their texts ("Fable 5.2 requires usage credits", "You're out of usage
+ * credits", "… now uses usage credits") and the limit's own name ("You've
+ * reached your Fable limit"). Not "Usage credits required for 1M context",
+ * which is about the context window, whatever the model.
+ */
+const FABLE_LIMIT_TEXT = /\bfable limit\b|\b(?:requires|uses|out of) usage credits\b/i;
+/** Raw signals logged, so the first real one shows its shape; a retry loop would not flood the log. */
+let fableLimitLogsLeft = 20;
+
+function logFableLimit(what: string, raw: unknown): void {
+  if (fableLimitLogsLeft <= 0) return;
+  fableLimitLogsLeft -= 1;
+  let shown: string;
+  try { shown = JSON.stringify(raw); } catch { shown = String(raw); }
+  log("warn", `anthropic: Fable allowance signal (${what}): ${shown.slice(0, 2000)}`);
+}
 
 /** How an app conversation's own tool call is recorded (docs/app-api.md). */
 export type ClaudeAppToolCallView = (name: string, input: Record<string, unknown>) => { summary: string; presentation: import("../../messages").ToolCallPresentation } | undefined;
@@ -45,6 +78,12 @@ export interface ClaudeStreamState {
   account: string | null;
   /** The process runs on API credits (api-credits.ts), not the account's subscription. */
   apiCredit: boolean;
+  /** The turn runs a Fable model on the subscription: its refusals may be the Fable allowance's alone. */
+  fableTurn: boolean;
+  /** A sign that the turn ran out of Fable allowance, seen before its result: when the allowance resets (ms), if said. */
+  fableLimit: { resetAt: number | null } | null;
+  /** A plan limit refused the turn: its error is the account's, whatever its wording says of usage credits. */
+  planLimited: boolean;
   /** uuid of the prompt Exocortex sent; only the result answering it ends the turn. Null ends on any result. */
   promptUuid: string | null;
   /** uuids of queued input Claude Code took into the turn; a result answering one ends it too. */
@@ -99,6 +138,9 @@ export function createClaudeStreamState(
     cwd,
     account: null,
     apiCredit: false,
+    fableTurn: false,
+    fableLimit: null,
+    planLimited: false,
     promptUuid,
     inputUuids: [],
     blocks: [],
@@ -430,22 +472,63 @@ function answersPrompt(state: ClaudeStreamState, message: SdkRecord): boolean {
   return asRecord(message.origin)?.kind !== "task-notification";
 }
 
+function epochSecondsToMs(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value * 1000 : null;
+}
+
 function handleRateLimit(state: ClaudeStreamState, info: SdkRecord): void {
   // The subscription's limiter: nothing to do with a turn on API credits.
   if (state.apiCredit) return;
   const headers = new Headers({ [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify(info) });
   if (state.account) headers.set(CLAUDE_ACCOUNT_HEADER, state.account);
+  if (state.fableTurn) headers.set(CLAUDE_FABLE_TURN_HEADER, "1");
   state.callbacks.onHeaders?.(headers);
+  const overage = info.isUsingOverage === true || info.overageInUse === true;
+  if (state.fableTurn && (info.status === "rejected" || overage) && isFableScopedLimit(info, true)) {
+    logFableLimit(overage ? "a rate limit event moving the turn onto extra usage" : "a rejecting rate limit event", info);
+    state.fableLimit = { resetAt: epochSecondsToMs(info.resetsAt) };
+    // Past the allowance Claude Code bills Fable to paid extra usage without asking: stop before it runs on.
+    if (overage) throw new ClaudeFableLimitError("Claude Code started billing Fable to extra usage: this account's Fable allowance has run out.", state.fableLimit.resetAt);
+    return;
+  }
+  if (info.status === "rejected") state.planLimited = true;
   // Exocortex only draws on the Claude subscription. Stop instead of running
   // a turn on paid extra usage.
-  if (info.isUsingOverage === true || info.overageInUse === true) {
+  if (overage) {
     throw new ClaudeOverageError("Claude Code started drawing on extra usage (overage) instead of the Claude subscription, so Exocortex stopped this turn. Wait for the subscription limit to reset.");
   }
 }
 
-function resultError(message: SdkRecord, apiCredit = false): Error {
+/**
+ * An assistant message that wraps an API error: whether it says the Fable
+ * turn needs usage credits the account does not give it, by the error's kind
+ * (`api_error`), the refusal's own record of the limit, or its text. Noted
+ * for the result that follows; the message is Claude Code's, not the model's,
+ * and is left out of the transcript.
+ */
+function noteFableApiError(state: ClaudeStreamState, message: SdkRecord): boolean {
+  if (!state.fableTurn || state.planLimited) return false;
+  const kind = str(message.api_error);
+  if (message.is_api_error_message !== true && typeof message.error !== "string" && !kind) return false;
+  const info = asRecord(asRecord(message.api_error_params)?.rate_limit_info);
+  const content = asRecord(message.message)?.content;
+  const text = (Array.isArray(content) ? content : []).map(block => str(asRecord(block)?.text) ?? "").join("\n");
+  const scoped = info !== null && info.status === "rejected" && isFableScopedLimit(info, true);
+  if (!(kind && USAGE_CREDIT_ERROR_KINDS.has(kind)) && !scoped && !FABLE_LIMIT_TEXT.test(text)) return false;
+  logFableLimit(`an assistant API error, kind ${kind ?? "none"}`, { api_error: message.api_error, api_error_params: message.api_error_params, error: message.error, text });
+  state.fableLimit = { resetAt: epochSecondsToMs(info?.resetsAt) ?? state.fableLimit?.resetAt ?? null };
+  return true;
+}
+
+function resultError(message: SdkRecord, state: Pick<ClaudeStreamState, "apiCredit" | "fableTurn" | "fableLimit" | "planLimited">): Error {
+  const { apiCredit } = state;
   const errors = Array.isArray(message.errors) ? message.errors.filter((e): e is string => typeof e === "string") : [];
   const text = errors.join("\n") || str(message.result) || `Claude Code ended with ${str(message.subtype) ?? "an error"}`;
+  // Out of Fable allowance: by what came before the result, or by its text alone.
+  if (state.fableTurn && !state.planLimited && (state.fableLimit || FABLE_LIMIT_TEXT.test(text))) {
+    if (!state.fableLimit) logFableLimit("a result's error text", { subtype: message.subtype, result: message.result, errors: message.errors });
+    return new ClaudeFableLimitError(`Claude Code: ${text}`, state.fableLimit?.resetAt ?? null);
+  }
   // Out of API credits (or refused by billing): waits for another key or a subscription, like a usage limit.
   if (apiCredit && isApiCreditRefusalText(text)) return new ApiCreditExhaustedError(`Claude Code: ${text}`);
   if (/auth|login|401|oauth|credential/i.test(text)) {
@@ -482,6 +565,7 @@ function pushMessage(state: ClaudeStreamState, message: SdkRecord): void {
     }
     case "assistant": {
       if (message.uuid) state.lastChainUuid = String(message.uuid);
+      if (noteFableApiError(state, message)) return;
       handleAssistantMessage(state, message);
       return;
     }
@@ -503,7 +587,7 @@ function pushMessage(state: ClaudeStreamState, message: SdkRecord): void {
         return;
       }
       if (message.subtype !== "success" || message.is_error === true) {
-        const error = resultError(message, state.apiCredit);
+        const error = resultError(message, state);
         if (isUsageLimitError(error)) {
           // Keep any complete assistant payload before the refusal. No resume
           // marker: replay this tail after the last committed session boundary.
@@ -539,6 +623,12 @@ function pushMessage(state: ClaudeStreamState, message: SdkRecord): void {
       }
       // A request sent while a main-thread call streams is a subagent's.
       if (message.subtype === "status" && message.status === "requesting" && state.callStartedAt === null) state.requestedAt = state.now();
+      // Claude Code moved the session off Fable by itself (it needs usage credits): Exocortex
+      // picks the account and model instead, so the turn starts over under its routing.
+      if (message.subtype === "model_consent_fallback" && state.fableTurn) {
+        logFableLimit("Claude Code switched the session's model itself", message);
+        throw new ClaudeFableLimitError(`Claude Code: ${str(message.content) ?? "Fable requires usage credits"}`, state.fableLimit?.resetAt ?? null);
+      }
       if (message.subtype === "api_retry") {
         state.callRetried = true;
         // No HTTP status: the request never got a response (DNS, connection).

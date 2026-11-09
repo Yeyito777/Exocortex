@@ -27,6 +27,17 @@ export const FALLBACK_ANTHROPIC_MODELS: ModelInfo[] = [
   claudeModel("claude-haiku-5-5"),
 ];
 
+/** Fable models draw on an allowance of their own (usage.ts): turns on them are routed by it. */
+export function isFableModel(model: string | null | undefined): boolean {
+  return typeof model === "string" && /(^|[^a-z])fable([^a-z]|$)/i.test(model);
+}
+
+/**
+ * The model a Fable conversation's turn runs on while no account has Fable
+ * allowance left, and on API credits (which pay Opus prices, not Fable's).
+ */
+export const FABLE_FALLBACK_MODEL = "claude-opus-5-5";
+
 export async function fetchAnthropicModels(): Promise<ModelInfo[]> {
   return FALLBACK_ANTHROPIC_MODELS;
 }
