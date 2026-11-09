@@ -50,7 +50,7 @@ import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffo
 import { resolveSlashShorthands } from "./slashsearch";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
-import { invalidateFrame, scrollRegionsEnabled } from "./frame";
+import { holdFrames, invalidateFrame, releaseFrames, scrollRegionsEnabled } from "./frame";
 import {
   SMOOTH_SCROLL_FRAME_MS, SMOOTH_SCROLL_OFF, SMOOTH_SCROLL_ON, SMOOTH_SCROLL_QUERY,
   SmoothScroller, parseSmoothScrollReport, setSmoothScroller, smoothScrollerFor,
@@ -428,10 +428,30 @@ function scheduleInstructionsPrefetch(): void {
   instructionsPrefetchTimer.unref?.();
 }
 
+/**
+ * Render a frame. When it starts a glide whose next row is due at once
+ * (content that moved by itself, the bottom growing or shrinking while
+ * followed, is laid out where it ends up and glides from where it was), lay
+ * that row out too and send both frames in one write: drawn alone, the first
+ * shows the rows beside the Tasks panel displaced by the whole move.
+ */
+function renderFrames(): boolean {
+  const smooth = smoothScrollerFor(state);
+  if (!smooth) return render(state);
+  holdFrames();
+  try {
+    const presented = render(state);
+    if (presented && smooth.needsLayout()) render(state);
+    return presented;
+  } finally {
+    releaseFrames();
+  }
+}
+
 function performRender(): number {
   scheduleInstructionsPrefetch();
   const renderStartedAt = performance.now();
-  const framePresented = stallSpan("render", () => render(state));
+  const framePresented = stallSpan("render", renderFrames);
   const renderMs = performance.now() - renderStartedAt;
   // A page that landed before the history had a layout keeps paging from its first frame.
   if (olderHistoryDueAfterLayout(state)) requestOlderHistory(olderHistoryPageTurns(state));

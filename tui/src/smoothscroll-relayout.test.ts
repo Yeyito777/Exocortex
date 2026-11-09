@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { createInitialState, type RenderState } from "./state";
-import { invalidateFrame, setScrollRegionsEnabled } from "./frame";
-import { SmoothScroller, markScrollIntent, setSmoothScroller } from "./smoothscroll";
+import { holdFrames, invalidateFrame, releaseFrames, setScrollRegionsEnabled } from "./frame";
+import { SmoothScroller, markScrollIntent, setSmoothScroller, smoothScrollerFor } from "./smoothscroll";
 import { createPendingAI } from "./messages";
 import {
   preserveViewportAcrossHistoryMutation, preserveViewportAcrossResize, toggleSidebarPreservingViewport,
   toggleToolOutputPreservingViewport,
 } from "./chatscroll";
 import { TerminalScreen } from "./testhelpers/terminalscreen";
+import { render } from "./render";
 import { captureRender as capture, glides } from "./testhelpers/smoothframes";
 
 // Only scrolling glides. Every other reason the conversation pane's offset or
@@ -269,6 +270,139 @@ describe("the bottom growing and shrinking while following it", () => {
       setSystemTime();
     }
   });
+
+  /** The Tasks panel (a card at the top right of the pane): rows beside it re-wrap narrower. */
+  function openTasks(state: RenderState): void {
+    state.sidebar.conversations[0].tasks = [
+      { id: "child-a", kind: "subagent", title: "Inspect renderer flow", startedAt: 1 },
+      { id: "child-b", kind: "subagent", title: "Measure the glide in st", startedAt: 1 },
+      { id: "child-c", kind: "subagent", title: "Write the frame-stream test", startedAt: 1 },
+    ];
+  }
+
+  for (const rows of [3, 8, 12] as const) {
+    test(`beside the Tasks panel a step ${rows} rows taller slides the history up, and back down`, () => {
+      const state = conversationState();
+      openTasks(state);
+      liveTurn(state, 1);
+      settle(state, 0);
+      liveTurn(state, rows, 1);
+      const grew = eases(frames(state));
+      expect(grew.length).toBe(1);
+      expect(grew[0]).toBeGreaterThan(0);
+      liveTurn(state, 1, 2);
+      const shrank = eases(frames(state));
+      expect(shrank.length).toBe(1);
+      expect(shrank[0]).toBe(-grew[0]);
+    });
+  }
+
+  for (const tasks of [false, true]) {
+    test(`a new step replacing a shorter one slides the history up, and a short one after it back down (Tasks panel ${tasks ? "open" : "closed"})`, () => {
+      // The newest step's own rows change as it is replaced, not only the rows below them.
+      const state = conversationState();
+      if (tasks) openTasks(state);
+      liveTurn(state, 4);
+      settle(state, 0);
+      liveTurn(state, 12, 1);
+      const grew = eases(frames(state));
+      expect(grew.length).toBe(1);
+      expect(grew[0]).toBeGreaterThan(0);
+      liveTurn(state, 2, 2);
+      const shrank = eases(frames(state));
+      expect(shrank.length).toBe(1);
+      expect(shrank[0]).toBeLessThan(0);
+    });
+  }
+
+  test("the frame starting the bottom's slide goes out with the row laid out next to it, in one write", () => {
+    // main.ts renders again at once when the next row is due and releases both
+    // together: st never draws the first frame alone (beside the Tasks panel
+    // its re-wrapped rows would show displaced by the whole move).
+    const state = conversationState();
+    openTasks(state);
+    liveTurn(state, 1);
+    settle(state, 0);
+    const writes: string[] = [];
+    const write = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      holdFrames();
+      liveTurn(state, 9, 1);
+      render(state);
+      expect(smoothScrollerFor(state)!.needsLayout()).toBe(true);
+      render(state);
+      expect(writes).toEqual([]);
+      releaseFrames();
+    } finally {
+      process.stdout.write = write as typeof process.stdout.write;
+    }
+    expect(writes.length).toBe(1);
+    expect(glides(writes[0]!).length).toBe(1);
+    expect(writes[0]!.split("\x1b[?2026l").length - 1).toBe(2);
+  });
+
+  /**
+   * st's offset base after a stream (OSC 2032 ; o sets it, ; m adds to it),
+   * in thousandths of a row: where st's offset rests once every easing term
+   * has run out. At rest it must be 0, or st draws the content off its rows
+   * and keeps the lines its scrolls pushed out painted (Nov 7).
+   */
+  function stBase(out: string, base = 0): number {
+    for (const match of out.matchAll(/\x1b\]2032;([om]);(-?\d+)(?:;-?\d+;\d+)?\x1b\\/g)) {
+      base = match[1] === "o" ? Number(match[2]) : base + Number(match[2]);
+    }
+    return base;
+  }
+
+  for (const tasks of [false, true]) {
+    for (const seed of [1, 2, 3]) {
+      test(`after any run of grows, shrinks, replaced steps and scrolls st rests at 0 on a full repaint's screen (Tasks panel ${tasks ? "open" : "closed"}, run ${seed})`, () => {
+        setSystemTime(new Date("2026-10-29T00:00:00Z"));
+        try {
+          let random = seed * 7919;
+          const next = (n: number) => {
+            random = (random * 1103515245 + 12345) % 2147483648;
+            return random % n;
+          };
+          const state = conversationState();
+          if (tasks) openTasks(state);
+          liveTurn(state, 1);
+          let out = capture(state);
+          screen.feed(out);
+          let step = 1;
+          for (let op = 0; op < 24; op++) {
+            const kind = next(4);
+            if (kind <= 1) liveTurn(state, 1 + next(12), step++);
+            else if (kind === 2) {
+              markScrollIntent(state);
+              state.scrollOffset = Math.max(0, state.scrollOffset + next(9) - 4);
+            } else {
+              markScrollIntent(state);
+              state.scrollOffset = 0;
+            }
+            out += frames(state, 4 * next(30));
+          }
+          markScrollIntent(state);
+          state.scrollOffset = 0;
+          out += frames(state, 600);
+          expect(glides(out).length).toBeGreaterThan(0);
+          expect(stBase(out)).toBe(0);
+          const settled = screen.plainRows();
+          setSmoothScroller(state, null);
+          const fresh = new TerminalScreen(state.rows, state.cols);
+          invalidateFrame(state);
+          fresh.feed(capture(state));
+          expect(settled).toEqual(fresh.plainRows());
+        } finally {
+          setSystemTime();
+        }
+      });
+    }
+  }
 
   test("in a conversation shorter than the pane nothing slides", () => {
     const state = conversationState();

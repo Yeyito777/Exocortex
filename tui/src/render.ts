@@ -28,7 +28,7 @@ import { createSidebarState } from "./sidebar/state";
 import { sidebarActivityInputs } from "./sidebar/activityindicator";
 import { steersInstantly } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
-import { buildMessageLines, type BuildMessageLinesResult, type RenderLineSegment } from "./conversation";
+import { buildMessageLines, type BuildMessageLinesResult, type MessageBound, type RenderLineAnchor, type RenderLineSegment } from "./conversation";
 import { computeBottomLayout } from "./chatlayout";
 import { PROMPT_PREFIX_WIDTH } from "./promptline";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
@@ -889,6 +889,26 @@ function canonicalViewportRows(
  * from the top to the card's height. Unlike the old fixed-point loop, wrapping
  * beside the card can never move the full-width tail or trigger another pass.
  */
+/**
+ * The first screen row of the live turn (its Working row, newest step and
+ * streamed text, and anything below it), or null without one on screen. Those
+ * rows change as they move: a new step replaces the last one.
+ */
+function liveTurnScreenRow(
+  state: RenderState,
+  messageBounds: readonly MessageBound[],
+  lineAnchors: readonly RenderLineAnchor[],
+  viewportRows: readonly { lineIndex: number }[],
+  messageAreaStart: number,
+): number | null {
+  if (!state.pendingAI) return null;
+  // The live turn's bound comes just before the streamed notices' ones.
+  const bound = messageBounds[messageBounds.length - 1 - (state.streamingTailMessages?.length ?? 0)];
+  if (!bound || lineAnchors[bound.start]?.owner !== state.pendingAI) return null;
+  const index = viewportRows.findIndex(row => row && row.lineIndex >= bound.start);
+  return index < 0 ? null : messageAreaStart + index;
+}
+
 /**
  * What moves when the history scrolls smoothly: the history columns of the
  * band, except the Tasks panel's columns above the first row below it.
@@ -2120,6 +2140,9 @@ export function render(state: RenderState): boolean {
     ),
     scrollRegion,
     viewStart,
+    // The rows beside the Tasks panel re-wrap as the history moves under it.
+    reflowRows: panelFlowHeight > 0 ? { start: messageAreaStart, end: messageAreaStart + panelFlowHeight - 1 } : null,
+    liveFrom: liveTurnScreenRow(state, messageBounds, lineAnchors, viewportRows, messageAreaStart),
     graphics,
   });
   return true;
