@@ -3167,10 +3167,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
-        if (convStore.isStreaming(cmd.convId)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot switch provider/model while the conversation is streaming." });
-          break;
-        }
         let requested: ReturnType<typeof parseRequestedModel>;
         try {
           requested = parseRequestedModel(cmd.provider, cmd.model);
@@ -3199,7 +3195,25 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           });
           break;
         }
-        const nextEffort = normalizeEffort(nextProvider, nextModel, conv.effort);
+        const requestedEffort = cmd.effort && EFFORT_LEVELS.includes(cmd.effort) ? cmd.effort : conv.effort;
+        const nextEffort = normalizeEffort(nextProvider, nextModel, requestedEffort);
+        if (convStore.isStreaming(cmd.convId)) {
+          // Mid-turn the running turn keeps its model: the switch waits for
+          // the turn to end. Back to the running model clears it (its effort,
+          // like /effort, applies at once).
+          if (nextProvider === conv.provider && nextModel === conv.model) {
+            convStore.setPendingModel(cmd.convId, null);
+            if (nextEffort !== conv.effort) convStore.setEffort(cmd.convId, nextEffort);
+          } else {
+            convStore.setPendingModel(cmd.convId, { provider: nextProvider, model: nextModel, effort: nextEffort });
+          }
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          broadcastConversationUpdated(server, cmd.convId);
+          log("info", `handler: conversation ${cmd.convId} queued ${nextProvider}/${nextModel} (effort=${nextEffort}) for when its turn ends`);
+          break;
+        }
+        // Chosen while idle: nothing waits any more.
+        convStore.setPendingModel(cmd.convId, null);
         const nextFastMode = supportsFastMode(nextProvider, nextModel, conv.fastMode) ? conv.fastMode : false;
         // Keep the checkpoint: native OpenAI compaction can cross models on
         // the same account. An incompatible/invalid checkpoint hard-fails on
@@ -3251,6 +3265,19 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const conv = convStore.get(cmd.convId);
         if (!conv) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        const queued = convStore.getPendingModel(cmd.convId);
+        if (queued) {
+          // A model waits for the turn to end: the effort goes with it.
+          if (!supportsEffort(queued.provider, queued.model, cmd.effort)) {
+            const valid = getSupportedEfforts(queued.provider, queued.model).map((candidate) => candidate.effort);
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Invalid effort for ${queued.provider}/${queued.model}: ${cmd.effort}. Valid: ${valid.join(", ")}` });
+            break;
+          }
+          convStore.setPendingModel(cmd.convId, { ...queued, effort: cmd.effort });
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          broadcastConversationUpdated(server, cmd.convId);
           break;
         }
         if (!supportsEffort(conv.provider, conv.model, cmd.effort)) {

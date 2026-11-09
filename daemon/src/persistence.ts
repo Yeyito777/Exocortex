@@ -202,6 +202,15 @@ export function loadPendingConversationInstructions(): Map<string, string> {
   return backend === "sqlite" ? store().loadPendingConversationInstructions() : jsonPersistence.loadPendingConversationInstructions();
 }
 
+export function loadPendingModelSelectionsJson(): Record<string, unknown> {
+  return backend === "sqlite" ? store().loadPendingModelSelectionsJson() : jsonPersistence.loadPendingModelSelectionsJson();
+}
+
+export function savePendingModelSelectionsJson(selections: Record<string, unknown>): void {
+  if (backend === "sqlite") store().savePendingModelSelectionsJson(selections);
+  else jsonPersistence.savePendingModelSelectionsJson(selections);
+}
+
 export function savePendingConversationInstructions(instructions: Map<string, string>): void {
   if (backend === "sqlite") store().savePendingConversationInstructions(instructions);
   else jsonPersistence.savePendingConversationInstructions(instructions);

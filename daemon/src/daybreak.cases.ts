@@ -79,9 +79,11 @@ test("daemon persists and broadcasts the model alias independently of speed and 
   await handle({} as never, { type: "set_model", convId, provider: "openai", model: DAYBREAK_MODEL_ID });
   setActiveJob(convId, new AbortController(), Date.now());
   await handle({} as never, { type: "set_model", reqId: "busy", convId, provider: "openai", model: "gpt-6-sol" });
-  expect(events.at(-1)).toMatchObject({ type: "error", reqId: "busy", message: expect.stringContaining("streaming") });
+  // Mid-turn the switch waits for the turn to end.
+  expect(events.at(-1)).toMatchObject({ type: "conversation_updated", summary: { model: DAYBREAK_MODEL_ID, pendingModel: { model: "gpt-6-sol" } } });
   expect(conversations.get(convId)?.model).toBe(DAYBREAK_MODEL_ID);
   clearActiveJob(convId);
+  expect(conversations.get(convId)?.model).toBe("gpt-6-sol");
   await handle({} as never, { type: "set_model", convId, provider: "openai", model: "gpt-6-luna" });
   expect(conversations.get(convId)).toMatchObject({ model: "gpt-6-luna", fastMode: true });
 });

@@ -13,7 +13,8 @@ import { activeProviderProxy } from "./provider-proxies";
 import { ansiColorToRgb } from "./terminalcolors";
 import { terminalColorLevel } from "./theme";
 import { renderLadderSegment, type LadderPalette, type Rgb } from "./modelladder-anim";
-import type { EffortLevel, ModelId } from "./messages";
+import type { EffortLevel, ModelId, ProviderId } from "./messages";
+import { ladderLabel, queuedModel, syncModelLadder } from "./modelladder";
 
 /** Max visible length for a conversation preview used as label. */
 const PREVIEW_MAX = 30;
@@ -46,9 +47,14 @@ function convLabel(state: RenderState): string {
  * The model label on the right of the bar, e.g. `Anthropic/Opus-5.5 — high`.
  * `model`/`effort` give the label the conversation would have with them.
  */
-export function topbarModelLabel(state: RenderState, model: ModelId = state.model, effort: EffortLevel = state.effort): string {
+export function topbarModelLabel(
+  state: RenderState,
+  model: ModelId = state.model,
+  effort: EffortLevel = state.effort,
+  provider: ProviderId = state.provider,
+): string {
   if (state.sshConnecting || !(state.hasChosenProvider || state.convId)) return "";
-  const providerId = typeof state.provider === "string" && state.provider.length > 0 ? state.provider : "unknown";
+  const providerId = typeof provider === "string" && provider.length > 0 ? provider : "unknown";
   const providerLabel = state.providerRegistry.find((provider) => provider.id === providerId)?.label
     ?? (providerId === "openai" ? "OpenAI" : providerId.charAt(0).toUpperCase() + providerId.slice(1));
   return `${providerLabel}/${formatModelDisplayName(model)} — ${effort}${state.fastMode === "ultrafast" ? " — ultrafast" : state.fastMode ? " — fast" : ""}${proxyLabel(state)}`;
@@ -76,7 +82,10 @@ export function renderTopbar(state: RenderState, width?: number, now = Date.now(
   // A cached copy shown until the daemon confirms or updates it (cachedopen.ts).
   const updating = label && isStaleCopyMarked(state) ? " ↻ updating" : "";
 
-  let rightLabel = topbarModelLabel(state);
+  // A model switch waiting for the turn to end shows as the model it switches to.
+  syncModelLadder(state, now);
+  const queued = queuedModel(state);
+  let rightLabel = ladderLabel(state, queued);
 
   const maxLeftWidth = Math.max(0, w - (rightLabel ? termWidth(rightLabel) + 1 : 0));
   const maxLabelWidth = Math.max(0, maxLeftWidth - termWidth(titlePlain) - (label ? termWidth(" — ") + termWidth(updating) : 0));
@@ -102,5 +111,7 @@ export function renderTopbar(state: RenderState, width?: number, now = Date.now(
       return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(available - segment.width)}${segment.text}${theme.reset}`;
     }
   }
-  return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(padding)}${rightLabel}${rightLabel ? " " : ""}${theme.reset}`;
+  // Without the animation a waiting switch is simply dimmed.
+  const rightStyled = queued && rightLabel ? `${theme.dim}${rightLabel}\x1b[22m` : rightLabel;
+  return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(padding)}${rightStyled}${rightLabel ? " " : ""}${theme.reset}`;
 }

@@ -1,14 +1,19 @@
 /**
  * The model ladder's top-bar animation (Shift+Up / Shift+Down).
  *
- * Pure frame composition: given the animation record, the bar's normal model
- * label and the time, build the right-hand segment of the top bar. The label
- * re-forms cell by cell in a sweep (left to right going up, right to left
- * going down); changed cells pass through a directional glyph run (filling
- * up, or draining down) in a warm or cool wash and settle to the normal
- * colour. A five-rung meter beside it lights the current rung and fades a
- * second after the last press. When everything has played out the segment is
- * null and the top bar renders exactly as it does without the ladder.
+ * Pure frame composition: given the animation record, the label to show and
+ * the time, build the right-hand segment of the top bar. The label re-forms
+ * cell by cell in a sweep (left to right going up, right to left going down);
+ * changed cells fill up from the bottom (or drain down) through block glyphs
+ * in a warm or cool wash and settle to their resting colour. A five-rung
+ * meter beside it lights the current rung and fades a second after the last
+ * press. When everything has played out the segment is null and the top bar
+ * renders exactly as it does without the ladder.
+ *
+ * A model switch asked for mid-turn waits for the turn to end. Meanwhile the
+ * label rests dimmed on the model it will switch to, the meter stays up with
+ * the running rung half lit and the target rung breathing, until the switch
+ * lands and the label brightens back to normal.
  *
  * Frames are a function of wall-clock time, so late timers drop frames rather
  * than stretch the animation; a frame that comes far too late finishes the
@@ -26,15 +31,12 @@ export interface LadderCell {
   rgb: Rgb | null;
 }
 
-export type LadderStyle = "fill" | "scan";
-
 export interface LadderAnimation {
   /** Conversation the animation belongs to (null = draft). */
   convId: string | null;
-  style: LadderStyle;
   /** Cells wide reserved for the label, so its width changes never move the meter. */
   slot: number;
-  /** Rung lit in the meter (null: between rungs). */
+  /** Rung lit in the meter (null: between rungs). While waiting: the running rung. */
   rung: number | null;
   /** When the lit rung last changed (it flares, then settles). */
   rungAt: number;
@@ -47,11 +49,15 @@ export interface LadderAnimation {
     dir: LadderDirection;
   } | null;
   cue: {
-    kind: "end" | "blocked";
+    kind: "end" | "refused";
     startAt: number;
     dir: LadderDirection;
-    /** Blocked: the rung it would have gone to. */
+  } | null;
+  /** A switch waiting for the turn to end: the rung it goes to (null: off the ladder). */
+  waiting: {
     rung: number | null;
+    dir: LadderDirection;
+    since: number;
   } | null;
 }
 
@@ -67,23 +73,23 @@ export const METER_HOLD_MS = 1000;
 export const METER_FADE_MS = 280;
 export const RUNG_FLARE_MS = 260;
 export const LADDER_FRAME_MS = 16;
+/** The waiting rung breathes this slowly, drawn at this frame interval. */
+export const WAIT_BREATH_MS = 1800;
+export const WAIT_FRAME_MS = 90;
 /** A frame this late means timers cannot drive the animation: show the result. */
 export const LADDER_LATE_FRAME_MS = 150;
 
-// fill: going up a cell fills from the bottom and dissolves into the new
-// letter; going down it condenses and drains away downward.
+// Going up a cell fills from the bottom and dissolves into the new letter;
+// going down it condenses and drains away downward.
 const FILL_UP = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▓", "▒", "░"];
 const FILL_DOWN = ["░", "▒", "▓", "█", "▇", "▆", "▅", "▄", "▃", "▂", "▁"];
-// scan: a line of braille dots rises (or falls) through the cell.
-const SCAN_UP = ["⣀", "⠤", "⠒", "⠉"];
-const SCAN_DOWN = ["⠉", "⠒", "⠤", "⣀"];
 
 const WARM_START: Rgb = [255, 138, 61];
 const WARM_PEAK: Rgb = [255, 226, 122];
 const WARM_GLOW: Rgb = [255, 246, 214];
 const COOL_START: Rgb = [214, 243, 255];
 const COOL_PEAK: Rgb = [13, 59, 110];
-const BLOCKED: Rgb = [255, 92, 92];
+const REFUSED: Rgb = [255, 92, 92];
 
 export interface LadderPalette {
   /** Top bar background. */
@@ -113,8 +119,13 @@ function easeOut(t: number): number {
   return 1 - (1 - k) * (1 - k);
 }
 
-export function labelCells(label: string): LadderCell[] {
-  return Array.from(label, ch => ({ ch, rgb: null }));
+/** The waiting label's colour: halfway into the bar. */
+export function waitingRgb(palette: Pick<LadderPalette, "bg" | "fg">): Rgb {
+  return mix(palette.fg, palette.bg, 0.5);
+}
+
+export function labelCells(label: string, rgb: Rgb | null = null): LadderCell[] {
+  return Array.from(label, ch => ({ ch, rgb: ch === " " ? null : rgb }));
 }
 
 /** Right-align cells in a slot of `width` (blanks on the left; cut from the left if too wide). */
@@ -138,38 +149,40 @@ function meterEndsAt(anim: LadderAnimation): number {
 
 /** Nothing left to draw: the top bar is back to normal. */
 export function ladderAnimationDone(anim: LadderAnimation, now: number): boolean {
-  return morphDone(anim, now) && cueDone(anim, now) && now >= meterEndsAt(anim);
+  return !anim.waiting && morphDone(anim, now) && cueDone(anim, now) && now >= meterEndsAt(anim);
 }
 
 /** Milliseconds until the next frame is due, or null once the animation has played out. */
 export function ladderNextFrameDelay(anim: LadderAnimation, now: number): number | null {
   if (ladderAnimationDone(anim, now)) return null;
+  const moving = !morphDone(anim, now) || !cueDone(anim, now) || now - anim.rungAt < RUNG_FLARE_MS;
+  if (anim.waiting) return moving ? LADDER_FRAME_MS : WAIT_FRAME_MS;
   const meterFadeAt = anim.lastPressAt + METER_HOLD_MS;
-  const moving = !morphDone(anim, now) || !cueDone(anim, now) || now - anim.rungAt < RUNG_FLARE_MS || now >= meterFadeAt;
-  if (moving) return Math.max(1, Math.min(LADDER_FRAME_MS, meterEndsAt(anim) - now));
+  if (moving || now >= meterFadeAt) return Math.max(1, Math.min(LADDER_FRAME_MS, meterEndsAt(anim) - now));
   // The meter just sits there until it starts fading.
   return Math.max(1, meterFadeAt - now);
 }
 
 /** The label cells as they look at `now` (used to start a new morph from mid-flight). */
-export function ladderLabelCells(anim: LadderAnimation, label: string, now: number): LadderCell[] {
-  return morphCells(anim, label, now, null);
+export function ladderLabelCells(anim: LadderAnimation, label: string, now: number, palette: LadderPalette): LadderCell[] {
+  return morphCells(anim, label, now, palette);
 }
 
-function scrambleGlyph(style: LadderStyle, dir: LadderDirection, t: number): string {
-  const run = style === "scan" ? dir > 0 ? SCAN_UP : SCAN_DOWN : dir > 0 ? FILL_UP : FILL_DOWN;
+function scrambleGlyph(dir: LadderDirection, t: number): string {
+  const run = dir > 0 ? FILL_UP : FILL_DOWN;
   return run[Math.min(run.length - 1, Math.floor(t * run.length))];
 }
 
-function morphCells(anim: LadderAnimation, label: string, now: number, palette: LadderPalette | null): LadderCell[] {
-  const target = alignRight(labelCells(label), anim.slot);
+function morphCells(anim: LadderAnimation, label: string, now: number, palette: LadderPalette): LadderCell[] {
+  const rest = anim.waiting ? waitingRgb(palette) : null;
+  const target = alignRight(labelCells(label, rest), anim.slot);
   const morph = anim.morph;
   if (!morph || now - morph.startAt >= MORPH_TOTAL_MS) return target;
   const from = alignRight(morph.from, anim.slot);
   const elapsed = now - morph.startAt;
   const last = Math.max(1, anim.slot - 1);
   const up = morph.dir > 0;
-  const fg = palette?.fg ?? [255, 255, 255];
+  const restRgb = rest ?? palette.fg;
   return target.map((to, column) => {
     const was = from[column];
     const order = up ? column : anim.slot - 1 - column;
@@ -182,17 +195,16 @@ function morphCells(anim: LadderAnimation, label: string, now: number, palette: 
       if (same) {
         // Unchanged text only feels the wash pass over it.
         const peak = up ? WARM_PEAK : COOL_PEAK;
-        return { ch: to.ch, rgb: mix(was.rgb ?? fg, peak, Math.sin(k * Math.PI) * 0.85) };
+        return { ch: to.ch, rgb: mix(was.rgb ?? palette.fg, peak, Math.sin(k * Math.PI) * 0.85) };
       }
       return {
-        ch: scrambleGlyph(anim.style, morph.dir, k),
+        ch: scrambleGlyph(morph.dir, k),
         rgb: up ? mix(WARM_START, WARM_PEAK, k) : mix(COOL_START, COOL_PEAK, k),
       };
     }
     const settle = (t - MORPH_SCRAMBLE_MS) / MORPH_SETTLE_MS;
-    if (settle >= 1) return to;
-    if (same) return to;
-    return { ch: to.ch, rgb: mix(up ? WARM_GLOW : COOL_PEAK, fg, easeOut(settle)) };
+    if (settle >= 1 || same) return to;
+    return { ch: to.ch, rgb: mix(up ? WARM_GLOW : COOL_PEAK, restRgb, easeOut(settle)) };
   });
 }
 
@@ -219,34 +231,38 @@ function styledCells(cells: LadderCell[], level: TerminalColorLevel): string {
 
 function meterCells(anim: LadderAnimation, now: number, palette: LadderPalette): LadderCell[] {
   const fadeStart = anim.lastPressAt + METER_HOLD_MS;
-  const fade = now <= fadeStart ? 0 : (now - fadeStart) / METER_FADE_MS;
+  const fade = anim.waiting || now <= fadeStart ? 0 : (now - fadeStart) / METER_FADE_MS;
   const unlit = mix(palette.bg, [0, 0, 0], 0.38);
   const cue = anim.cue && now - anim.cue.startAt < CUE_MS ? anim.cue : null;
   const cueT = cue ? (now - cue.startAt) / CUE_MS : 0;
+  const waiting = anim.waiting;
   return LADDER_RUNG_GLYPHS.map((ch, index) => {
     let color: Rgb = unlit;
     if (index === anim.rung) {
       const flare = Math.max(0, 1 - (now - anim.rungAt) / RUNG_FLARE_MS);
       const wash = anim.morph?.dir === -1 ? COOL_START : WARM_PEAK;
       color = mix(palette.fg, wash, flare);
+      // Still the running rung, but on its way out.
+      if (waiting) color = mix(color, unlit, 0.55);
     }
-    if (cue?.kind === "end" && index === anim.rung) {
+    if (waiting && index === waiting.rung) {
+      // The rung it switches to breathes until the turn ends.
+      const breath = (1 - Math.cos(((now - waiting.since) / WAIT_BREATH_MS) * Math.PI * 2)) / 2;
+      color = mix(mix(unlit, palette.fg, 0.35), waiting.dir > 0 ? WARM_PEAK : COOL_START, breath);
+    }
+    if (cue?.kind === "end" && index === anim.rung && !waiting) {
       // Two quick pulses on the end rung: there is nowhere further to go.
       const pulse = Math.abs(Math.sin(cueT * Math.PI * 2));
       color = mix(palette.fg, cue.dir > 0 ? WARM_START : COOL_PEAK, pulse);
-    }
-    if (cue?.kind === "blocked" && index === cue.rung) {
-      const blink = Math.abs(Math.sin(cueT * Math.PI * 2));
-      color = mix(unlit, BLOCKED, blink);
     }
     return { ch, rgb: mix(color, palette.bg, fade) };
   });
 }
 
-/** Horizontal shake of the label while a switch is refused (cells, -1…1). */
-function blockedShake(anim: LadderAnimation, now: number): number {
+/** Horizontal shake of the label when the daemon refuses a switch (cells, -1…1). */
+function refusedShake(anim: LadderAnimation, now: number): number {
   const cue = anim.cue;
-  if (cue?.kind !== "blocked") return 0;
+  if (cue?.kind !== "refused") return 0;
   const t = now - cue.startAt;
   if (t >= CUE_MS) return 0;
   const steps = [1, -1, 1, -1, 1, 0];
@@ -259,8 +275,8 @@ function cueTint(anim: LadderAnimation, cells: LadderCell[], now: number, palett
   if (!cue) return cells;
   const t = (now - cue.startAt) / CUE_MS;
   if (t >= 1) return cells;
-  const color = cue.kind === "blocked" ? BLOCKED : cue.dir > 0 ? WARM_START : COOL_PEAK;
-  const strength = cue.kind === "blocked" ? (1 - t) * 0.9 : Math.abs(Math.sin(t * Math.PI * 2)) * 0.35;
+  const color = cue.kind === "refused" ? REFUSED : cue.dir > 0 ? WARM_START : COOL_PEAK;
+  const strength = cue.kind === "refused" ? (1 - t) * 0.9 : Math.abs(Math.sin(t * Math.PI * 2)) * 0.35;
   return cells.map(cell => cell.ch === " " ? cell : { ch: cell.ch, rgb: mix(cell.rgb ?? palette.fg, color, strength) });
 }
 
@@ -284,17 +300,15 @@ export function renderLadderSegment(
 
   let cells = morphCells(anim, label, now, palette);
   cells = cueTint(anim, cells, now, palette);
-  const shake = blockedShake(anim, now);
+  const shake = refusedShake(anim, now);
   // Room for the shake: one cell either side of the slot.
-  const labelCellsWithMargins: LadderCell[] = [{ ch: " ", rgb: null }, ...cells, { ch: " ", rgb: null }];
-  if (shake !== 0) {
-    const blank = { ch: " ", rgb: null };
-    if (shake > 0) labelCellsWithMargins.splice(labelCellsWithMargins.length - 1, 1), labelCellsWithMargins.unshift(blank);
-    else labelCellsWithMargins.splice(0, 1), labelCellsWithMargins.push(blank);
-  }
+  const blank: LadderCell = { ch: " ", rgb: null };
+  const labelRow: LadderCell[] = [blank, ...cells, blank];
+  if (shake > 0) { labelRow.pop(); labelRow.unshift(blank); }
+  if (shake < 0) { labelRow.shift(); labelRow.push(blank); }
   const meter = meterCells(anim, now, palette);
-  let row: LadderCell[] = [...meter, ...labelCellsWithMargins];
-  if (row.length > available) row = labelCellsWithMargins;
+  let row: LadderCell[] = [...meter, ...labelRow];
+  if (row.length > available) row = labelRow;
   if (row.length > available) return null;
   return { text: styledCells(row, palette.level), width: row.length };
 }

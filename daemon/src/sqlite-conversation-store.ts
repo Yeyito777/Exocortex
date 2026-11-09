@@ -64,6 +64,7 @@ import { checkpointTailHasher, updateCheckpointTailHash, integritySha, Conversat
 
 const SCHEMA_VERSION = 15;
 const PENDING_CONVERSATION_INSTRUCTIONS_KEY = "pending_conversation_instructions";
+const PENDING_MODEL_SELECTIONS_KEY = "pending_model_selections";
 const INTEGRITY_TABLES = ["message_integrity", "checkpoint_integrity", "display_integrity"];
 const RUNTIME_REVISION_TRIGGERS: Record<string, string> = {};
 for (const [table, id] of [
@@ -2956,6 +2957,23 @@ export class SqliteConversationStore implements ConversationRepository {
   savePendingConversationInstructions(instructions: Map<string, string>): void {
     if (instructions.size === 0) this.db.query("DELETE FROM store_metadata WHERE key=?").run(PENDING_CONVERSATION_INSTRUCTIONS_KEY);
     else this.setMetadata(PENDING_CONVERSATION_INSTRUCTIONS_KEY, JSON.stringify(Object.fromEntries(instructions)));
+  }
+
+  /** Model switches asked for mid-turn, waiting for their turns to end (raw JSON object by conversation id). */
+  loadPendingModelSelectionsJson(): Record<string, unknown> {
+    const value = this.metadata(PENDING_MODEL_SELECTIONS_KEY);
+    if (!value) return {};
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+
+  savePendingModelSelectionsJson(selections: Record<string, unknown>): void {
+    if (Object.keys(selections).length === 0) this.db.query("DELETE FROM store_metadata WHERE key=?").run(PENDING_MODEL_SELECTIONS_KEY);
+    else this.setMetadata(PENDING_MODEL_SELECTIONS_KEY, JSON.stringify(selections));
   }
 
   loadUnreadConversationIds(): string[] {

@@ -75,17 +75,20 @@ export const MODEL_COMMAND: SlashCommand = {
       return { type: "handled" };
     }
 
-    if (state.convId && isStreaming(state)) {
-      pushSystemMessage(state, "Cannot switch provider/model while this conversation is streaming.");
-      clearPrompt(state);
-      return { type: "handled" };
-    }
-
     const model = parts[2] as ModelId;
     if (isDaybreakModelId(model) && (provider !== "openai" || model !== DAYBREAK_MODEL_ID || !getModelInfo(state, provider, model))) {
       pushSystemMessage(state, provider === "openai" && model === DAYBREAK_MODEL_ID ? DAYBREAK_UNAVAILABLE : DAYBREAK_RETIRED_MODEL);
       clearPrompt(state);
       return { type: "handled" };
+    }
+
+    if (state.convId && isStreaming(state)) {
+      // The running turn keeps its model; the daemon switches when it ends.
+      pushSystemMessage(state, provider === state.provider && model === state.model
+        ? `Staying on ${provider}/${model}`
+        : `Model set to ${provider}/${model} from the next turn`);
+      clearPrompt(state);
+      return { type: "model_changed", provider, model };
     }
     applyModelSelectionWithNotice(state, provider, model);
 

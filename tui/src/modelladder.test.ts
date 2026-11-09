@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { handleEvent } from "./events";
 import { handleFocusedKey } from "./focus";
@@ -12,12 +12,17 @@ import {
   ladderStep,
   modelLadderFrameDelay,
   pressModelLadder,
+  queuedModel,
+  setLadderAnimationsForTest,
   type LadderDaemon,
 } from "./modelladder";
-import { LADDER_LATE_FRAME_MS, METER_FADE_MS, METER_HOLD_MS, MORPH_TOTAL_MS } from "./modelladder-anim";
+import { LADDER_LATE_FRAME_MS, METER_FADE_MS, METER_HOLD_MS, MORPH_TOTAL_MS, WAIT_FRAME_MS } from "./modelladder-anim";
 import { createInitialState, type RenderState } from "./state";
 import { renderTopbar } from "./topbar";
 import { createPendingAI } from "./messages";
+
+beforeAll(() => setLadderAnimationsForTest(true));
+afterAll(() => setLadderAnimationsForTest(null));
 
 const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -81,7 +86,7 @@ function recorder(): LadderDaemon & { sent: string[] } {
   const sent: string[] = [];
   return {
     sent,
-    setModel: (convId, provider, model) => { sent.push(`set_model ${convId} ${provider}/${model}`); },
+    setModel: (convId, provider, model, effort) => { sent.push(`set_model ${convId} ${provider}/${model} ${effort}`); },
     setEffort: (convId, effort) => { sent.push(`set_effort ${convId} ${effort}`); },
   };
 }
@@ -147,10 +152,8 @@ describe("pressing Shift+Up / Shift+Down", () => {
     expect([state.model, state.effort]).toEqual(["claude-fable-5-2", "xhigh"]);
     expect(pressModelLadder(state, 1, daemon, 4_000, true)).toBe("end");
     expect(daemon.sent).toEqual([
-      "set_model conv-1 anthropic/claude-opus-5-5",
-      "set_effort conv-1 high",
-      "set_model conv-1 anthropic/claude-fable-5-2",
-      "set_effort conv-1 high",
+      "set_model conv-1 anthropic/claude-opus-5-5 high",
+      "set_model conv-1 anthropic/claude-fable-5-2 high",
       // Same model, effort only.
       "set_effort conv-1 xhigh",
     ]);
@@ -201,20 +204,104 @@ describe("pressing Shift+Up / Shift+Down", () => {
     expect(pressModelLadder(state, 1, daemon, 1_000 + LADDER_MIN_STEP_MS, true)).toBe("stepped");
     expect(state.model).toBe("claude-opus-5-5");
   });
+});
 
-  test("while streaming a model switch is refused; an effort-only step goes through", () => {
-    const state = ladderState("claude-opus-5-5", "high");
-    state.pendingAI = createPendingAI(1, "claude-opus-5-5");
+describe("mid-turn: the switch waits for the turn to end", () => {
+  function streamingState(model: ModelId = "claude-opus-5-5", effort: EffortLevel = "high"): RenderState {
+    const state = ladderState(model, effort);
+    state.pendingAI = createPendingAI(1, model);
+    return state;
+  }
+
+  test("a model step is queued with the daemon; the running turn keeps its model", () => {
+    const state = streamingState();
     const daemon = recorder();
-    expect(pressModelLadder(state, 1, daemon, 1_000, true)).toBe("blocked");
+    expect(pressModelLadder(state, 1, daemon, 1_000, true)).toBe("queued");
     expect([state.model, state.effort]).toEqual(["claude-opus-5-5", "high"]);
-    expect(state.modelLadder?.anim?.cue).toMatchObject({ kind: "blocked", rung: 3 });
-    expect(daemon.sent).toEqual([]);
+    expect(daemon.sent).toEqual(["set_model conv-1 anthropic/claude-fable-5-2 high"]);
+    expect(queuedModel(state)).toEqual({ provider: "anthropic", model: "claude-fable-5-2", effort: "high" });
+    // No refusal: the label goes to the waiting model and the meter shows where.
+    const anim = state.modelLadder!.anim!;
+    expect(anim.cue).toBeNull();
+    expect(anim.waiting).toMatchObject({ rung: 3, dir: 1 });
+    expect(anim.rung).toBe(2);
+  });
 
-    state.model = "claude-fable-5-2";
-    expect(pressModelLadder(state, 1, daemon, 2_000, true)).toBe("stepped");
-    expect(state.effort).toBe("xhigh");
-    expect(daemon.sent).toEqual(["set_effort conv-1 xhigh"]);
+  test("the ladder steps on from the waiting model; only the last target counts", () => {
+    const state = streamingState();
+    const daemon = recorder();
+    pressModelLadder(state, 1, daemon, 1_000, true);
+    pressModelLadder(state, 1, daemon, 2_000, true);
+    expect(queuedModel(state)).toEqual({ provider: "anthropic", model: "claude-fable-5-2", effort: "xhigh" });
+    expect(pressModelLadder(state, 1, daemon, 3_000, true)).toBe("end");
+    expect(daemon.sent).toEqual([
+      "set_model conv-1 anthropic/claude-fable-5-2 high",
+      "set_model conv-1 anthropic/claude-fable-5-2 xhigh",
+    ]);
+  });
+
+  test("stepping back to the running model clears the queue; effort-only steps apply at once", () => {
+    const state = streamingState();
+    const daemon = recorder();
+    pressModelLadder(state, 1, daemon, 1_000, true);
+    expect(pressModelLadder(state, -1, daemon, 2_000, true)).toBe("stepped");
+    expect(queuedModel(state)).toBeNull();
+    expect(state.modelLadder!.anim!.waiting).toBeNull();
+    expect(daemon.sent.at(-1)).toBe("set_model conv-1 anthropic/claude-opus-5-5 high");
+
+    const fable = streamingState("claude-fable-5-2", "high");
+    const fableDaemon = recorder();
+    expect(pressModelLadder(fable, 1, fableDaemon, 1_000, true)).toBe("stepped");
+    expect(fable.effort).toBe("xhigh");
+    expect(fableDaemon.sent).toEqual(["set_effort conv-1 xhigh"]);
+  });
+
+  test("a switch waiting from elsewhere (another client, /model) shows and steps from there", () => {
+    const state = streamingState();
+    state.sidebar.conversations = [summary(state, { streaming: true, pendingModel: { provider: "anthropic", model: "claude-sonnet-5-5", effort: "high" } })];
+    expect(queuedModel(state)?.model).toBe("claude-sonnet-5-5");
+    const bar = stripAnsi(renderTopbar(state, 90, 1_000));
+    expect(bar.trimEnd().endsWith("Anthropic/Sonnet-5.5 — high")).toBe(true);
+    const daemon = recorder();
+    pressModelLadder(state, -1, daemon, 2_000, true);
+    expect(daemon.sent).toEqual(["set_model conv-1 anthropic/claude-haiku-5-5 medium"]);
+  });
+
+  test("waiting: dimmed label, meter up with the target rung breathing, until the switch lands", () => {
+    const state = streamingState();
+    const daemon = recorder();
+    pressModelLadder(state, 1, daemon, 1_000, true);
+    const frames = Array.from({ length: 200 }, (_, i) => renderTopbar(state, 90, 1_000 + i * 16));
+    const late = frames.at(-1)!;
+    expect(stripAnsi(late).trimEnd().endsWith("▁▂▄▆█   Anthropic/Fable-5.2 — high")).toBe(true);
+    // Not the normal colour: the label is dimmed.
+    expect(late).not.toBe(renderTopbar({ ...state, modelLadder: null, pendingAI: null, sidebar: { ...state.sidebar, conversations: [summary(state)] } } as RenderState, 90, 4_200));
+    // It keeps drawing (the rung breathes) at a slow rate.
+    expect(modelLadderFrameDelay(state, 1_000 + 199 * 16)).toBe(WAIT_FRAME_MS);
+    // A breathing rung changes colour over time.
+    expect(frames[100]).not.toBe(frames[150]);
+
+    // The daemon confirms it is queued.
+    handleEvent({ type: "conversation_updated", summary: summary(state, { streaming: true, pendingModel: { provider: "anthropic", model: "claude-fable-5-2", effort: "high" } }) }, state, null as never);
+    expect(state.modelLadder!.inFlight).toBeNull();
+    expect(stripAnsi(renderTopbar(state, 90, 5_000)).trimEnd().endsWith("Anthropic/Fable-5.2 — high")).toBe(true);
+
+    // The turn ends: the daemon switched; the label brightens and the bar ends exactly normal.
+    state.pendingAI = null;
+    handleEvent({ type: "conversation_updated", summary: summary(state, { model: "claude-fable-5-2", effort: "high", streaming: false }) }, state, null as never);
+    expect([state.model, state.effort]).toEqual(["claude-fable-5-2", "high"]);
+    const settle = Array.from({ length: 120 }, (_, i) => renderTopbar(state, 90, 6_000 + i * 16));
+    expect(state.modelLadder!.anim?.waiting ?? null).toBeNull();
+    const normal = renderTopbar({ ...state, modelLadder: null } as RenderState, 90, 9_000);
+    expect(settle.at(-1)).toBe(normal);
+  });
+
+  test("a daemon refusal shows a refusal cue and the real selection", () => {
+    const state = ladderState("claude-opus-5-5", "high");
+    pressModelLadder(state, 1, recorder(), Date.now(), true);
+    handleEvent({ type: "error", convId: "conv-1", message: "Unknown model" }, state, null as never);
+    expect([state.model, state.effort]).toEqual(["claude-opus-5-5", "high"]);
+    expect(state.modelLadder!.anim!.cue?.kind).toBe("refused");
   });
 });
 
@@ -346,7 +433,7 @@ describe("daemon summaries while a step is on its way", () => {
     handleEvent({ type: "conversation_updated", summary: summary(state, { model: "claude-fable-5-2", effort: "high" }) }, state, null as never);
     expect([state.model, state.effort]).toEqual(["claude-fable-5-2", "xhigh"]);
     handleEvent({ type: "conversation_updated", summary: summary(state, { model: "claude-fable-5-2", effort: "xhigh" }) }, state, null as never);
-    expect(state.modelLadder?.pending).toBeNull();
+    expect(state.modelLadder?.inFlight).toBeNull();
     // Later changes from elsewhere apply as usual.
     handleEvent({ type: "conversation_updated", summary: summary(state, { model: "claude-opus-5-5", effort: "max" }) }, state, null as never);
     expect([state.model, state.effort]).toEqual(["claude-opus-5-5", "max"]);
@@ -358,6 +445,6 @@ describe("daemon summaries while a step is on its way", () => {
     expect(state.model).toBe("claude-fable-5-2");
     handleEvent({ type: "error", convId: "conv-1", message: "Cannot switch provider/model while the conversation is streaming." }, state, null as never);
     expect([state.model, state.effort]).toEqual(["claude-opus-5-5", "high"]);
-    expect(state.modelLadder?.pending).toBeNull();
+    expect(state.modelLadder?.inFlight).toBeNull();
   });
 });

@@ -521,6 +521,12 @@ async function orchestrateAdmittedAssistantTurn(
     if (client) server.sendTo(client, { type: "error", reqId, convId, message });
     return { ok: false, blocks: [], tokens: 0, durationMs: 0, endedAt: Date.now(), error: message };
   }
+  // A model switch queued during the previous turn takes effect before this
+  // one reads the model. A turn resumed after an interruption is still the
+  // turn it was queued behind.
+  if (!options.resumesInterruptedRun && convStore.applyPendingModel(convId, true)) {
+    conv = convStore.get(convId) ?? conv;
+  }
   const liveConv = conv;
 
   if (Object.prototype.hasOwnProperty.call(options, "subagentMaxDepth")) {

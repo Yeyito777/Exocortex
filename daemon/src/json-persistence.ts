@@ -516,6 +516,7 @@ const INDEX_FILE = join(DATA_DIR, "conversations-index.json");
 const FOLDERS_FILE = join(DATA_DIR, "folders.json");
 const FOLDER_INSTRUCTIONS_FILE = join(DATA_DIR, "folder-instructions.json");
 const PENDING_CONVERSATION_INSTRUCTIONS_FILE = join(DATA_DIR, "pending-conversation-instructions.json");
+const PENDING_MODEL_SELECTIONS_FILE = join(DATA_DIR, "pending-model-selections.json");
 const UNREAD_FILE = join(DATA_DIR, "unread.json");
 const BTW_FILE = join(DATA_DIR, "btw.json");
 const MESSAGE_QUEUE_FILE = join(DATA_DIR, "message-queue.json");
@@ -1188,6 +1189,30 @@ export function savePendingConversationInstructions(instructions: Map<string, st
   const tmp = `${PENDING_CONVERSATION_INSTRUCTIONS_FILE}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
   renameSync(tmp, PENDING_CONVERSATION_INSTRUCTIONS_FILE);
+}
+
+/** Model switches asked for mid-turn, waiting for their turns to end (raw JSON object by conversation id). */
+export function loadPendingModelSelectionsJson(): Record<string, unknown> {
+  ensureDataDir();
+  try {
+    if (!existsSync(PENDING_MODEL_SELECTIONS_FILE)) return {};
+    const parsed = JSON.parse(readFileSync(PENDING_MODEL_SELECTIONS_FILE, "utf-8")) as { version?: number; selections?: Record<string, unknown> };
+    return parsed.version === 1 && parsed.selections && typeof parsed.selections === "object" ? parsed.selections : {};
+  } catch (err) {
+    log("warn", `persistence: failed to read pending model selections: ${err instanceof Error ? err.message : err}`);
+    return {};
+  }
+}
+
+export function savePendingModelSelectionsJson(selections: Record<string, unknown>): void {
+  ensureDataDir();
+  if (Object.keys(selections).length === 0) {
+    if (existsSync(PENDING_MODEL_SELECTIONS_FILE)) unlinkSync(PENDING_MODEL_SELECTIONS_FILE);
+    return;
+  }
+  const tmp = `${PENDING_MODEL_SELECTIONS_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ version: 1, updatedAt: Date.now(), selections }, null, 2), { mode: 0o600 });
+  renameSync(tmp, PENDING_MODEL_SELECTIONS_FILE);
 }
 
 interface UnreadFile {
