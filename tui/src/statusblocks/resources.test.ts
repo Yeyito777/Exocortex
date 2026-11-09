@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +10,7 @@ import { createInitialState } from "../state";
 import { renderStatusLine } from "../statusline";
 import { theme } from "../theme";
 import { contextBlock } from "./context";
-import { formatMemory, formatPercent, resourcesBlock, resourcesBlockFor } from "./resources";
+import { formatMemory, formatPercent, resolveResourcesGpuSetting, resourcesBlock, resourcesBlockFor, setResourcesGpuEnabled } from "./resources";
 import { usageBlock } from "./usage";
 
 const GIB = 1024 ** 3;
@@ -30,7 +30,31 @@ const MAC: MachineResources = { cpuPercent: 7.4, memory: { usedBytes: 16.6 * GIB
 const shapeOf = (resources: MachineResources) => shapeAfter(null, resources);
 const rows = (resources: MachineResources | null, shape: ResourcesShape = shapeOf(resources!)) => resourcesBlockFor(resources, shape)!.rows.map(stripAnsi);
 
+// These cases are about the full block; the GPU column is off unless config turns it on.
+beforeEach(() => setResourcesGpuEnabled(true));
+afterEach(() => setResourcesGpuEnabled(null));
+
 describe("resources block", () => {
+  test("the GPU column is off by default and on with tui.resourcesGpu: true", () => {
+    expect(resolveResourcesGpuSetting(() => ({}))).toBe(false);
+    expect(resolveResourcesGpuSetting(() => ({ tui: { resourcesGpu: "yes" } }))).toBe(false);
+    expect(resolveResourcesGpuSetting(() => ({ tui: { resourcesGpu: true } }))).toBe(true);
+    expect(resolveResourcesGpuSetting(() => { throw new Error("no config"); })).toBe(false);
+  });
+
+  test("with the GPU column off, a machine that reports a GPU shows CPU and memory only", () => {
+    expect(resourcesBlockFor(WHALE, shapeOf(WHALE), false)!.rows.map(stripAnsi)).toEqual([
+      "  CPU: [██████░░░░] 64%     ",
+      "  MEM: [███░░░░░░░] 10.8/31G",
+    ]);
+    expect(resourcesBlockFor(WHALE, shapeOf(WHALE), false)!.narrower).toBeUndefined();
+    setResourcesGpuEnabled(false);
+    const state = createInitialState();
+    state.machineResources = WHALE;
+    state.machineResourcesShape = shapeOf(WHALE);
+    expect(resourcesBlock(state)!.rows.map(stripAnsi).join("\n")).not.toContain("GPU");
+  });
+
   test("formats figures as the dwm blocks do", () => {
     expect(formatPercent(63.6)).toBe("64%");
     expect(formatPercent(100.4)).toBe("100%");
