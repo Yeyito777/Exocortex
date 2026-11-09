@@ -1,4 +1,5 @@
 import { getViewStart } from "./chatscroll";
+import { conversationScrollRestoreMissingTurns } from "./conversationscroll/position";
 import type { Message } from "./messages";
 import type { RenderState } from "./state";
 
@@ -141,10 +142,18 @@ export function olderHistoryDueAfterLayout(state: RenderState): boolean {
   return state.historyFillAwaitsLayout && hasHistoryLayout(state) && olderHistoryDue(state);
 }
 
+/** Turns for the next older page: enough to reach a saved position in one go where possible. */
+export function olderHistoryPageTurns(state: RenderState): number {
+  const missing = conversationScrollRestoreMissingTurns(state);
+  return Math.min(MAX_HISTORY_REQUEST_TURNS, Math.max(OLDER_HISTORY_PAGE_TURNS, missing));
+}
+
 /** Load before the viewport reaches the oldest rendered row. */
 export function shouldLoadOlderHistory(state: RenderState): boolean {
   if (!state.convId || state.historyLoadingOlder || !hasOlderHistoryCursor(state)) return false;
   if (state.pendingHistoryNavigation) return true;
+  // A saved position in older pages than were opened: fetch them before the first paint.
+  if (conversationScrollRestoreMissingTurns(state) > 0) return true;
   if (state.layout.messageAreaHeight <= 0 || state.layout.totalLines <= 0) return false;
   const thresholdRows = Math.max(3, Math.ceil(state.layout.messageAreaHeight / 2));
   return getViewStart(state) <= thresholdRows;

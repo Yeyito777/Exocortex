@@ -211,7 +211,7 @@ export function handleEvent(
         state.historyLoadingRequestId = null;
         // A failed opening backfill still has to release frame presentation;
         // restore against the opening window instead of freezing indefinitely.
-        completeInitialConversationBackfill(state, event.convId);
+        completeInitialConversationBackfill(state, event.convId, true);
         state.historyOpeningFillUntil = null;
       }
       // A failed tool-output fetch (the viewport loader runs mid-stream) says

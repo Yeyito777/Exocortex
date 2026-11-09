@@ -30,4 +30,12 @@ describe("conversation scroll persistence", () => {
     expect(parseConversationScrollPositions({ invalid: "0.5" })).toBeNull();
     expect(parseConversationScrollPositions(null)).toBeNull();
   });
+
+  test("keeps prompt anchors and rejects malformed ones", () => {
+    expect(parseConversationScrollPositions({ a: { userIndex: 5, rowOffset: -2 }, b: 1 }))
+      .toEqual({ a: { userIndex: 5, rowOffset: -2 }, b: 1 });
+    expect(parseConversationScrollPositions({ a: { userIndex: -1, rowOffset: 0 } })).toBeNull();
+    expect(parseConversationScrollPositions({ a: { userIndex: 1.5, rowOffset: 0 } })).toBeNull();
+    expect(parseConversationScrollPositions({ a: { userIndex: 1 } })).toBeNull();
+  });
 });

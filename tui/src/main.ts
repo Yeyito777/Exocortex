@@ -105,7 +105,7 @@ import {
   beginOlderHistoryLoad,
   beginOpeningFillHold,
   INITIAL_BUFFER_ADDITIONAL_TURNS,
-  OLDER_HISTORY_PAGE_TURNS,
+  olderHistoryPageTurns,
   openingFillHoldMs,
   openingHistoryTurns,
   openingViewport,
@@ -434,7 +434,7 @@ function performRender(): number {
   const framePresented = stallSpan("render", () => render(state));
   const renderMs = performance.now() - renderStartedAt;
   // A page that landed before the history had a layout keeps paging from its first frame.
-  if (olderHistoryDueAfterLayout(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
+  if (olderHistoryDueAfterLayout(state)) requestOlderHistory(olderHistoryPageTurns(state));
   if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""}${state.provisionalOpen ? isProvisionalStale(state) ? " cached-stale" : " cached" : ""} live=${state.pendingAI?.blocks.length ?? "-"} off=${state.scrollOffset} lines=${state.layout.totalLines}/${state.layout.messageAreaHeight} w=${state.layout.chatWidth} view=${state.showToolOutput ? "detail" : state.showTurnWork ? "work" : "folded"}`);
   if (!framePresented) return renderMs;
   // Scrolling, streaming and overlays move what is under a still pointer.
@@ -611,7 +611,7 @@ function loadConversationWindow(convId: string): string {
 }
 
 function maybeRequestOlderHistory(): void {
-  if (olderHistoryDue(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
+  if (olderHistoryDue(state)) requestOlderHistory(olderHistoryPageTurns(state));
 }
 
 // ── Event handler (daemon → TUI) ───────────────────────────────────
@@ -991,7 +991,7 @@ function onDaemonEvent(event: Event): void {
   }
 
   if (event.type === "conversation_history_loaded") {
-    if (state.pendingHistoryNavigation) {
+    if (state.pendingHistoryNavigation || isConversationScrollRestoreWaitingForInitialBackfill(state)) {
       maybeRequestOlderHistory();
     } else if (event.entries.length > 0) {
       // Keep paging while the viewport still reaches the top of the loaded

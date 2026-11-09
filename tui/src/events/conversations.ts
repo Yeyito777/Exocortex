@@ -552,5 +552,6 @@ export function handleConversationHistoryLoaded(
   resumeHistoryNavigation(state);
   // A matching page is sufficient to place a saved percentage. requestSource
   // may be absent when talking to an older daemon, so key this off pending state.
-  completeInitialConversationBackfill(state, event.convId);
+  // An empty page cannot bring a saved anchor any closer.
+  completeInitialConversationBackfill(state, event.convId, pageIsEmpty);
 }
