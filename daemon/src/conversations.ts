@@ -24,7 +24,8 @@ import * as streaming from "./streaming";
 import * as messageQueue from "./message-queue";
 import { log } from "./log";
 import { notifyConversationRemoved, notifyConversationRemoving } from "./conversation-lifecycle";
-import { hasProvider, normalizeEffort } from "./providers/registry";
+import { hasProvider, normalizeEffort, supportsFastMode } from "./providers/registry";
+import type { PendingModelSelection } from "@exocortex/shared/messages";
 import { isDeepStrictEqual } from "node:util";
 import { contextMessageChars } from "./context-token-attribution";
 import { getConversationExternalIntegrations } from "./external-notifications";
@@ -98,6 +99,13 @@ const folderInstructions = new Map<string, string>();
  * the pinned history entry. It lands in history once the conversation is idle.
  */
 const pendingSystemInstructions = new Map<string, string>();
+/**
+ * Model switches asked for while the conversation streams (set_model). The
+ * running turn keeps its model; the newest selection waits here, persisted,
+ * and takes effect when the turn ends, before the next one starts.
+ */
+const pendingModelSelections = new Map<string, PendingModelSelection>();
+let pendingModelAppliedListener: ((convId: string) => void) | null = null;
 const dirty = new Set<string>();
 /** Transcript content was mutated in place and requires field-level comparison. */
 const messageContentDirty = new Set<string>();
@@ -1091,6 +1099,7 @@ export function purge(id: string): boolean {
   stopConversationWorkspaceUsers(id);
   if (!isEphemeralConversation(id)) persistence.purgeConversations([id]);
   if (pendingSystemInstructions.delete(id)) savePendingSystemInstructions();
+  if (pendingModelSelections.delete(id)) savePendingModelSelections();
   displayPageStore.removeDisplayProjection(id);
   const unreadChanged = removeConversationState(id);
   if (unreadChanged) saveUnreadState();
@@ -1479,6 +1488,75 @@ export function setModel(
   return true;
 }
 
+function savePendingModelSelections(): void {
+  const durable = [...pendingModelSelections].filter(([id]) => !isEphemeralConversation(id));
+  persistence.savePendingModelSelectionsJson(Object.fromEntries(durable));
+}
+
+function parsePendingModelSelection(value: unknown): PendingModelSelection | null {
+  if (!value || typeof value !== "object") return null;
+  const { provider, model, effort } = value as Record<string, unknown>;
+  if (typeof provider !== "string" || typeof model !== "string" || typeof effort !== "string") return null;
+  return { provider: provider as ProviderId, model, effort: effort as EffortLevel };
+}
+
+/** The model switch waiting for this conversation's turn to end, if any. */
+export function getPendingModel(id: string): PendingModelSelection | null {
+  return pendingModelSelections.get(id) ?? null;
+}
+
+/**
+ * Queue (or with null, drop) a model switch for when the running turn ends.
+ * Only the newest selection counts.
+ */
+export function setPendingModel(id: string, selection: PendingModelSelection | null): boolean {
+  if (!summaries.has(id) && !conversations.has(id)) return false;
+  if (selection) pendingModelSelections.set(id, { ...selection });
+  else if (!pendingModelSelections.delete(id)) return true;
+  savePendingModelSelections();
+  return true;
+}
+
+/** Called after a queued model switch took effect (the daemon broadcasts the new summary). */
+export function setPendingModelAppliedListener(listener: ((convId: string) => void) | null): void {
+  pendingModelAppliedListener = listener;
+}
+
+/**
+ * Make a queued model switch the conversation's model. `atTurnStart` is the
+ * next turn starting (the conversation already counts as streaming then);
+ * otherwise only an idle conversation takes it.
+ */
+export function applyPendingModel(id: string, atTurnStart = false): boolean {
+  const selection = pendingModelSelections.get(id);
+  if (!selection) return false;
+  if (!atTurnStart && streaming.isStreaming(id)) return false;
+  let conv: Conversation | undefined;
+  try {
+    conv = get(id);
+  } catch {
+    // Not loaded yet: the next turn's start applies it.
+    return false;
+  }
+  pendingModelSelections.delete(id);
+  savePendingModelSelections();
+  if (!conv || !hasProvider(selection.provider)) {
+    log("warn", `conversations: dropped queued model ${selection.provider}/${selection.model} for ${id}`);
+    return false;
+  }
+  const effort = normalizeEffort(selection.provider, selection.model, selection.effort);
+  const fastMode = supportsFastMode(selection.provider, selection.model, conv.fastMode) ? conv.fastMode : false;
+  setModel(id, selection.provider, selection.model, effort, fastMode);
+  log("info", `conversations: queued model ${selection.provider}/${selection.model} (effort=${effort}) took effect for ${id}`);
+  pendingModelAppliedListener?.(id);
+  return true;
+}
+
+/** Apply every queued model switch whose conversation is idle (startup). */
+export function applyAllPendingModels(): void {
+  for (const id of [...pendingModelSelections.keys()]) applyPendingModel(id);
+}
+
 export function setEffort(id: string, effort: EffortLevel): boolean {
   const conv = get(id);
   if (!conv) return false;
@@ -1603,6 +1681,8 @@ export function applyAllPendingSystemInstructions(): void {
 }
 
 streaming.setStreamingIdleListener((id) => {
+  // Synchronously, so the stop's summary already carries the new model.
+  if (pendingModelSelections.has(id)) applyPendingModel(id);
   // After the finalizer that cleared the job has published its stop.
   if (pendingSystemInstructions.has(id)) queueMicrotask(() => void applyPendingSystemInstructions(id));
 });
@@ -2198,6 +2278,11 @@ export function loadFromDisk(): LoadFromDiskStats {
   loadStoredFolders();
   pendingSystemInstructions.clear();
   for (const [convId, text] of persistence.loadPendingConversationInstructions()) pendingSystemInstructions.set(convId, text);
+  pendingModelSelections.clear();
+  for (const [convId, value] of Object.entries(persistence.loadPendingModelSelectionsJson())) {
+    const selection = parsePendingModelSelection(value);
+    if (selection) pendingModelSelections.set(convId, selection);
+  }
 
   let normalizedEffortCount = 0;
   for (const summary of index.summaries) {
@@ -2448,6 +2533,7 @@ export function listSummaries(): ConversationSummary[] {
       tasks: getConversationTasks(summary.id),
       integrations: getConversationExternalIntegrations(summary.id),
       ...scratchpadSummaryFields(summary.id),
+      ...pendingModelSummaryField(summary.id),
     });
   }
   sortSidebarEntries(result);
@@ -2909,6 +2995,11 @@ function parentConversationIdOf(id: string): string | null {
   return summaries.get(id)?.parentConversationId ?? null;
 }
 
+function pendingModelSummaryField(id: string): { pendingModel?: PendingModelSelection } {
+  const pending = pendingModelSelections.get(id);
+  return pending ? { pendingModel: { ...pending } } : {};
+}
+
 /** Get a single conversation's summary. */
 export function getSummary(id: string): ConversationSummary | null {
   const loaded = conversations.get(id);
@@ -2926,6 +3017,7 @@ export function getSummary(id: string): ConversationSummary | null {
     tasks: getConversationTasks(id),
     integrations: getConversationExternalIntegrations(id),
     ...scratchpadSummaryFields(id),
+    ...pendingModelSummaryField(id),
   };
 }
 

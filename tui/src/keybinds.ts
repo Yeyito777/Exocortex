@@ -68,6 +68,9 @@ export type Action =
   // Display toggles
   | "toggle_turn_work"
   | "toggle_tool_output"
+  // Model ladder (Shift+Up/Down)
+  | "model_ladder_up"
+  | "model_ladder_down"
   // Screens
   | "open_accounts"
   | "open_instructions"
@@ -132,6 +135,10 @@ const BINDS: Record<string, Action> = {
   // Conversation
   "ctrl-p":       "new_conversation",
   "ctrl-shift-o": "new_conversation",
+
+  // Model ladder: one rung up / down for the open conversation
+  "shift-up":     "model_ladder_up",
+  "shift-down":   "model_ladder_down",
 
   // Clipboard image paste
   "ctrl-v":       "paste_image",

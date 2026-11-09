@@ -983,8 +983,8 @@ export class DaemonClient {
     this.send({ type: "prewarm_conversation", convId, ...(draft ? { draft: true } : {}) });
   }
 
-  setModel(convId: string, provider: ProviderId, model: ModelId): void {
-    this.send({ type: "set_model", convId, provider, model });
+  setModel(convId: string, provider: ProviderId, model: ModelId, effort?: EffortLevel): void {
+    this.send({ type: "set_model", convId, provider, model, ...(effort ? { effort } : {}) });
   }
 
   setEffort(convId: string, effort: EffortLevel): void {

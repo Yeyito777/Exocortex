@@ -662,6 +662,8 @@ export interface SetModelCommand {
   convId: string;
   provider?: ProviderId;
   model: ModelId;
+  /** Effort to go with the model (kept from the conversation when absent or unsupported). */
+  effort?: EffortLevel;
 }
 
 export interface SetEffortCommand {

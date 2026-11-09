@@ -18,6 +18,7 @@ import { loadClockPreference, type ClockFormat } from "./clock";
 import { loadDiagnosticsPreference, loadTurnWorkPreference } from "./diagnostics";
 import { theme } from "./theme";
 import type { MessageBound, RenderLineAnchor } from "./conversation";
+import type { ModelLadderState } from "./modelladder";
 import type { WrapCopyLine } from "./textwrap";
 import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
@@ -359,6 +360,8 @@ export interface RenderState {
   toolsAvailableReceived: boolean;
   /** Available providers and models reported by the daemon on connect. */
   providerRegistry: ProviderInfo[];
+  /** Shift+Up/Down model ladder: its top-bar animation and the step on its way to the daemon. */
+  modelLadder: ModelLadderState | null;
   /** External tool styles for bash sub-command matching (from daemon). */
   externalToolStyles: ExternalToolStyle[];
   /** Detailed view: tool result output and every turn's work are visible. Toggled with Ctrl+I. */
@@ -902,6 +905,7 @@ export function createInitialState(): RenderState {
     toolRegistry: [],
     toolsAvailableReceived: false,
     providerRegistry: [],
+    modelLadder: null,
 	    externalToolStyles: [],
 	    showToolOutput: false,
 	    showTurnWork: loadTurnWorkPreference(),

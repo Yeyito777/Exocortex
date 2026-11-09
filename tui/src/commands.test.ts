@@ -834,7 +834,7 @@ describe("/model", () => {
     expect(state.contextTokens).toBeNull();
   });
 
-  test("rejects provider/model changes while streaming", () => {
+  test("queues provider/model changes while streaming for the next turn", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
     state.provider = "openai";
@@ -844,10 +844,11 @@ describe("/model", () => {
 
     const result = tryCommand("/model deepseek deepseek-v4-pro", state);
 
-    expect(result).toEqual({ type: "handled" });
+    // Sent to the daemon, which holds it until the turn ends; the running turn keeps its model.
+    expect(result).toEqual({ type: "model_changed", provider: "deepseek", model: "deepseek-v4-pro" });
     expect(state.provider).toBe("openai");
     expect(state.model).toBe("gpt-5.4");
-    expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot switch provider/model while this conversation is streaming.");
+    expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe("Model set to deepseek/deepseek-v4-pro from the next turn");
   });
 });
 

@@ -108,7 +108,8 @@ export type KeyResult =
   | { type: "open_target"; target: string }
   | { type: "open_image"; target: InlineImageTarget }
   | { type: "open_accounts" }
-  | { type: "open_instructions" };
+  | { type: "open_instructions" }
+  | { type: "model_ladder"; direction: 1 | -1 };
 
 // ── Key routing ─────────────────────────────────────────────────────
 
@@ -339,6 +340,10 @@ export function handleFocusedKey(
       return { type: "handled" };
     case "new_conversation":
       return { type: "new_conversation" };
+    case "model_ladder_up":
+      return { type: "model_ladder", direction: 1 };
+    case "model_ladder_down":
+      return { type: "model_ladder", direction: -1 };
     case "edit_message":
       openEditMessageModal(state);
       return { type: "handled" };

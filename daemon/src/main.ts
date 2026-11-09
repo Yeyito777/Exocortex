@@ -452,6 +452,9 @@ async function startDaemon(): Promise<void> {
   commandHandler.startQueueDelivery();
   // Instructions saved mid-turn before the restart; streaming ones land when their turns end.
   convStore.applyAllPendingSystemInstructions();
+  // Model switches queued mid-turn: the same.
+  convStore.setPendingModelAppliedListener((convId) => broadcastConversationUpdated(server, convId));
+  convStore.applyAllPendingModels();
   // recoverInterruptedStreams reconstructs notification-linked subagent tasks.
   // Do not mistake those targets for lost tasks while boot is still rebuilding
   // the catalog that suspended Chrono waits subscribe to.

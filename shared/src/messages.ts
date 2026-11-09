@@ -809,6 +809,18 @@ export interface ConversationSummary {
    * is missing or blank. Its contents come in scratchpads/scratchpad_updated.
    */
   scratchpad?: string;
+  /**
+   * Model switch asked for while the conversation streamed: it takes effect
+   * when the turn ends, before the next one starts. Absent when none waits.
+   */
+  pendingModel?: PendingModelSelection;
+}
+
+/** A model (and its effort) waiting for the conversation's turn to end. */
+export interface PendingModelSelection {
+  provider: ProviderId;
+  model: ModelId;
+  effort: EffortLevel;
 }
 
 export interface FolderSummary {
