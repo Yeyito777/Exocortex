@@ -70,7 +70,7 @@ export function resolveSubagentModel(parentProvider: ProviderId, requested?: str
     const claude = catalog("anthropic");
     const model = claude.find(id => id === choice) ?? latestClaudeModel(choice, claude);
     if (!model) {
-      throw new Error(`Unknown subagent model "${requested}". Use sol fast, astra, opus, sonnet, or a Claude catalog id (${claude.join(", ") || "none available"}).`);
+      throw new Error(`Unknown subagent model "${requested}". Use sol fast, astra, opus, fable, sonnet, or a Claude catalog id (${claude.join(", ") || "none available"}).`);
     }
     selection = { provider: "anthropic", model, fastMode: false };
   }

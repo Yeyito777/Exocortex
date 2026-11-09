@@ -16,7 +16,7 @@ export const exo: Tool = {
         type: "object",
         properties: {
           detach: { type: "boolean", description: "Do not notify the parent on completion. Default false." },
-          model: { type: "string", description: "sol fast, astra, opus, sonnet, or an exact Claude catalog id such as claude-opus-5-5. Default: opus from a Claude conversation, otherwise sol fast." },
+          model: { type: "string", description: "sol fast, astra, opus, fable, sonnet, or an exact Claude catalog id such as claude-opus-5-5. Default: opus from a Claude conversation, otherwise sol fast." },
           effort: { type: "string", enum: [...EFFORT_LEVELS], description: "Reasoning effort; must be supported by the model. Default: high for Claude, otherwise the model's default." },
         },
         additionalProperties: false,
