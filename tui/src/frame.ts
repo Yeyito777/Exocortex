@@ -43,6 +43,20 @@ export interface RenderFrame {
   /** First history line visible in the message area. Used to detect scrolls. */
   viewStart: number;
   /**
+   * Rows of the scroll region whose text re-wraps as it moves (beside the
+   * Tasks panel, narrower than the rows below it). They never match the rows
+   * they came from, so finding how far the content moved, and whether it
+   * moved intact, looks only at the other rows; they are drawn in full.
+   */
+  reflowRows?: ScrollRegion | null;
+  /**
+   * First screen row (1-based) of the live turn: its Working row, newest step
+   * and streamed text change as they move (a new step replaces the last one),
+   * so only the rows above it must move intact for the move to count as the
+   * bottom growing or shrinking by itself.
+   */
+  liveFrom?: number | null;
+  /**
    * Terminal graphics commands (image placements) applied with this frame. A
    * function learns whether the message region scrolled first: terminals move
    * or drop placements with the rows they sit on.
@@ -210,6 +224,7 @@ function detectRegionScroll(
   prevFrame: RenderFrame,
   nextFrame: RenderFrame,
   same: (prevIndex: number, nextIndex: number) => boolean,
+  reflows: (prevIndex: number, nextIndex: number) => boolean = () => false,
 ): number {
   if (!sameScrollRegion(prevFrame.scrollRegion, nextFrame.scrollRegion)) return 0;
   const region = nextFrame.scrollRegion;
@@ -229,11 +244,14 @@ function detectRegionScroll(
 
   for (let shift = Math.abs(viewportShift); shift <= maxShift; shift++) {
     let matches = 0;
+    let comparableRows = 0;
     for (let row = region.start - 1; row <= region.end - 1 - shift; row++) {
-      if (direction > 0 ? same(row + shift, row) : same(row, row + shift)) matches++;
+      const [prevIndex, nextIndex] = direction > 0 ? [row + shift, row] : [row, row + shift];
+      if (reflows(prevIndex, nextIndex)) continue;
+      comparableRows++;
+      if (same(prevIndex, nextIndex)) matches++;
     }
 
-    const comparableRows = height - shift;
     const threshold = Math.max(3, Math.floor(comparableRows * 0.6));
     if (matches >= threshold && matches > bestMatches) {
       bestShift = shift;
@@ -256,6 +274,7 @@ function detectContentScroll(
   prevFrame: RenderFrame,
   nextFrame: RenderFrame,
   same: (prevIndex: number, nextIndex: number) => boolean,
+  reflows: (prevIndex: number, nextIndex: number) => boolean = () => false,
 ): number {
   if (!sameScrollRegion(prevFrame.scrollRegion, nextFrame.scrollRegion)) return 0;
   const region = nextFrame.scrollRegion;
@@ -267,7 +286,7 @@ function detectContentScroll(
   const first = region.start - 1;
   const last = region.end - 1;
   const changed: number[] = [];
-  for (let row = first; row <= last; row++) if (!same(row, row)) changed.push(row);
+  for (let row = first; row <= last; row++) if (!reflows(row, row) && !same(row, row)) changed.push(row);
   if (changed.length < 3) return 0;
 
   const hint = nextFrame.viewStart - prevFrame.viewStart;
@@ -280,7 +299,7 @@ function detectContentScroll(
       let matches = 0;
       for (const row of changed) {
         const source = row + shift;
-        if (source < first || source > last) continue;
+        if (source < first || source > last || reflows(source, row)) continue;
         comparable++;
         if (same(source, row)) matches++;
       }
@@ -295,6 +314,28 @@ function detectContentScroll(
   return best;
 }
 
+let heldFrames: string[] | null = null;
+
+/**
+ * Hold what frames write until `releaseFrames`, then send it in one write:
+ * frames laid out back to back reach the terminal together, so it never
+ * draws the first one alone (it parses everything waiting before it draws).
+ */
+export function holdFrames(): void {
+  heldFrames ??= [];
+}
+
+export function releaseFrames(): void {
+  const held = heldFrames;
+  heldFrames = null;
+  if (held && held.length > 0) process.stdout.write(held.join(""));
+}
+
+function writeFrame(payload: string): void {
+  if (heldFrames) heldFrames.push(payload);
+  else process.stdout.write(payload);
+}
+
 /** Flush only the rows/cursor state that changed since the previous frame. */
 export function flushFrame(owner: object, nextFrame: RenderFrame): void {
   const prevFrame = lastRenderedFrames.get(owner);
@@ -307,8 +348,15 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     const key = contentKey(next, nextIndex);
     return key !== undefined && key === contentKey(prevFrame!, prevIndex);
   };
+  // Rows that re-wrap as they move (beside the Tasks panel), in either frame.
+  const inReflow = (frame: RenderFrame | undefined, index: number) => {
+    const reflow = frame?.reflowRows;
+    return !!reflow && index >= reflow.start - 1 && index <= reflow.end - 1;
+  };
+  const reflows = (prevIndex: number, nextIndex: number) =>
+    inReflow(prevFrame, prevIndex) || inReflow(next, prevIndex) || inReflow(prevFrame, nextIndex) || inReflow(next, nextIndex);
   const scrollShift = !prevFrame ? 0 : regions
-    ? detectRegionScroll(prevFrame, next, sameContent) || detectContentScroll(prevFrame, next, sameContent)
+    ? detectRegionScroll(prevFrame, next, sameContent, reflows) || detectContentScroll(prevFrame, next, sameContent, reflows)
     : detectRegionScroll(prevFrame, next, (prevIndex, nextIndex) => sameRowContent(prevFrame.rows[prevIndex], next.rows[nextIndex]));
   const scrollRegion = scrollShift !== 0 ? nextFrame.scrollRegion : null;
   let hasDrawingUpdates = false;
@@ -330,7 +378,8 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
       // The two rows above the ones it exposed may change with it (the
       // footer of what was the last message, a streamed reply's live rows).
       if (update === nextRow && source >= scrollRegion.start - 1 && source <= scrollRegion.end - 1
-        && i < scrollRegion.end - 1 - Math.abs(scrollShift) - 2) scrolledIntact = false;
+        && i < scrollRegion.end - 1 - Math.abs(scrollShift) - 2 && !reflows(source, i)
+        && (nextFrame.liveFrom == null || i < nextFrame.liveFrom - 1)) scrolledIntact = false;
       if (update !== null) {
         out.push(update);
         hasDrawingUpdates = true;
@@ -377,8 +426,7 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     // Terminals that support synchronized updates (most modern GUI emulators)
     // will present multi-row diffs atomically. Unsupported terminals, including
     // the Linux virtual console, ignore the DEC private mode sequences.
-    if (hasDrawingUpdates) process.stdout.write(beginSynchronizedUpdate + hideCursor + payload + endSynchronizedUpdate);
-    else process.stdout.write(payload);
+    writeFrame(hasDrawingUpdates ? beginSynchronizedUpdate + hideCursor + payload + endSynchronizedUpdate : payload);
   }
 
   next.graphics = undefined;

@@ -66,9 +66,18 @@ different conversation or size, also ends any glide still in flight: the new
 rows never slide on with it.
 Content that moves by itself glides only when the bottom grows or shrinks
 while following it (output arriving, the live Working block or its latest
-step changing height), both ways: every row the region scroll moved arrived
-intact (the two rows above the newly exposed ones aside, for the previous
-message's footer). Explicit re-layouts mark themselves (`markRelayout`:
+step changing height or being replaced by the next one), both ways: every
+row the region scroll moved above the live turn arrived intact (the two rows
+above the newly exposed ones aside, for the previous message's footer). The
+live turn's own rows (its Working row, newest step and streamed text) may
+change as they move. Beside the Tasks panel the rows re-wrap narrower as they
+move, so they are left out of finding the move (`RenderFrame.reflowRows`) and
+drawn in full, as in a key scroll; before, every change of the live block's
+height with the panel open was a full repaint without a glide. Such a frame
+is laid out where the content ends up, and the row next to the glide is due
+at once: the TUI lays it out in the same tick and writes both frames
+together, so st never draws the first alone (it would show the rows beside
+the panel displaced by the whole move for a frame). Explicit re-layouts mark themselves (`markRelayout`:
 Ctrl+I / Ctrl+O, the sidebar, a resize, a history reload, an older page,
 frames anchored to a row) and snap even when what they change sits at the
 bottom. `tui/src/smoothscroll-relayout.test.ts` checks each case, and
