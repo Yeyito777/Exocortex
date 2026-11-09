@@ -1,5 +1,4 @@
 import type { ConversationSummary, SidebarItemRef } from "../messages";
-import { hasInProgressModelWork } from "../taskvisibility";
 import { isMovableSidebarItem, sidebarItemKey as itemKey, sameSidebarItem as sameItem, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import type { SidebarState } from "./state";
@@ -67,40 +66,6 @@ export function rememberEnteredConversation(
 export function focusPreviousEnteredConversation(sidebar: SidebarState): boolean {
   if (!sidebar.previousEnteredId) return false;
   return focusConversationById(sidebar, sidebar.previousEnteredId);
-}
-
-function activityConversations(
-  sidebar: SidebarState,
-  status: "completed" | "streaming",
-): ConversationSummary[] {
-  return sidebar.conversations
-    .filter((conv) => {
-      const hasModelWork = hasInProgressModelWork(conv);
-      return status === "streaming" ? hasModelWork : conv.unread && !hasModelWork;
-    })
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-function focusNextActivityConversation(
-  sidebar: SidebarState,
-  status: "completed" | "streaming",
-  currentConvId: string | null,
-): boolean {
-  const conversations = activityConversations(sidebar, status);
-  if (conversations.length === 0) return false;
-  const currentIndex = currentConvId ? conversations.findIndex(conv => conv.id === currentConvId) : -1;
-  const next = conversations[currentIndex === -1 ? 0 : (currentIndex + 1) % conversations.length];
-  return focusConversationById(sidebar, next.id);
-}
-
-/** Focus the next completed conversation in recency order. */
-export function focusNextCompletedConversation(sidebar: SidebarState, currentConvId: string | null): boolean {
-  return focusNextActivityConversation(sidebar, "completed", currentConvId);
-}
-
-/** Focus the next streaming conversation in recency order, wrapping at the end. */
-export function focusNextStreamingConversation(sidebar: SidebarState, currentConvId: string | null): boolean {
-  return focusNextActivityConversation(sidebar, "streaming", currentConvId);
 }
 
 export function selectedDisplayRow(displayRows: readonly DisplayRow[], sidebar: SidebarState): number {

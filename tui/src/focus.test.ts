@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { handleFocusedKey } from "./focus";
+import { parseInput, type KeyEvent } from "./input";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { handleEvent } from "./events";
@@ -1046,93 +1047,88 @@ describe("sidebar top shortcuts", () => {
 });
 
 describe("conversation activity shortcuts", () => {
-  test("t opens the most recently completed canonical unread conversation regardless of folder name", () => {
+  function activityState() {
     const state = createInitialState();
-    state.chatFocus = "history";
     state.vim.mode = "normal";
-    state.sidebar.folders = [
-      folder("subagents", 1, { name: " SubAgents " }),
-      folder("nested-agents", 2, { parentId: "subagents" }),
-      folder("work", 3),
-    ];
+    state.sidebar.folders = [folder("shut", 3)];
     state.sidebar.conversations = [
-      conversation("older-completed", 1, { unread: true, updatedAt: 100 }),
-      conversation("streaming", 2, { streaming: true, unread: true, updatedAt: 400 }),
-      conversation("sleeping", 3, {
-        unread: true,
-        updatedAt: 800,
-        tasks: [{ id: "chrono:sleep:long", kind: "chrono", title: "Sleeping", startedAt: 200, chronoMode: "sleep" }],
-      }),
-      conversation("direct-agent", 4, { folderId: "subagents", unread: true, updatedAt: 600 }),
-      conversation("nested-agent", 5, { folderId: "nested-agents", unread: true, updatedAt: 700 }),
-      conversation("latest-completed", 6, { folderId: "work", unread: true, updatedAt: 300 }),
+      conversation("above", 1, { unread: true }),
+      conversation("open", 2),
+      conversation("hidden", 1, { folderId: "shut", unread: true }),
+      conversation("streaming", 4, { streaming: true, unread: true }),
+      conversation("below", 5, { unread: true }),
     ];
+    state.convId = "open";
+    return state;
+  }
 
-    const result = handleFocusedKey({ type: "char", char: "t" }, state);
+  test("t / Shift+T open the next finished unread conversation below / above from the history", () => {
+    const state = activityState();
+    state.chatFocus = "history";
 
-    expect(result).toEqual({ type: "load_conversation", convId: "nested-agent" });
+    expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({ type: "load_conversation", convId: "below" });
+    expect(state.sidebar.selectedId).toBe("below");
     expect(state.sidebar.open).toBe(false);
     expect(state.panelFocus).toBe("chat");
     expect(state.chatFocus).toBe("history");
-    expect(state.sidebar.currentFolderId).toBe("nested-agents");
-    expect(state.sidebar.selectedId).toBe("nested-agent");
 
-    // Loading clears unread in the daemon; cycling by the active id also makes
-    // the next press deterministic before that sidebar update arrives.
-    state.convId = "nested-agent";
-    expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({
-      type: "load_conversation",
-      convId: "direct-agent",
-    });
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({ type: "load_conversation", convId: "above" });
+    expect(state.sidebar.selectedId).toBe("above");
+
+    // From the last green row, t wraps to the top.
+    state.convId = "below";
+    expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({ type: "load_conversation", convId: "above" });
   });
 
-  test("Shift+T cycles through streaming and deferred-sleep conversations by recency", () => {
+  test("t / Shift+T work the same from the sidebar and keep it focused", () => {
+    const state = activityState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.sidebar.selectedItem = { type: "conversation", id: "open" };
+
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({ type: "load_conversation", convId: "above" });
+    expect(state.sidebar.selectedId).toBe("above");
+    expect(state.panelFocus).toBe("sidebar");
+
+    // From the first green row, Shift+T wraps to the bottom.
+    state.convId = "above";
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({ type: "load_conversation", convId: "below" });
+    expect(state.panelFocus).toBe("sidebar");
+  });
+
+  test("Shift+T is T both as plain text and as a kitty key report with its text", () => {
+    for (const raw of ["T", "\x1b[116;2;84u"]) {
+      const state = activityState();
+      state.chatFocus = "history";
+      const [key] = parseInput(raw) as KeyEvent[];
+      expect(handleFocusedKey(key, state)).toEqual({ type: "load_conversation", convId: "above" });
+    }
+  });
+
+  test("with no other green conversation, t does nothing", () => {
     const state = createInitialState();
     state.vim.mode = "normal";
-    state.sidebar.folders = [
-      folder("subagents", 1, { name: "subagents" }),
-      folder("work", 2),
-    ];
-    state.sidebar.conversations = [
-      conversation("older-stream", 1, { streaming: true, updatedAt: 100 }),
-      conversation("completed", 2, { unread: true, updatedAt: 500 }),
-      conversation("agent-stream", 3, { folderId: "subagents", streaming: true, updatedAt: 700 }),
-      conversation("sleeping", 4, {
-        folderId: "work",
-        updatedAt: 600,
-        tasks: [{ id: "chrono:sleep:long", kind: "chrono", title: "Sleeping", startedAt: 200, chronoMode: "sleep" }],
-      }),
-      conversation("latest-stream", 5, { folderId: "work", streaming: true, updatedAt: 300 }),
-    ];
+    state.chatFocus = "history";
+    state.sidebar.conversations = [conversation("open", 1, { unread: true }), conversation("idle", 2)];
+    state.convId = "open";
+    state.sidebar.selectedItem = { type: "conversation", id: "idle" };
 
-    const result = handleFocusedKey({ type: "char", char: "T" }, state);
+    expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "idle" });
+  });
 
-    expect(result).toEqual({ type: "load_conversation", convId: "agent-stream" });
-    expect(state.sidebar.open).toBe(false);
-    expect(state.panelFocus).toBe("chat");
-    expect(state.chatFocus).toBe("prompt");
-    expect(state.sidebar.currentFolderId).toBe("subagents");
-    expect(state.sidebar.selectedId).toBe("agent-stream");
+  test("the prompt still takes t as a till motion after an operator", () => {
+    const state = activityState();
+    state.chatFocus = "prompt";
+    state.inputBuffer = "abc,def";
+    state.cursorPos = 0;
 
-    state.convId = "agent-stream";
-    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
-      type: "load_conversation",
-      convId: "sleeping",
-    });
-
-    state.convId = "sleeping";
-    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
-      type: "load_conversation",
-      convId: "latest-stream",
-    });
-
-    state.convId = "latest-stream";
-    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
-      type: "load_conversation",
-      convId: "older-stream",
-    });
-    expect(state.sidebar.open).toBe(false);
-    expect(state.panelFocus).toBe("chat");
+    for (const char of ["d", "t", ","]) {
+      expect(handleFocusedKey({ type: "char", char }, state)).toEqual({ type: "handled" });
+    }
+    expect(state.inputBuffer).toBe(",def");
+    expect(state.sidebar.selectedId).not.toBe("below");
   });
 
   test("t and Shift+T remain text input in insert mode", () => {

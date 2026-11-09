@@ -1,6 +1,6 @@
 import { getMarkFromTitle } from "../marks";
-import { conversationActivityIndicator } from "./activityindicator";
-import { areConversationNotificationsMuted, areFolderNotificationsMuted, currentFolder } from "./folders";
+import { conversationActivityIndicator, sidebarConversationActivityContext } from "./activityindicator";
+import { areFolderNotificationsMuted, currentFolder } from "./folders";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
 import { SIDEBAR_WIDTH } from "./layout";
 import {
@@ -405,17 +405,14 @@ export function renderSidebar(
     } else if (item?.type === "conversation") {
       const conv = convs[dr.convIdx ?? -1];
       if (!conv) continue;
-      notificationsMuted = areConversationNotificationsMuted(sidebar, conv);
       explicitlyMuted = conv.muted === true;
       isCurrent = conv.id === currentConvId;
       // Direct sends create pendingAI before IPC. Reflect that local accepted
       // input immediately instead of leaving the sidebar idle while a cold
       // canonical transcript is loaded and durably appended by the daemon.
-      const indicator = conversationActivityIndicator(conv, {
-        globalIdle: globalIdleConvIds.has(conv.id),
-        optimisticStreaming: conv.id === optimisticStreamingConvId,
-        notificationsMuted,
-      });
+      const activityContext = sidebarConversationActivityContext(sidebar, conv, { globalIdleConvIds, optimisticStreamingConvId });
+      notificationsMuted = activityContext.notificationsMuted;
+      const indicator = conversationActivityIndicator(conv, activityContext);
       streamIcon = indicator.icon;
       streamIconColor = indicator.color;
       const work = conversationWorkCounts(conv);

@@ -25,7 +25,8 @@ import {
 import { renderTopbar } from "./topbar";
 import { renderSidebar, renderSidebarActionMenu, sidebarActionMenuAnchorRow, SIDEBAR_WIDTH } from "./sidebar";
 import { createSidebarState } from "./sidebar/state";
-import { isGlobalIdleQueuedMessage, steersInstantly } from "./queue";
+import { sidebarActivityInputs } from "./sidebar/activityindicator";
+import { steersInstantly } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
 import { buildMessageLines, type BuildMessageLinesResult, type RenderLineSegment } from "./conversation";
 import { computeBottomLayout } from "./chatlayout";
@@ -1582,13 +1583,14 @@ export function render(state: RenderState): boolean {
   // ── Pre-render sidebar ────────────────────────────────────────
   let sbRows: string[] = [];
   if (sidebarOpen) {
+    const activity = sidebarActivityInputs(state);
     sbRows = renderSidebar(
       state.sidebar,
       rows,
       state.panelFocus === "sidebar",
       state.convId,
-      new Set(state.queuedMessages.filter(isGlobalIdleQueuedMessage).map(message => message.convId)),
-      state.pendingAI ? state.convId : null,
+      activity.globalIdleConvIds,
+      activity.optimisticStreamingConvId,
       state.sshRemote?.alias ?? null,
     );
   }
