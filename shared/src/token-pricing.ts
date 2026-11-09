@@ -337,6 +337,7 @@ function registerClaude(ids: readonly ModelId[], standard: AnthropicRates, long?
   }
 }
 
+registerClaude(["claude-fable-5-2", "claude-mythos-5-2"], { input: 8, output: 40, cacheRead: 0.2 });
 registerClaude(["claude-fable-5-1", "claude-mythos-5-1"], { input: 10, output: 50, cacheRead: 0.25 });
 registerClaude(["claude-fable-5", "claude-mythos-5"], { input: 10, output: 50, cacheRead: 1 });
 registerClaude(["claude-opus-5-5"], { input: 4, output: 20, cacheRead: 0.2 });

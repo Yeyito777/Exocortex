@@ -22,6 +22,7 @@ function claudeModel(id: string): ModelInfo {
 
 export const FALLBACK_ANTHROPIC_MODELS: ModelInfo[] = [
   claudeModel("claude-opus-5-5"),
+  claudeModel("claude-fable-5-2"),
   claudeModel("claude-fable-5-1"),
   claudeModel("claude-sonnet-5-5"),
   claudeModel("claude-haiku-5-5"),

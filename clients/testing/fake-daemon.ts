@@ -79,7 +79,7 @@ const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
 const BUILTINS = ["bash", "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "exo", "chrono", "goal", "attach"];
 const LIFETIMES = ["saved", "temporary", "ephemeral"];
 const MODEL_ALIASES: Record<string, string> = {
-  opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-5-5", fable: "claude-fable-5-1", sol: "gpt-6.1-sol",
+  opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-5-5", fable: "claude-fable-5-2", sol: "gpt-6.1-sol",
 };
 
 type Json = Record<string, any>;
