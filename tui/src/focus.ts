@@ -21,8 +21,8 @@ import { preserveViewportAcrossHistoryMutation, toggleSidebarPreservingViewport,
 import {
   focusConversationAt,
   focusConversationById,
-  focusNextCompletedConversation,
-  focusNextStreamingConversation,
+  finishedUnreadConversationFrom,
+  focusSidebarItem,
   focusPreviousEnteredConversation,
   handleSidebarAction,
   handleSidebarActionMenuKey,
@@ -63,6 +63,7 @@ import { restoreHistoryAboveView } from "./events/history-trim";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 import type { InlineImageTarget } from "./inlineimages";
 import { saveTurnWorkPreference } from "./diagnostics";
+import { sidebarActivityInputs } from "./sidebar/activityindicator";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -163,16 +164,12 @@ function focusSidebarShortcutTarget(state: RenderState, focus: () => boolean): K
   return focus() ? loadSelectedConversation(state) : { type: "handled" };
 }
 
-function loadActivityConversation(
-  state: RenderState,
-  status: "completed" | "streaming",
-): KeyResult {
-  const focused = status === "completed"
-    ? focusNextCompletedConversation(state.sidebar, state.convId)
-    : focusNextStreamingConversation(state.sidebar, state.convId);
-  return focused
-    ? loadSelectedConversation(state)
-    : { type: "handled" };
+/** t / Shift+T: open the next finished, unread conversation below / above the open one. */
+function loadFinishedUnreadConversation(state: RenderState, delta: 1 | -1): KeyResult {
+  const convId = finishedUnreadConversationFrom(state.sidebar, state.convId, delta, sidebarActivityInputs(state));
+  if (!convId) return { type: "handled" };
+  focusSidebarItem(state.sidebar, { type: "conversation", id: convId });
+  return loadSelectedConversation(state);
 }
 
 export function handleSidebarActionMenuResult(
@@ -311,12 +308,8 @@ export function handleFocusedKey(
   // Standalone normal-mode activity shortcuts. Preserve pending Vim sequences
   // so t/T can still be used as the character following an operator or find.
   if (state.vim.mode === "normal" && !vimHasPendingInput(state)) {
-    if (action === "sidebar_focus_next_completed") {
-      return loadActivityConversation(state, "completed");
-    }
-    if (action === "sidebar_focus_next_streaming") {
-      return loadActivityConversation(state, "streaming");
-    }
+    if (action === "sidebar_next_unread") return loadFinishedUnreadConversation(state, 1);
+    if (action === "sidebar_prev_unread") return loadFinishedUnreadConversation(state, -1);
   }
 
   // On the sidebar Ctrl+Shift+E moves the selection to the top of its folder;

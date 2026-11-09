@@ -77,11 +77,11 @@ export {
 export {
   focusConversationAt,
   focusConversationById,
-  focusNextCompletedConversation,
-  focusNextStreamingConversation,
   focusPreviousEnteredConversation,
+  focusSidebarItem,
   rememberEnteredConversation,
 } from "./sidebar/selection";
+export { finishedUnreadConversationFrom } from "./sidebar/navigation";
 export { createSidebarState } from "./sidebar/state";
 export type { SidebarState } from "./sidebar/state";
 export type { SidebarKeyResult } from "./sidebar/types";

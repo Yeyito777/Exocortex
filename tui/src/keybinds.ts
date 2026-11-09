@@ -74,8 +74,8 @@ export type Action =
   | "sidebar_next"
   | "sidebar_prev"
   | "sidebar_focus_previous"
-  | "sidebar_focus_next_completed"
-  | "sidebar_focus_next_streaming"
+  | "sidebar_next_unread"
+  | "sidebar_prev_unread"
   | "sidebar_visible_top"
   | "sidebar_visible_middle"
   | "sidebar_visible_bottom"
@@ -146,8 +146,8 @@ const BINDS: Record<string, Action> = {
   // one Shift+K up and Shift+J does nothing.
   "char:J":     "sidebar_next",
   "char:K":     "sidebar_prev",
-  "char:t":     "sidebar_focus_next_completed",
-  "char:T":     "sidebar_focus_next_streaming",
+  "char:t":     "sidebar_next_unread",
+  "char:T":     "sidebar_prev_unread",
   "f14":        "sidebar_focus_top_1",
   "f15":        "sidebar_focus_top_2",
   "f16":        "sidebar_focus_top_3",

@@ -1,4 +1,5 @@
 import { hasInProgressModelWork } from "../taskvisibility";
+import { conversationActivityState, sidebarConversationActivityContext, type SidebarActivityInputs } from "./activityindicator";
 import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import { focusConversationAt, focusSidebarItem } from "./selection";
@@ -121,4 +122,39 @@ export function moveToMarked(sidebar: SidebarState, delta: 1 | -1): void {
       return;
     }
   }
+}
+
+/**
+ * The nearest conversation row below (delta=1) or above (delta=-1) showing the
+ * green finished-and-unread indicator, wrapping around. Counts from the open
+ * conversation's row, or the selection's when the open one is not listed, and
+ * never returns the open conversation. Rows in collapsed folders are not listed.
+ */
+export function finishedUnreadConversationFrom(
+  sidebar: SidebarState,
+  currentConvId: string | null,
+  delta: 1 | -1,
+  inputs: SidebarActivityInputs,
+): string | null {
+  const entries = buildDisplayRows(sidebar).filter(row => row.type === "entry" && row.item);
+  const count = entries.length;
+  let anchor = currentConvId
+    ? entries.findIndex(row => row.item?.type === "conversation" && row.item.id === currentConvId)
+    : -1;
+  if (anchor === -1) {
+    const selectedKey = itemKey(sidebar.selectedItem);
+    anchor = selectedKey === null ? -1 : entries.findIndex(row => itemKey(row.item ?? null) === selectedKey);
+  }
+  for (let step = 1; step <= count; step++) {
+    const index = anchor === -1
+      ? (delta > 0 ? step - 1 : count - step)
+      : ((anchor + delta * step) % count + count) % count;
+    const item = entries[index].item;
+    if (item?.type !== "conversation" || item.id === currentConvId) continue;
+    const listed = sidebar.conversations[entries[index].convIdx ?? -1];
+    const conv = listed?.id === item.id ? listed : sidebar.conversations.find(c => c.id === item.id);
+    if (!conv) continue;
+    if (conversationActivityState(conv, sidebarConversationActivityContext(sidebar, conv, inputs)) === "unread") return conv.id;
+  }
+  return null;
 }
