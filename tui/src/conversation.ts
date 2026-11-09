@@ -615,7 +615,12 @@ export function buildMessageLines(
   const liveChrono = liveChronoCalls(state);
   const liveChronoTexts = liveChronoProgressTexts(liveChrono, now);
 
-  const renderAssistantBlock = (block: Extract<Message, { role: "assistant" }>["blocks"][number]): WrapResult => {
+  /**
+   * Folded, a finished turn's calls in view (those a split reply reveals) take
+   * one row; a running turn's (its newest step, a durable sleep) render in full.
+   */
+  const foldsCalls = !state.showTurnWork && !state.showToolOutput;
+  const renderAssistantBlock = (block: Extract<Message, { role: "assistant" }>["blocks"][number], oneRow = false): WrapResult => {
     const chrono = block.type === "tool_call" ? liveChrono.get(block.toolCallId) : undefined;
     return renderBlockCached(
       block,
@@ -626,8 +631,7 @@ export function buildMessageLines(
       block.type === "tool_call" && erroredToolCallIds.has(block.toolCallId),
       true,
       { ...(chrono ? { progress: { ...chrono, now } } : {}), showTarget: state.showTurnWork },
-      // Folded, every call in view (a split reply's, the live turn's newest step) is one row.
-      !state.showTurnWork && !state.showToolOutput,
+      oneRow,
     );
   };
 
@@ -1004,7 +1008,7 @@ export function buildMessageLines(
       if (state.messages[messageIndex - 1]?.role !== "assistant") segmentShown = false;
       msg.blocks.forEach((block, blockIndex) => {
         if (assistantPlan?.hidden?.[blockIndex]) return;
-        pushBlock(block, "assistant_block", renderAssistantBlock(block));
+        pushBlock(block, "assistant_block", renderAssistantBlock(block, foldsCalls && msg !== durableSleepAssistant));
       });
       segmentImages.push(...attachedImages(msg.blocks));
       if (lines.length > contentStart) segmentShown = true;

@@ -301,7 +301,7 @@ function shellCommand(block: Extract<Block, { type: "tool_call" }>): string | nu
 
 /**
  * A tool call as the folded view's one row: its label and the first line of
- * its command (or, dim, of an `exo` call's text), cut with "…" to the width,
+ * its command (or of an `exo` call's text), cut with "…" to the width,
  * then a dim note of what the row leaves out. A shell row is the command's
  * first source line under the label of the tool it feeds. Whole-row copies
  * (yy, a line or message yank) give the whole call; a charwise one what shows.
@@ -337,8 +337,11 @@ function foldedToolCallRow(
     more = lines > 1 || body.length > 0;
     note = body.length > 0 ? plural(body.length, "line") : lines > 1 ? plural(lines, "line") : plural(fullRows, "row");
   }
-  // A non-shell call's body (an `exo` prompt or message) is its text: its first line shows dim.
-  const aside = command === null ? body.find(entry => entry.text.trim())?.text.trim() ?? "" : "";
+  // A non-shell call's body (an `exo` prompt or message) is its text: its first
+  // line follows, in the colour its full view draws the body in.
+  const asideEntry = command === null ? body.find(entry => entry.text.trim()) : undefined;
+  const aside = asideEntry?.text.trim() ?? "";
+  const asideColour = asideEntry?.payload?.block.kind === "tool" ? asideEntry.display.fg : theme.muted;
   const budget = Math.max(1, contentWidth - 2 - (toolCallErrored ? 2 : 0));
   const room = (tail: string) => tail ? budget - 2 - termWidth(tail) : budget;
   // A dim tail goes only whole, and only while the command keeps a few columns.
@@ -361,10 +364,10 @@ function foldedToolCallRow(
     ? `  ${fg}${theme.bold}${label}${theme.reset}${fg}${styled.slice(label.length)}${theme.reset}`
     : `  ${fg}${styled}${theme.reset}`;
   let plain = text;
-  for (const dim of [asideText, tail]) {
-    if (!dim) continue;
-    line += `  ${theme.dim}${dim}${theme.reset}`;
-    plain += `  ${dim}`;
+  for (const [part, colour] of [[asideText, asideColour], [tail, theme.dim]] as const) {
+    if (!part) continue;
+    line += `  ${colour}${part}${theme.reset}`;
+    plain += `  ${part}`;
   }
   if (toolCallErrored) plain += " ✗";
   // A shell call copies as the command it ran; another as its label, detail and text.

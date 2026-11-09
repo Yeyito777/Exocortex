@@ -97,6 +97,17 @@ describe("running Chrono calls in history", () => {
     expect(chronoRow(state)).toBe("  Chrono wait: arm A research  · up to 45m");
   });
 
+  test("a suspended wait too long for one row stays in full, not cut to the folded one-row form", () => {
+    const state = waitingState([task(Date.now() - 12 * 60_000 - 5_000)]);
+    const message = state.messages[0]!;
+    if (message.role !== "assistant") throw new Error("not assistant");
+    message.blocks = [call({ action: "wait", task_id: ID, max_wait: "45m", what: "the arm A price-move research lane" }, undefined, "wait-call")];
+    const rendered = buildMessageLines(state, 40).lines.map(strip).filter(line => line.trim() && !/Opus|GPT|tokens/.test(line));
+    expect(rendered.length).toBeGreaterThan(1);
+    expect(rendered.join(" ")).toContain("12m of 45m");
+    expect(rendered.join(" ")).not.toContain("…");
+  });
+
   test("the frame key and next tick follow whole minutes", () => {
     const now = 10_000_000;
     const state = waitingState([task(now - 12 * 60_000 - 5_000)]);

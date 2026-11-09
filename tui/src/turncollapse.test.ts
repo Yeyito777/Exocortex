@@ -1278,6 +1278,8 @@ describe("a tool call in the folded view takes one row", () => {
     return shown.slice(shown.findLastIndex(row => row.endsWith("habit.")) + 1, shown.indexOf("  Started.")).filter(Boolean);
   };
   const built = (state: RenderState, width = 100) => buildMessageLines(state, width);
+  /** Rows under the Working row. */
+  const working = (shown: string[]) => shown.slice(shown.findIndex(row => /Working/.test(row)) + 1).filter(Boolean);
   /** Rows the call takes rendered in full (Ctrl+O) at a history width. */
   const fullRows = (block: Extract<Message, { role: "assistant" }>["blocks"][number], width: number) =>
     renderBlockCached(block, width - 4, registry, styles, false, false, true).lines.length;
@@ -1308,13 +1310,18 @@ describe("a tool call in the folded view takes one row", () => {
     expect(callRows(state)).toEqual([`  Bash ${short}`]);
   });
 
-  test("a subagent prompt: the header, its first line dim, then its length", () => {
+  test("a subagent prompt: the header, its first line in the tool's colour, then its length", () => {
     const state = splitReply(exoCall("c1", prompt.join("\n")));
     const [row] = callRows(state, 120);
     expect(callRows(state, 120)).toHaveLength(1);
     expect(row).toMatch(/^ {2}Exocortex subagent \(high\) {2}You are DECISIONAUDIT, a read-only research lane for .*… {2}43 lines$/);
     const raw = built(state, 120).lines.find(line => stripAnsi(line) === row)!;
-    expect(raw).toContain(`${theme.dim}You are DECISIONAUDIT`);
+    // The prompt in the colour the full view draws it in; only the size note is dim.
+    const fg = raw.slice(2, raw.indexOf(theme.bold));
+    expect(fg).toMatch(/^\x1b\[[\d;]+m$/);
+    expect(fg).not.toBe(theme.dim);
+    expect(raw).toContain(`  ${fg}You are DECISIONAUDIT`);
+    expect(raw).not.toContain(`${theme.dim}You are`);
     expect(raw).toContain(`${theme.dim}43 lines`);
     freshMatchesIncremental(state, 120);
   });
@@ -1356,22 +1363,42 @@ describe("a tool call in the folded view takes one row", () => {
     }
   });
 
-  test("the live turn's newest step is one row, streaming and committed", () => {
+  test("the running turn's newest step renders in full, streaming and committed; finished, the revealed call folds to one row", () => {
     const state = createInitialState();
     state.toolRegistry = registry;
     state.externalToolStyles = styles;
     state.messages.push(user("go"));
+    const full = renderBlockCached(call("c2", long)[0]!, 96, registry, styles, false, false, true).lines.map(line => stripAnsi(line).trimEnd());
+    expect(full.length).toBeGreaterThan(1);
+    // Streaming: the call has no result yet.
     state.pendingAI = createPendingAI(Date.now(), MODEL);
-    state.pendingAI.blocks.push(...call("c1", "ls"), ...call("c2", long));
-    const working = (shown: string[]) => shown.slice(shown.findIndex(row => /Working/.test(row)) + 1).filter(Boolean);
-    expect(working(rows(state))[0]).toMatch(/^ {2}Bash cd ~\/Workspace.*…  4 rows$/);
-    expect(working(rows(state))[1]).toContain("GPT-6-Astra");
+    state.pendingAI.blocks.push(...call("c1", "ls"), { type: "text", text: answer }, call("c2", long)[0]!);
+    expect(working(rows(state)).slice(0, full.length)).toEqual(full);
     freshMatchesIncremental(state);
     // Committed, before the next round streams.
+    state.pendingAI.blocks.push(call("c2", long)[1]!);
     state.messages.push(state.pendingAI);
     state.pendingAI = createPendingAI(Date.now(), MODEL);
-    expect(working(rows(state))[0]).toMatch(/^ {2}Bash cd ~\/Workspace.*…  4 rows$/);
-    expect(working(rows(state))[1]).toContain("GPT-6-Astra");
+    expect(working(rows(state)).slice(0, full.length)).toEqual(full);
     freshMatchesIncremental(state);
+    // Finished: the split reply reveals the call, now one row.
+    state.pendingAI.blocks.push({ type: "text", text: "Started." });
+    state.messages.push(state.pendingAI);
+    state.pendingAI = null;
+    expect(callRows(state)).toEqual([expect.stringMatching(/^ {2}Bash cd ~\/Workspace.*…  4 rows$/)]);
+    freshMatchesIncremental(state);
+  });
+
+  test("a running Chrono wait under the Working row renders in full", () => {
+    const state = createInitialState();
+    state.messages.push(user("go"));
+    const what = "the arm A research lane that replays a fortnight of weather markets and reports its capture";
+    const wait: Extract<Message, { role: "assistant" }>["blocks"][number] = { type: "tool_call", toolCallId: "w1", toolName: "chrono", input: { action: "wait", task_id: "exo:1", max_wait: "45m", what }, summary: "chrono wait" };
+    state.pendingAI = createPendingAI(Date.now(), MODEL);
+    state.pendingAI.blocks.push(...call("c1", "ls"), wait);
+    const full = renderBlockCached(wait, 56, [], [], false, false, true).lines.map(line => stripAnsi(line).trimEnd());
+    expect(full.length).toBeGreaterThan(1);
+    expect(working(rows(state, 60)).slice(0, full.length)).toEqual(full);
+    freshMatchesIncremental(state, 60);
   });
 });
