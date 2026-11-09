@@ -88,12 +88,30 @@ describe("sidebar conversation actions", () => {
     expect(state.sidebar.conversations.find(conv => conv.id === "conv-a")?.pinned).toBe(true);
   });
 
+  test("Mute toggles the conversation's mute exactly like the mute key, and reads Unmute once muted", () => {
+    const viaMenu = sidebarState();
+    handleFocusedKey({ type: "char", char: ";" }, viaMenu);
+    for (let step = 0; step < 3; step++) handleFocusedKey({ type: "char", char: "j" }, viaMenu);
+    expect(viaMenu.sidebar.actionMenu?.selection).toBe("toggle_mute");
+    const muted = handleFocusedKey({ type: "enter" }, viaMenu);
+
+    const viaKey = sidebarState();
+    expect(handleFocusedKey({ type: "char", char: "M" }, viaKey)).toEqual(muted);
+    expect(muted).toEqual({ type: "mute_conversation", convId: "conv-a", muted: true });
+    expect(viaMenu.sidebar.conversations[0]?.muted).toBe(true);
+    expect(viaMenu.sidebar.actionMenu).toBeNull();
+
+    handleFocusedKey({ type: "char", char: ";" }, viaMenu);
+    expect(viaMenu.sidebar.actionMenu?.muted).toBe(true);
+    for (let step = 0; step < 3; step++) handleFocusedKey({ type: "char", char: "j" }, viaMenu);
+    expect(handleFocusedKey({ type: "enter" }, viaMenu)).toEqual({ type: "mute_conversation", convId: "conv-a", muted: false });
+    expect(viaMenu.sidebar.conversations[0]?.muted).toBe(false);
+  });
+
   test("delete asks for confirmation, then emits the ordinary delete result", () => {
     const state = sidebarState();
     handleFocusedKey({ type: "char", char: ";" }, state);
-    handleFocusedKey({ type: "char", char: "j" }, state);
-    handleFocusedKey({ type: "char", char: "j" }, state);
-    handleFocusedKey({ type: "char", char: "j" }, state);
+    for (let step = 0; step < 4; step++) handleFocusedKey({ type: "char", char: "j" }, state);
 
     expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "handled" });
     expect(state.sidebar.actionMenu?.deleteConfirmation).toBe(true);
@@ -189,7 +207,7 @@ describe("sidebar conversation actions", () => {
     state.mouseCursor = "hand";
     handleFocusedKey({ type: "char", char: ";" }, state);
     const clickDelete = () => handleMouseEvent(
-      mouseEvent(SIDEBAR_WIDTH + 3, 7, 0, "press"),
+      mouseEvent(SIDEBAR_WIDTH + 3, 8, 0, "press"),
       state,
     );
 

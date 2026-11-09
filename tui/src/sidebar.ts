@@ -25,7 +25,7 @@ import {
 } from "./sidebar/folderactions";
 import { moveSelectionToDone } from "./sidebar/doneaction";
 import { sameSidebarItem as sameItem } from "./sidebar/items";
-import { reconcileNotificationMutes } from "./sidebar/folders";
+import { areConversationNotificationsMuted, reconcileNotificationMutes } from "./sidebar/folders";
 import { moveSelection, moveToMarked, moveToStreaming } from "./sidebar/navigation";
 import { applyPendingSidebarItemReorder } from "./sidebar/optimisticmove";
 import {
@@ -333,6 +333,15 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       const newMarked = !conv.marked;
       editConversation(sidebar, conv, { marked: newMarked });
       return { type: "mark_conversation", convId: conv.id, marked: newMarked };
+    }
+
+    case "toggle_unread": {
+      // Muting hides unread, and the daemon keeps a muted conversation read.
+      const conv = getSelectedVisibleConversation(sidebar);
+      if (!conv || areConversationNotificationsMuted(sidebar, conv)) return { type: "handled" };
+      const unread = !conv.unread;
+      editConversation(sidebar, conv, { unread });
+      return { type: "set_conversation_unread", convId: conv.id, unread };
     }
 
     case "pin": {

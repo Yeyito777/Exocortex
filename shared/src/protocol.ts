@@ -895,6 +895,14 @@ export interface MuteConversationCommand {
   muted: boolean;
 }
 
+/** Show a conversation as finished and unread, or as read. Muted conversations stay read. */
+export interface SetConversationUnreadCommand {
+  type: "set_conversation_unread";
+  reqId?: string;
+  convId: string;
+  unread: boolean;
+}
+
 export interface MoveConversationCommand {
   type: "move_conversation";
   reqId?: string;
@@ -1640,6 +1648,7 @@ export type Command =
   | MarkConversationCommand
   | PinConversationCommand
   | MuteConversationCommand
+  | SetConversationUnreadCommand
   | MoveConversationCommand
   | RenameConversationCommand
   | GenerateTitleCommand

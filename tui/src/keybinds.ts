@@ -44,6 +44,7 @@ export type Action =
   | "nav_select"
   | "delete"
   | "mark"
+  | "toggle_unread"
   | "pin"
   | "move_up"
   | "move_down"

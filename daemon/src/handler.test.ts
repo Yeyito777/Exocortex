@@ -7,7 +7,7 @@ import { listUserMacros, userMacrosPath } from "./user-macros";
 import { join } from "node:path";
 import { resumeQueuedMessageDelivery, suspendQueuedMessageDelivery } from "./message-queue";
 import { chronoInternalsForTest, deferChronoSleep, listDeferredChronoSleeps } from "./chrono-service";
-import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, setSubagentPolicy, updateGoalStatus } from "./conversations";
+import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, isUnread, mute, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, setSubagentPolicy, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type UserMessageAutomation } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, getSubagentNotificationRuntime, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
@@ -672,6 +672,45 @@ describe("handler shutdown preparation", () => {
 
     expect(getDaemonShutdownMode()).toBe("restart");
     expect(order).toEqual(["send:ack:restart-local", "restart"]);
+  });
+});
+
+describe("handler set_conversation_unread", () => {
+  afterEach(cleanupIds);
+
+  test("marks a conversation unread or read and tells every client, once per change", async () => {
+    const id = mkId("unread");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const broadcasts: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock((event: Record<string, unknown>) => { broadcasts.push(event); }),
+      broadcastSidebarStatePatched: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => true),
+    };
+    const handle = createHandler(server as never);
+    const updates = () => broadcasts.filter(event => event.type === "conversation_updated" && event.summary.id === id);
+
+    await handle({} as never, { type: "set_conversation_unread", convId: id, unread: true });
+    expect(isUnread(id)).toBe(true);
+    expect(updates().map(event => event.summary.unread)).toEqual([true]);
+
+    await handle({} as never, { type: "set_conversation_unread", convId: id, unread: true });
+    expect(updates()).toHaveLength(1);
+
+    await handle({} as never, { type: "set_conversation_unread", convId: id, unread: false });
+    expect(isUnread(id)).toBe(false);
+    expect(updates().map(event => event.summary.unread)).toEqual([true, false]);
+
+    // Muting hides unread, so a muted conversation stays read.
+    mute(id, true);
+    await handle({} as never, { type: "set_conversation_unread", convId: id, unread: true });
+    expect(isUnread(id)).toBe(false);
+    expect(updates()).toHaveLength(2);
   });
 });
 

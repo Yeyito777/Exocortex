@@ -1046,6 +1046,10 @@ export class DaemonClient {
     this.send({ type: "mute_conversation", convId, muted });
   }
 
+  setConversationUnread(convId: string, unread: boolean): void {
+    this.send({ type: "set_conversation_unread", convId, unread });
+  }
+
   moveConversation(convId: string, direction: "up" | "down"): void {
     this.send({ type: "move_conversation", convId, direction });
   }

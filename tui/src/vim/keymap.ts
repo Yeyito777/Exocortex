@@ -118,7 +118,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "normal", context: "sidebar", key: "ga", command: { type: "action", action: "open_accounts" } },
   { mode: "normal", context: "sidebar", key: "gi", command: { type: "action", action: "open_instructions" } },
   { mode: "normal", context: "sidebar", key: "d",  command: { type: "action", action: "delete" } },
-  { mode: "normal", context: "sidebar", key: "m",  command: { type: "action", action: "mark" } },
+  { mode: "normal", context: "sidebar", key: "m",  command: { type: "action", action: "toggle_unread" } },
   { mode: "normal", context: "sidebar", key: "p",  command: { type: "action", action: "pin" } },
   { mode: "normal", context: "sidebar", key: "e",  command: { type: "action", action: "move_up" } },
   { mode: "normal", context: "sidebar", key: "E",  command: { type: "action", action: "move_down" } },

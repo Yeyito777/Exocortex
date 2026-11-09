@@ -3378,6 +3378,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
+      case "set_conversation_unread": {
+        const wasUnread = convStore.isUnread(cmd.convId);
+        if (cmd.unread) convStore.markUnread(cmd.convId);
+        else convStore.clearUnread(cmd.convId);
+        if (convStore.isUnread(cmd.convId) !== wasUnread) broadcastConversationUpdated(server, cmd.convId);
+        break;
+      }
+
       case "move_conversation": {
         const updates = convStore.moveSidebarItemWithUpdates({ type: "conversation", id: cmd.convId }, cmd.direction);
         if (updates) broadcastSidebarItemOrderUpdates(updates);
