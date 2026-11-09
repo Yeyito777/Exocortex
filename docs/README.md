@@ -40,6 +40,10 @@ selects another daemon without moving client-side UI operations to that host.
 - [Scroll regions](scroll-regions.md): how the TUI scrolls the conversation
   pane. On by default; set `"tui": { "scrollRegions": false }` in
   `config/config.json` and restart the TUI to turn it off.
+- Status line resources block: CPU and memory of the machine running the
+  daemon. Its GPU and VRAM column is off by default; set
+  `"tui": { "resourcesGpu": true }` in `config/config.json` and restart the TUI
+  to show it.
 
 ## Keyboard reference
 
