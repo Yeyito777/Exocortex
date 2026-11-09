@@ -115,6 +115,7 @@ export function supportsImageInputsForModel(
 
 /** Maximum context window size in tokens, keyed by model id. */
 export const MAX_CONTEXT: Record<string, number> = {
+  "claude-fable-5-2": 1_000_000,
   "claude-fable-5-1": 1_000_000,
   "claude-opus-5-5": 1_000_000,
   "claude-sonnet-5-5": 1_000_000,
