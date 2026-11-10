@@ -263,11 +263,11 @@ describe("Claude's Fable allowance", () => {
     return { state, rows: shown.rows.map(row => stripAnsi(row).trimEnd()), block: shown };
   }
 
-  test("with no 5-hour limit on any account it takes that row, under Weekly, bars lined up", () => {
+  test("with no 5-hour limit on any account it takes that row, above Weekly, bars lined up", () => {
     const { rows, state } = block({ capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly, fable });
     expect(rows).toEqual([
-      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`,
       `  Fable:  [${"\u2588".repeat(1)}${"\u2591".repeat(19)}] 14/200% resets in 4d7h · 4d12h`,
+      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`,
     ]);
     expect(usageSummary(state, NOW)).toBe("5-hour n/a · weekly 77/200% (resets in 4d7h · 4d12h) · Fable 14/200% (resets in 4d7h · 4d12h)");
   });
@@ -275,8 +275,8 @@ describe("Claude's Fable allowance", () => {
   test("one account without the 5-hour limit: the same two rows on the plain scale", () => {
     const { rows } = block({ fiveHour: null, sevenDay: { utilization: 43, resetsAt: resets[0] }, noFiveHourLimit: true, fable: { utilization: 11, resetsAt: resets[0], allowanceOfWeekly: 50 } });
     expect(rows).toEqual([
-      `  Weekly: [${"\u2588".repeat(9)}${"\u2591".repeat(11)}] 43% resets in 4d:7h:00m`,
       `  Fable:  [${"\u2588".repeat(2)}${"\u2591".repeat(18)}] 11% resets in 4d:7h:00m`,
+      `  Weekly: [${"\u2588".repeat(9)}${"\u2591".repeat(11)}] 43% resets in 4d:7h:00m`,
     ]);
   });
 
@@ -305,8 +305,8 @@ describe("Claude's Fable allowance", () => {
     const one = { utilization: 14, resetsAt: resets[0], resets: [resets[0]] };
     const { rows, state } = block({ capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly, fable: one, fableCapacity: 100 });
     expect(rows).toEqual([
-      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`,
       `  Fable:  [${"\u2588".repeat(1)}${"\u2591".repeat(9)}${"X".repeat(10)}] 14/100% resets in 4d7h`,
+      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 77/200% resets in 4d7h · 4d12h`,
     ]);
     expect(usageSummary(state, NOW)).toEndWith(" · Fable 14/100% (resets in 4d7h)");
     // Beside a 5-Hour row the figure is on the same scale.
@@ -315,7 +315,7 @@ describe("Claude's Fable allowance", () => {
     expect(side[1]).toEndWith("  resets in 4d7h");
     // By share: 1 of 3 without one crosses out about a third.
     const third = block({ capacity: 300, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly, fable, fableCapacity: 200 }).rows;
-    expect(third[1]).toBe(`  Fable:  [${"\u2588".repeat(1)}${"\u2591".repeat(12)}${"X".repeat(7)}] 14/200% resets in 4d7h · 4d12h`);
+    expect(third[0]).toBe(`  Fable:  [${"\u2588".repeat(1)}${"\u2591".repeat(12)}${"X".repeat(7)}] 14/200% resets in 4d7h · 4d12h`);
   });
 
   test("too narrow for the bars and the allowance beside them: the allowance goes first, Weekly stays", () => {
