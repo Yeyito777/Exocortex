@@ -473,6 +473,39 @@ bar's `Usage Resets` / `Next Expiry` block with every account's together, and a
 Resets column on the Accounts screen (`2 4d`: how many, and the time until the
 nearest expires). Exocortex only shows them; spending one is done on claude.ai.
 
+### Limit resets from claude.ai
+
+Until Claude Code's report carries them, the daemon can read them where
+claude.ai's usage page does (`web-resets.ts`). Off by default:
+
+```json
+"providers": { "anthropic": { "webResets": { "enabled": true, "accounts": ["main", "max2"] } } }
+```
+
+`accounts` is optional (default every account). Each account needs its
+claude.ai session in the secrets store as `CLAUDE_WEB_SESSION_<ACCOUNT>`.
+`scripts/claude-web-session <account>` puts it there from the whale vimbrowser
+context signed in to that account on claude.ai (default `claude-<account>`;
+`--context NAME` for another, `--check` to only check). It checks first that
+the session is that account's, never prints it, and replaces an older one; run
+it again when the session expires (claude.ai sessions last about a month).
+
+When an account's usage is refreshed, at most every 15 minutes per account
+and only while its own report has no resets, the daemon makes one GET of
+`claude.ai/api/organizations/<org>/usage?cedar_ember=1&skip_spend=1`: the
+organization Claude Code is signed in to, the session's `sessionKey` cookie,
+a 10-second limit. The request is curl under `secrets run`, so the session
+goes into curl's environment and never into the daemon (Cloudflare challenges
+Bun's own fetch). Nothing else on claude.ai is called.
+
+A failed poll shows no resets for that account until one succeeds; it does not
+keep the last figures. The next try waits the full 15 minutes. Each kind of
+failure logs one warning per account until a poll works again. The ones the
+owner fixes show in that account's Resets cell, muted: `no web session`,
+`web session expired` (claude.ai refused it), or `web session is another
+account's` (the session's account has no such organization). An HTML answer
+(a Cloudflare challenge), a network error or another HTTP error shows nothing.
+
 Idle usage comes from Claude Code's `/usage` data, fetched per account with a
 bare Claude Code process for that account (at most once a minute per account,
 only when a client connects or a turn ends). During turns, each

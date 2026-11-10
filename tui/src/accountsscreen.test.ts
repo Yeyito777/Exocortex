@@ -11,6 +11,7 @@ import {
   renderAccountsScreen,
   requestAccountsScreen,
   resetCell,
+  webSessionCell,
 } from "./accountsscreen";
 import { tryCommand } from "./commands";
 import { handleEvent } from "./events";
@@ -747,4 +748,31 @@ test("a Resets column while an account has free limit resets left: how many, and
   // Without any, no column.
   const none = openScreen(snapshot({}, [claude("main", { usage: usage() }), claude("max2", { usage: usage() })]));
   expect(screenText(none.state).find(row => row.includes("5-Hour"))).not.toContain("Resets");
+});
+
+test("an account whose claude.ai session needs the owner says so quietly in the Resets column", () => {
+  const usage = (resets?: { availableCount: number; nextExpiresAt: number | null }) => ({
+    fiveHour: null, sevenDay: { utilization: 43, resetsAt: NOW + 108 * H }, noFiveHourLimit: true,
+    ...(resets ? { resetCredits: resets } : {}),
+  });
+  const snap = snapshot({}, [
+    claude("main", { usage: usage({ availableCount: 2, nextExpiresAt: NOW + 120 * 24 * H }) }),
+    claude("max2", { usage: usage(), webSession: "expired" }),
+  ]);
+  const rows = screenText(openScreen(snap).state);
+  const header = rows.find(row => row.includes("5-Hour"))!;
+  const max2 = rows.find(row => row.includes("● max2"))!;
+  expect(header).toContain("Resets");
+  expect(max2.indexOf("web session expired")).toBe(header.indexOf("Resets"));
+  expect(rows.find(row => row.includes("● main"))).toMatch(/2 120d/);
+
+  // Its own resets win over the note; each problem has its words.
+  const both = screenText(openScreen(snapshot({}, [claude("main", { usage: usage({ availableCount: 1, nextExpiresAt: null }), webSession: "missing" })])).state);
+  expect(both.join("\n")).not.toContain("web session");
+  expect(webSessionCell("missing")?.note).toBe("no web session");
+  expect(webSessionCell("other_account")?.note).toBe("web session is another account's");
+  expect(webSessionCell(null)).toBeNull();
+  // With the switch off nothing is sent, and the table is the one from before.
+  const off = screenText(openScreen(snapshot({}, [claude("main", { usage: usage() }), claude("max2", { usage: usage() })])).state);
+  expect(off.find(row => row.includes("5-Hour"))).not.toContain("Resets");
 });

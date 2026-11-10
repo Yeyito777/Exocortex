@@ -109,6 +109,22 @@ export interface AnthropicProviderConfig {
   apiCreditFallback?: AnthropicApiCreditFallbackConfig;
   /** Report Exocortex's own entrypoint instead of the Agent SDK's; off by default (docs/anthropic.md#entrypoint). */
   customEntrypoint?: boolean;
+  /**
+   * Read Claude's limit resets from claude.ai for accounts whose Claude Code
+   * usage report has none (daemon/src/providers/anthropic/web-resets.ts).
+   * Off by default.
+   */
+  webResets?: AnthropicWebResetsConfig;
+}
+
+export interface AnthropicWebResetsConfig {
+  enabled?: boolean;
+  /**
+   * The Claude accounts (`main`, `max2`, …) it reads; default every account.
+   * Each needs its claude.ai session in the secrets store as
+   * CLAUDE_WEB_SESSION_<ACCOUNT> (scripts/claude-web-session).
+   */
+  accounts?: string[];
 }
 
 export interface AnthropicApiCreditFallbackConfig {

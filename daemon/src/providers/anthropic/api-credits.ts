@@ -176,7 +176,7 @@ function shellQuote(value: string): string {
   return /^[A-Za-z0-9_./=:-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function secretsBinary(): string | null {
+export function secretsBinary(): string | null {
   const configured = process.env.EXOCORTEX_SECRETS_BIN?.trim();
   if (configured) return configured;
   const bundled = join(externalToolsDir(), "secrets-cli", "bin", "secrets");

@@ -66,6 +66,7 @@ import {
   PROXIED_FABLE_HOLD_MS,
   refreshAccountUsage,
 } from "./usage";
+import { refreshWebResets, webResetsConfig, webResetsDue, webSessionProblem, withWebResets } from "./web-resets";
 
 const ASSIGNMENTS_FILE_NAME = "anthropic-conversation-accounts.json";
 const CREDITS_FILE_NAME = "anthropic-conversation-credits.json";
@@ -307,7 +308,7 @@ export function claudeAccountStates(now = Date.now()): AccountRouteState[] {
     id: account.id,
     available: isAvailable(account, now),
     limitedUntil: getAccountLimitedUntil(account.id, now),
-    usage: getAccountUsage(account.id),
+    usage: withWebResets(getAccountUsage(account.id), account.id, now),
     activeTurns: activeTurns.get(account.id) ?? 0,
   }));
 }
@@ -611,7 +612,7 @@ function barUsages(included: AccountRouteState[], now: number): Array<UsageData 
   if (!usages.some(usage => usage?.noFiveHourLimit)) return usages;
   const unchecked = listClaudeAccounts().filter(account =>
     !included.some(state => state.id === account.id) && !lastClaudeAuthStatus(account.id) && !claudeAccountBlock(account.id, now));
-  return [...usages, ...unchecked.map(account => getAccountUsage(account.id))];
+  return [...usages, ...unchecked.map(account => withWebResets(getAccountUsage(account.id), account.id, now))];
 }
 
 /** A proxied Claude's bars while turns run on this machine's keys: the remote's last usage, with those keys' credits. */
@@ -627,7 +628,7 @@ export function getCombinedUsage(now = Date.now()): UsageData | null {
   const included = capacityAccounts(now);
   // Nothing known to be signed in yet: show the main account's last usage, as before.
   const usage = included.length > 0 ? aggregateUsage(barUsages(included, now), now)
-    : multipleClaudeAccounts() ? null : getAccountUsage(MAIN_ACCOUNT_ID);
+    : multipleClaudeAccounts() ? null : withWebResets(getAccountUsage(MAIN_ACCOUNT_ID), MAIN_ACCOUNT_ID, now);
   if (!usage || isProviderProxied("anthropic")) return usage;
   const active = activeCreditTurns.size > 0 || apiCreditFallbackActive(now);
   const backAt = active ? subscriptionsUsableAt(applyDevRoutingOverrides(claudeAccountStates(now), now).states, now) : null;
@@ -649,6 +650,15 @@ export async function refreshCombinedUsage(): Promise<UsageData | null> {
       log("debug", `anthropic: usage refresh for "${state.id}" failed: ${error instanceof Error ? error.message : error}`);
     }
   }));
+  // Limit resets from claude.ai, where an account's own report has none (off unless configured).
+  if (!isProviderProxied("anthropic") && webResetsConfig().enabled) {
+    const accounts = await Promise.all(capacityAccounts(Date.now()).map(async (state) => {
+      // A lone account's sign-in is not otherwise checked: its organization comes from that check.
+      const status = lastClaudeAuthStatus(state.id) ?? (webResetsDue(state.id) ? await cachedClaudeAuthStatus(state.id).catch(() => null) : null);
+      return { id: state.id, org: status?.orgId, ownResets: getAccountUsage(state.id)?.resetCredits != null };
+    }));
+    if (await refreshWebResets(accounts)) emitClaudeAccountsChanged();
+  }
   return getCombinedUsage();
 }
 
@@ -751,6 +761,7 @@ export function claudeAccountsInfo(currentConvId: string | null = null, now = Da
     const { state: accountStateName, detail } = accountState({ status, block, limited: isAccountLimited(state, now) });
     const signedIn = status !== null && isSubscriptionAuth(status);
     const updatedAt = getAccountUsageUpdatedAt(account.id);
+    const webSession = webSessionProblem(account.id);
     return {
       id: account.id,
       email: status?.email ?? null,
@@ -766,6 +777,7 @@ export function claudeAccountsInfo(currentConvId: string | null = null, now = Da
       conversations: (byAccount.get(account.id) ?? []).sort((a, b) => Number(b.running) - Number(a.running) || b.lastUsedAt - a.lastUsedAt),
       loginCommand: !signedIn && !block && !state.available ? claudeLoginCommand(account) : null,
       credits: apiCreditAccountCredits(account.id, new Set(activeCreditTurns.keys()), now),
+      ...(webSession ? { webSession } : {}),
     };
   });
   const current = currentConvId ? getConversationAccount(currentConvId) : null;
