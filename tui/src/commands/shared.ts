@@ -92,13 +92,16 @@ export function applyProviderModelSelection(state: RenderState, provider: Provid
   const previousEffort = state.effort;
   const previousFastMode = state.fastMode;
   const previousContextTokens = state.contextTokens;
+  const sameProvider = provider === state.provider;
   const nextMaxContext = maxContextFor(state, provider, model);
 
   setChosenProvider(state, provider);
   state.model = model;
   normalizeStateEffort(state, provider, model);
   if (!providerSupportsFastMode(state, provider, model, state.fastMode)) state.fastMode = false;
-  state.contextTokens = previousContextTokens === 0 ? 0 : null;
+  // One provider's models count a conversation alike, near enough to keep the last figure
+  // until the next turn reports its own; another provider's count is unknown until then.
+  if (!sameProvider && previousContextTokens !== 0) state.contextTokens = null;
 
   return {
     effortChanged: state.effort !== previousEffort,

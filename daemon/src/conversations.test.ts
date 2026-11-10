@@ -875,9 +875,14 @@ describe("setModel", () => {
     expect(after.model).toBe("gpt-5.5");
     expect(after.effort).toBe("high");
     expect(after.fastMode).toBe(false);
-    expect(after.lastContextTokens).toBeNull();
+    // The same provider's models keep the last context figure until the next turn reports theirs.
+    expect(after.lastContextTokens).toBe(123_456);
     expect(after.activeContext?.kind).toBe("openai_native");
     expect(after.updatedAt).toBeGreaterThan(before);
+
+    // Another provider counts its own way: unknown until its first turn.
+    expect(setModel(id, "anthropic", "claude-opus-5-5", "high", false)).toBe(true);
+    expect(get(id)!.lastContextTokens).toBeNull();
   });
 });
 

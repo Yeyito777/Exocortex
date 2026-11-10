@@ -780,6 +780,22 @@ describe("/compact", () => {
 });
 
 describe("/model", () => {
+  test("keeps the context figure within one provider; another provider's is unknown", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+    state.contextTokens = 12_345;
+    state.convId = "conv-openai";
+
+    tryCommand("/model openai no-fast-test-model", state);
+    expect(String(state.model)).toBe("no-fast-test-model");
+    expect(state.contextTokens).toBe(12_345);
+
+    tryCommand("/model deepseek deepseek-v4-pro", state);
+    expect(state.contextTokens).toBeNull();
+  });
+
   test("switches an active conversation across providers and normalizes effort/fast mode", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);

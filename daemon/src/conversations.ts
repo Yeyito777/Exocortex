@@ -1477,11 +1477,13 @@ export function setModel(
 ): boolean {
   const conv = get(id);
   if (!conv) return false;
+  // Another provider counts tokens its own way; one provider's models keep the last figure
+  // until the next turn reports theirs.
+  if (conv.provider !== provider) conv.lastContextTokens = null;
   conv.provider = provider;
   conv.model = model;
   conv.effort = effort;
   conv.fastMode = fastMode;
-  conv.lastContextTokens = null;
   conv.updatedAt = Date.now();
   markDirty(id);
   flush(id);

@@ -273,13 +273,13 @@ describe("mid-turn: the switch waits for the turn to end", () => {
     pressModelLadder(state, 1, daemon, 1_000, true);
     const frames = Array.from({ length: 200 }, (_, i) => renderTopbar(state, 90, 1_000 + i * 16));
     const late = frames.at(-1)!;
-    expect(stripAnsi(late).trimEnd().endsWith("▁▂▄▆█   Anthropic/Fable-5.2 — high")).toBe(true);
+    expect(stripAnsi(late).trimEnd().endsWith("━━━━━   Anthropic/Fable-5.2 — high")).toBe(true);
     // Not the normal colour: the label is dimmed.
     expect(late).not.toBe(renderTopbar({ ...state, modelLadder: null, pendingAI: null, sidebar: { ...state.sidebar, conversations: [summary(state)] } } as RenderState, 90, 4_200));
     // It keeps drawing (the rung breathes) at a slow rate.
     expect(modelLadderFrameDelay(state, 1_000 + 199 * 16)).toBe(WAIT_FRAME_MS);
-    // A breathing rung changes colour over time.
-    expect(frames[100]).not.toBe(frames[150]);
+    // A breathing rung changes colour over time (brightest half way through a breath, darkest at its end).
+    expect(frames[56]).not.toBe(frames[112]);
 
     // The daemon confirms it is queued.
     handleEvent({ type: "conversation_updated", summary: summary(state, { streaming: true, pendingModel: { provider: "anthropic", model: "claude-fable-5-2", effort: "high" } }) }, state, null as never);
@@ -353,9 +353,15 @@ describe("top bar animation", () => {
     const frames = framesUntil(state, 1_000, 1_000 + METER_HOLD_MS + METER_FADE_MS + 32);
     const normal = normalBar(state);
     expect(frames.some(frame => frame !== normal)).toBe(true);
-    // Mid-morph: block glyphs, and the meter is up.
-    expect(stripAnsi(frames[8])).toMatch(/[▁▂▃▄▅▆▇█▓▒░]/);
-    expect(stripAnsi(frames[8])).toContain("▁▂▄▆█");
+    // Mid-morph the meter is up, and only colour moves: no frame ever draws a block
+    // glyph, every cell is a character of one of the two labels or the meter.
+    expect(stripAnsi(frames[8])).toContain("━━━━━");
+    const allowed = new Set("Anthropic/Opus-5.5 — high" + "Anthropic/Fable-5.2 — high" + "━ ");
+    for (const frame of frames) {
+      const right = stripAnsi(frame).slice(stripAnsi(frame).indexOf("━"));
+      if (right.startsWith("━")) expect([...right].every(ch => allowed.has(ch))).toBe(true);
+      expect(stripAnsi(frame)).not.toMatch(/[▁▂▃▄▅▆▇█▓▒░]/);
+    }
     // Every frame keeps the bar's width and leaves the title in place.
     for (const frame of frames) {
       expect(stripAnsi(frame).length).toBe(WIDTH);
@@ -370,12 +376,14 @@ describe("top bar animation", () => {
   test("after the morph the label is final and only the meter remains until it fades", () => {
     const state = ladderState("claude-opus-5-5", "high");
     pressModelLadder(state, 1, recorder(), 1_000, true);
-    framesUntil(state, 1_000, 1_000 + MORPH_TOTAL_MS);
-    const settled = stripAnsi(renderTopbar(state, WIDTH, 1_000 + MORPH_TOTAL_MS + 100));
-    expect(settled).toContain("▁▂▄▆█ ");
+    // A morph knows its own length; this one is done well inside MORPH_TOTAL_MS.
+    framesUntil(state, 1_000, 1_000 + 560);
+    expect(state.modelLadder!.anim!.morph!.plan!.endsAt).toBeLessThan(560);
+    const settled = stripAnsi(renderTopbar(state, WIDTH, 1_000 + 600));
+    expect(settled).toContain("━━━━━ ");
     expect(settled.trimEnd().endsWith("Anthropic/Fable-5.2 — high")).toBe(true);
     // Idle meter: the next frame is due when it starts fading, not every tick.
-    expect(modelLadderFrameDelay(state, 1_000 + MORPH_TOTAL_MS + 400)).toBe(METER_HOLD_MS - MORPH_TOTAL_MS - 400);
+    expect(modelLadderFrameDelay(state, 1_000 + 700)).toBe(METER_HOLD_MS - 700);
   });
 
   test("a repeat press retargets mid-flight without restarting the meter or moving it", () => {
@@ -384,7 +392,7 @@ describe("top bar animation", () => {
     pressModelLadder(state, 1, daemon, 1_000, true);
     framesUntil(state, 1_000, 1_000 + 160);
     const anim = state.modelLadder!.anim!;
-    const meterAt = stripAnsi(renderTopbar(state, WIDTH, 1_176)).indexOf("▁▂▄▆█");
+    const meterAt = stripAnsi(renderTopbar(state, WIDTH, 1_176)).indexOf("━━━━━");
     pressModelLadder(state, 1, daemon, 1_180, true);
     expect(state.modelLadder!.anim).toBe(anim);
     expect(anim.morph?.startAt).toBe(1_180);
@@ -392,8 +400,37 @@ describe("top bar animation", () => {
     // The new morph starts from what was on screen, not from the old label.
     expect(anim.morph?.from.map(cell => cell.ch).join("")).not.toBe("Anthropic/Fable-5.2 — high");
     const frames = framesUntil(state, 1_180, 1_180 + MORPH_TOTAL_MS);
-    for (const frame of frames) expect(stripAnsi(frame).indexOf("▁▂▄▆█")).toBe(meterAt);
+    for (const frame of frames) expect(stripAnsi(frame).indexOf("━━━━━")).toBe(meterAt);
     expect(stripAnsi(frames.at(-1)!).trimEnd().endsWith("Anthropic/Fable-5.2 — xhigh")).toBe(true);
+  });
+
+  test("the leading text moves as one block: no frame shows it doubled or torn", () => {
+    // Opus-5.5 -> Fable-5.2 is one cell longer, so the right-aligned "Anthropic/" moves left by one.
+    const state = ladderState("claude-opus-5-5", "high");
+    pressModelLadder(state, 1, recorder(), 1_000, true);
+    const frames = framesUntil(state, 1_000, 1_000 + 560).map(stripAnsi);
+    for (const frame of frames) {
+      expect(frame.split("Anthropic/").length - 1).toBe(1);
+      expect(frame.trimEnd().endsWith(" — high")).toBe(true);
+    }
+    const at = (frame: string) => frame.indexOf("Anthropic/");
+    expect(at(frames[0]) - at(frames.at(-1)!)).toBe(1);
+    // It never moves back, and the new name only appears once it has arrived.
+    for (let i = 1; i < frames.length; i++) expect(at(frames[i])).toBeLessThanOrEqual(at(frames[i - 1]));
+    const firstNew = frames.findIndex(frame => frame.includes("Anthropic/F"));
+    expect(at(frames[firstNew])).toBe(at(frames.at(-1)!));
+  });
+
+  test("an effort-only step changes just the letters that differ", () => {
+    const state = ladderState("claude-fable-5-2", "high");
+    pressModelLadder(state, 1, recorder(), 1_000, true);
+    const plan = () => state.modelLadder!.anim!.morph!.plan!;
+    const frames = framesUntil(state, 1_000, 1_000 + 560).map(stripAnsi);
+    // "high" -> "xhigh": one new letter, nothing sinks, everything before it slides one cell.
+    expect(plan()).toMatchObject({ suffix: 4, oldMid: 0, newMid: 1 });
+    for (const frame of frames) expect(frame).toMatch(/Anthropic\/Fable-5\.2 — [x ]?high *$/);
+    // The light gets to the change quickly however long the text before it is.
+    expect(plan().inAt).toBeLessThanOrEqual(120);
   });
 
   test("a frame far too late shows the result at once", () => {
@@ -410,7 +447,7 @@ describe("top bar animation", () => {
     expect(state.modelLadder?.anim?.cue).toMatchObject({ kind: "end", dir: 1 });
     expect(state.modelLadder?.anim?.rung).toBe(4);
     for (const frame of framesUntil(state, 1_000, 1_400)) {
-      expect(stripAnsi(frame).trimEnd().endsWith("▁▂▄▆█  Anthropic/Fable-5.2 — xhigh")).toBe(true);
+      expect(stripAnsi(frame).trimEnd().endsWith("━━━━━  Anthropic/Fable-5.2 — xhigh")).toBe(true);
     }
   });
 

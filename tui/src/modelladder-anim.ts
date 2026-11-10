@@ -2,18 +2,28 @@
  * The model ladder's top-bar animation (Shift+Up / Shift+Down).
  *
  * Pure frame composition: given the animation record, the label to show and
- * the time, build the right-hand segment of the top bar. The label re-forms
- * cell by cell in a sweep (left to right going up, right to left going down);
- * changed cells fill up from the bottom (or drain down) through block glyphs
- * in a warm or cool wash and settle to their resting colour. A five-rung
- * meter beside it lights the current rung and fades a second after the last
- * press. When everything has played out the segment is null and the top bar
- * renders exactly as it does without the ladder.
+ * the time, build the right-hand segment of the top bar.
+ *
+ * Only colour moves; every cell always holds a character of the old label, the
+ * new one, or the meter, so the animation looks the same in any terminal and
+ * font. The label is split into the text both labels start with, the part
+ * that changes, and the text both end with. The changing part sinks into the
+ * bar, the leading text slides over as one block to its new place (the label
+ * is right-aligned, so a longer or shorter name moves it), and the new part
+ * comes in letter by letter. Going up, a warm light runs left to right along
+ * the label: new letters arrive lit and cool to the normal colour, and
+ * unchanged text only catches the light. Going down, a shadow runs right to
+ * left and the new letters rise out of the bar, with no light. A five-segment
+ * meter beside the
+ * label shows the rung as a length (one glyph repeated, lit by colour); the
+ * segment gained lights up, the one lost fades, and the meter fades out a
+ * second after the last press. When everything has played out the segment is
+ * null and the top bar renders exactly as it does without the ladder.
  *
  * A model switch asked for mid-turn waits for the turn to end. Meanwhile the
- * label rests dimmed on the model it will switch to, the meter stays up with
- * the running rung half lit and the target rung breathing, until the switch
- * lands and the label brightens back to normal.
+ * label rests dimmed on the model it will switch to and the meter stays up:
+ * the running rungs dimmed, the ones the switch adds or removes breathing,
+ * until the switch lands and the label brightens back to normal.
  *
  * Frames are a function of wall-clock time, so late timers drop frames rather
  * than stretch the animation; a frame that comes far too late finishes the
@@ -47,6 +57,8 @@ export interface LadderAnimation {
     from: LadderCell[];
     startAt: number;
     dir: LadderDirection;
+    /** The choreography for this change, worked out on its first frame. */
+    plan?: MorphPlan;
   } | null;
   cue: {
     kind: "end" | "refused";
@@ -59,36 +71,45 @@ export interface LadderAnimation {
     dir: LadderDirection;
     since: number;
   } | null;
+  /** When the meter first showed (it fades in); defaults to the first frame. */
+  since?: number;
+  /** The meter's last rung change, kept by the renderer: which segments light up or fade. */
+  meter?: { rung: number | null; from: number | null; at: number };
 }
 
-export const LADDER_RUNG_GLYPHS = ["▁", "▂", "▄", "▆", "█"] as const;
+/** One glyph for every meter segment: only its colour says lit or unlit, so nothing has to line up. */
+export const LADDER_METER_GLYPH = "━";
+export const LADDER_RUNGS = 5;
 
-/** Sweep across the label, then each cell's glyph run, then its colour settling. */
-export const MORPH_SWEEP_MS = 190;
-export const MORPH_SCRAMBLE_MS = 150;
-export const MORPH_SETTLE_MS = 120;
-export const MORPH_TOTAL_MS = MORPH_SWEEP_MS + MORPH_SCRAMBLE_MS + MORPH_SETTLE_MS;
+/** The light (or shadow) moves one cell in this long... */
+export const FRONT_CELL_MS = 10;
+/** ...but reaches the part that changes within this long, however much text comes first. */
+export const FRONT_LEAD_MS = 120;
+/** The changing part sinks into the bar in this long. */
+export const CELL_OUT_MS = 80;
+/** The leading text slides one cell in this long. */
+export const SLIDE_CELL_MS = 20;
+/** A new letter settles to the label colour in this long. */
+export const CELL_IN_MS = 240;
+/** Unchanged text brightens (or dims) this long before the front reaches it, and recovers this long after. */
+export const GLOW_RISE_MS = 40;
+export const GLOW_FALL_MS = 180;
+/** No morph takes longer than this (a morph knows its own length once it has a plan). */
+export const MORPH_TOTAL_MS = 700;
 export const CUE_MS = 380;
+export const METER_IN_MS = 120;
 export const METER_HOLD_MS = 1000;
 export const METER_FADE_MS = 280;
-export const RUNG_FLARE_MS = 260;
+export const RUNG_FLARE_MS = 320;
 export const LADDER_FRAME_MS = 16;
-/** The waiting rung breathes this slowly, drawn at this frame interval. */
+/** The waiting rungs breathe this slowly, drawn at this frame interval. */
 export const WAIT_BREATH_MS = 1800;
 export const WAIT_FRAME_MS = 90;
 /** A frame this late means timers cannot drive the animation: show the result. */
 export const LADDER_LATE_FRAME_MS = 150;
 
-// Going up a cell fills from the bottom and dissolves into the new letter;
-// going down it condenses and drains away downward.
-const FILL_UP = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▓", "▒", "░"];
-const FILL_DOWN = ["░", "▒", "▓", "█", "▇", "▆", "▅", "▄", "▃", "▂", "▁"];
-
-const WARM_START: Rgb = [255, 138, 61];
-const WARM_PEAK: Rgb = [255, 226, 122];
-const WARM_GLOW: Rgb = [255, 246, 214];
-const COOL_START: Rgb = [214, 243, 255];
-const COOL_PEAK: Rgb = [13, 59, 110];
+/** The light a step up carries: new text arrives in it and cools to the label colour. */
+const LIGHT: Rgb = [255, 209, 102];
 const REFUSED: Rgb = [255, 92, 92];
 
 export interface LadderPalette {
@@ -136,7 +157,7 @@ function alignRight(cells: LadderCell[], width: number): LadderCell[] {
 }
 
 function morphDone(anim: LadderAnimation, now: number): boolean {
-  return !anim.morph || now - anim.morph.startAt >= MORPH_TOTAL_MS;
+  return !anim.morph || now - anim.morph.startAt >= (anim.morph.plan?.endsAt ?? MORPH_TOTAL_MS);
 }
 
 function cueDone(anim: LadderAnimation, now: number): boolean {
@@ -168,44 +189,115 @@ export function ladderLabelCells(anim: LadderAnimation, label: string, now: numb
   return morphCells(anim, label, now, palette);
 }
 
-function scrambleGlyph(dir: LadderDirection, t: number): string {
-  const run = dir > 0 ? FILL_UP : FILL_DOWN;
-  return run[Math.min(run.length - 1, Math.floor(t * run.length))];
+function easeIn(t: number): number {
+  const k = Math.max(0, Math.min(1, t));
+  return k * k;
+}
+
+/** How one label turns into the next: what stays, what changes, and when (ms from the morph's start). */
+export interface MorphPlan {
+  /** Cells both labels start with, and end with. */
+  prefix: number;
+  suffix: number;
+  /** Cells of the part that changes, before and after. */
+  oldMid: number;
+  newMid: number;
+  /** The old part starts sinking, the prefix starts sliding, the first new letter arrives. */
+  outAt: number;
+  slideAt: number;
+  inAt: number;
+  /** The front's pace, ms per cell. */
+  pace: number;
+  endsAt: number;
+}
+
+function trimLeadingBlanks(cells: LadderCell[]): LadderCell[] {
+  let start = 0;
+  while (start < cells.length && cells[start].ch === " ") start++;
+  return cells.slice(start);
+}
+
+function planMorph(from: LadderCell[], to: LadderCell[]): MorphPlan {
+  let prefix = 0;
+  while (prefix < from.length && prefix < to.length && from[prefix].ch === to[prefix].ch) prefix++;
+  let suffix = 0;
+  while (
+    suffix < from.length - prefix && suffix < to.length - prefix
+    && from[from.length - 1 - suffix].ch === to[to.length - 1 - suffix].ch
+  ) suffix++;
+  return { prefix, suffix, oldMid: from.length - prefix - suffix, newMid: to.length - prefix - suffix, outAt: 0, slideAt: 0, inAt: 0, pace: 0, endsAt: 0 };
+}
+
+/** Fill in the plan's times for a sweep in `dir`. */
+function timeMorph(plan: MorphPlan, dir: LadderDirection, length: number): MorphPlan {
+  // Cells the front crosses before it reaches the part that changes.
+  const lead = dir > 0 ? plan.prefix : plan.suffix;
+  const pace = lead > 0 ? Math.min(FRONT_CELL_MS, FRONT_LEAD_MS / lead) : FRONT_CELL_MS;
+  const slide = Math.abs(plan.oldMid - plan.newMid) * SLIDE_CELL_MS;
+  const inAt = Math.max(lead * pace, (plan.oldMid > 0 ? CELL_OUT_MS : 0) + slide);
+  const slideAt = inAt - slide;
+  return { ...plan, pace, inAt, slideAt, outAt: slideAt - CELL_OUT_MS, endsAt: inAt + (length - 1 - lead) * pace + CELL_IN_MS };
 }
 
 function morphCells(anim: LadderAnimation, label: string, now: number, palette: LadderPalette): LadderCell[] {
   const rest = anim.waiting ? waitingRgb(palette) : null;
-  const target = alignRight(labelCells(label, rest), anim.slot);
+  const to = labelCells(label, rest);
+  const target = alignRight(to, anim.slot);
   const morph = anim.morph;
-  if (!morph || now - morph.startAt >= MORPH_TOTAL_MS) return target;
-  const from = alignRight(morph.from, anim.slot);
+  if (!morph) return target;
+  const from = trimLeadingBlanks(morph.from);
+  const plan = morph.plan ??= timeMorph(planMorph(from, to), morph.dir, to.length);
   const elapsed = now - morph.startAt;
-  const last = Math.max(1, anim.slot - 1);
+  if (elapsed >= plan.endsAt) return target;
+
+  const width = anim.slot;
   const up = morph.dir > 0;
   const restRgb = rest ?? palette.fg;
-  return target.map((to, column) => {
-    const was = from[column];
-    const order = up ? column : anim.slot - 1 - column;
-    const t = elapsed - (order / last) * MORPH_SWEEP_MS;
-    if (t < 0) return was;
-    const same = was.ch === to.ch;
-    if (same && to.ch === " ") return to;
-    if (t < MORPH_SCRAMBLE_MS) {
-      const k = t / MORPH_SCRAMBLE_MS;
-      if (same) {
-        // Unchanged text only feels the wash pass over it.
-        const peak = up ? WARM_PEAK : COOL_PEAK;
-        return { ch: to.ch, rgb: mix(was.rgb ?? palette.fg, peak, Math.sin(k * Math.PI) * 0.85) };
-      }
-      return {
-        ch: scrambleGlyph(morph.dir, k),
-        rgb: up ? mix(WARM_START, WARM_PEAK, k) : mix(COOL_START, COOL_PEAK, k),
-      };
+  const lead = up ? plan.prefix : plan.suffix;
+  const newStart = width - to.length;
+  /** When the front reaches a column of the new label. */
+  const frontAt = (column: number): number => {
+    const order = up ? column - newStart : width - 1 - column;
+    return plan.inAt + (order - lead) * plan.pace;
+  };
+  /** Unchanged text catches the light, or dips into the shadow, as the front passes. */
+  const passed = (cell: LadderCell, column: number): LadderCell => {
+    const tau = elapsed - frontAt(column);
+    const wasRgb = cell.rgb ?? palette.fg;
+    if (tau <= -GLOW_RISE_MS) return cell;
+    if (tau >= GLOW_FALL_MS) return { ch: cell.ch, rgb: rest };
+    const glow = tau < 0 ? easeIn(1 + tau / GLOW_RISE_MS) : 1 - easeOut(tau / GLOW_FALL_MS);
+    const base = tau < 0 ? wasRgb : mix(wasRgb, restRgb, tau / GLOW_FALL_MS);
+    return { ch: cell.ch, rgb: up ? mix(base, LIGHT, 0.65 * glow) : mix(base, palette.bg, 0.3 * glow) };
+  };
+
+  const row: LadderCell[] = Array.from({ length: width }, () => ({ ch: " ", rgb: null }));
+  const put = (column: number, cell: LadderCell) => { if (column >= 0 && column < width) row[column] = cell; };
+  const midEnd = width - plan.suffix;
+
+  // The part that changes sinks into the bar, all of it together.
+  if (elapsed < plan.slideAt) {
+    const sink = easeIn((elapsed - plan.outAt) / CELL_OUT_MS);
+    for (let i = 0; i < plan.oldMid; i++) {
+      const cell = from[plan.prefix + i];
+      put(midEnd - plan.oldMid + i, cell.ch === " " ? cell : { ch: cell.ch, rgb: mix(cell.rgb ?? palette.fg, palette.bg, sink) });
     }
-    const settle = (t - MORPH_SCRAMBLE_MS) / MORPH_SETTLE_MS;
-    if (settle >= 1 || same) return to;
-    return { ch: to.ch, rgb: mix(up ? WARM_GLOW : COOL_PEAK, restRgb, easeOut(settle)) };
-  });
+  }
+  // The leading text slides to its new place as one block, a cell at a time.
+  const shift = plan.oldMid - plan.newMid;
+  const steps = elapsed < plan.slideAt ? 0 : Math.min(Math.abs(shift), Math.floor((elapsed - plan.slideAt) / SLIDE_CELL_MS) + 1);
+  const prefixStart = midEnd - plan.oldMid - plan.prefix + Math.sign(shift) * steps;
+  for (let i = 0; i < plan.prefix; i++) put(prefixStart + i, passed(from[i], newStart + i));
+  // The new part comes in letter by letter as the front crosses it.
+  for (let i = 0; i < plan.newMid; i++) {
+    const column = midEnd - plan.newMid + i;
+    const tau = elapsed - frontAt(column);
+    if (tau < 0) continue;
+    const cell = to[plan.prefix + i];
+    put(column, cell.ch === " " || tau >= CELL_IN_MS ? cell : { ch: cell.ch, rgb: mix(up ? LIGHT : palette.bg, restRgb, easeOut(tau / CELL_IN_MS)) });
+  }
+  for (let i = 0; i < plan.suffix; i++) put(midEnd + i, passed(from[from.length - plan.suffix + i], midEnd + i));
+  return row;
 }
 
 function fg(rgb: Rgb, level: TerminalColorLevel): string {
@@ -229,55 +321,58 @@ function styledCells(cells: LadderCell[], level: TerminalColorLevel): string {
   return out;
 }
 
+/** The meter's last rung change: which segments are lit now and which were before it. */
+function meterChange(anim: LadderAnimation): { rung: number | null; from: number | null; at: number } {
+  if (!anim.meter) {
+    // First frame: the rung before this press is one step back the way it came.
+    const dir = anim.morph?.dir ?? 0;
+    anim.meter = { rung: anim.rung, from: anim.rung === null ? null : anim.rung - dir, at: anim.rungAt };
+  } else if (anim.meter.rung !== anim.rung) {
+    anim.meter = { rung: anim.rung, from: anim.meter.rung, at: anim.rungAt };
+  }
+  return anim.meter;
+}
+
 function meterCells(anim: LadderAnimation, now: number, palette: LadderPalette): LadderCell[] {
   const fadeStart = anim.lastPressAt + METER_HOLD_MS;
   const fade = anim.waiting || now <= fadeStart ? 0 : (now - fadeStart) / METER_FADE_MS;
-  const unlit = mix(palette.bg, [0, 0, 0], 0.38);
-  const cue = anim.cue && now - anim.cue.startAt < CUE_MS ? anim.cue : null;
-  const cueT = cue ? (now - cue.startAt) / CUE_MS : 0;
+  const appear = easeOut((now - (anim.since ?? now)) / METER_IN_MS);
+  const unlit = mix(palette.bg, [0, 0, 0], 0.34);
+  const dimmed = mix(palette.fg, unlit, 0.5);
+  const { rung, from, at } = meterChange(anim);
+  const change = easeOut((now - at) / RUNG_FLARE_MS);
+  const cue = anim.cue?.kind === "end" && now - anim.cue.startAt < CUE_MS ? anim.cue : null;
+  const bump = cue ? Math.sin(((now - cue.startAt) / CUE_MS) * Math.PI) : 0;
   const waiting = anim.waiting;
-  return LADDER_RUNG_GLYPHS.map((ch, index) => {
-    let color: Rgb = unlit;
-    if (index === anim.rung) {
-      const flare = Math.max(0, 1 - (now - anim.rungAt) / RUNG_FLARE_MS);
-      const wash = anim.morph?.dir === -1 ? COOL_START : WARM_PEAK;
-      color = mix(palette.fg, wash, flare);
-      // Still the running rung, but on its way out.
-      if (waiting) color = mix(color, unlit, 0.55);
+  const breath = waiting ? (1 - Math.cos(((now - waiting.since) / WAIT_BREATH_MS) * Math.PI * 2)) / 2 : 0;
+  return Array.from({ length: LADDER_RUNGS }, (_, index) => {
+    const lit = rung !== null && index <= rung;
+    const wasLit = from !== null && index <= from;
+    let color: Rgb = lit ? palette.fg : unlit;
+    // The segment gained lights up and cools; the one lost fades out.
+    if (lit && !wasLit) color = mix(LIGHT, palette.fg, change);
+    if (!lit && wasLit) color = mix(palette.fg, unlit, change);
+    if (waiting) {
+      // Still the running rungs, but on their way out; the ones the switch adds or drops breathe.
+      if (lit) color = mix(color, unlit, 0.5);
+      const target = waiting.rung;
+      if (target !== null && !lit && index <= target) color = mix(unlit, LIGHT, 0.15 + 0.75 * breath);
+      if (target !== null && lit && index > target) color = mix(dimmed, unlit, breath);
+    } else if (cue && lit) {
+      // Nowhere further to go: the meter swells once at the top, sags once at the bottom.
+      color = cue.dir > 0 ? mix(palette.fg, LIGHT, bump) : mix(palette.fg, unlit, 0.7 * bump);
     }
-    if (waiting && index === waiting.rung) {
-      // The rung it switches to breathes until the turn ends.
-      const breath = (1 - Math.cos(((now - waiting.since) / WAIT_BREATH_MS) * Math.PI * 2)) / 2;
-      color = mix(mix(unlit, palette.fg, 0.35), waiting.dir > 0 ? WARM_PEAK : COOL_START, breath);
-    }
-    if (cue?.kind === "end" && index === anim.rung && !waiting) {
-      // Two quick pulses on the end rung: there is nowhere further to go.
-      const pulse = Math.abs(Math.sin(cueT * Math.PI * 2));
-      color = mix(palette.fg, cue.dir > 0 ? WARM_START : COOL_PEAK, pulse);
-    }
-    return { ch, rgb: mix(color, palette.bg, fade) };
+    return { ch: LADDER_METER_GLYPH, rgb: mix(mix(color, palette.bg, fade), palette.bg, 1 - appear) };
   });
 }
 
-/** Horizontal shake of the label when the daemon refuses a switch (cells, -1…1). */
-function refusedShake(anim: LadderAnimation, now: number): number {
+/** A switch the daemon refused: the label flushes red and cools off. */
+function refusedTint(anim: LadderAnimation, cells: LadderCell[], now: number, palette: LadderPalette): LadderCell[] {
   const cue = anim.cue;
-  if (cue?.kind !== "refused") return 0;
-  const t = now - cue.startAt;
-  if (t >= CUE_MS) return 0;
-  const steps = [1, -1, 1, -1, 1, 0];
-  return steps[Math.min(steps.length - 1, Math.floor((t / CUE_MS) * steps.length))];
-}
-
-/** Refused: the label flushes red and cools off. At the end of the ladder: a faint pulse with the rung. */
-function cueTint(anim: LadderAnimation, cells: LadderCell[], now: number, palette: LadderPalette): LadderCell[] {
-  const cue = anim.cue;
-  if (!cue) return cells;
+  if (cue?.kind !== "refused") return cells;
   const t = (now - cue.startAt) / CUE_MS;
   if (t >= 1) return cells;
-  const color = cue.kind === "refused" ? REFUSED : cue.dir > 0 ? WARM_START : COOL_PEAK;
-  const strength = cue.kind === "refused" ? (1 - t) * 0.9 : Math.abs(Math.sin(t * Math.PI * 2)) * 0.35;
-  return cells.map(cell => cell.ch === " " ? cell : { ch: cell.ch, rgb: mix(cell.rgb ?? palette.fg, color, strength) });
+  return cells.map(cell => cell.ch === " " ? cell : { ch: cell.ch, rgb: mix(cell.rgb ?? palette.fg, REFUSED, (1 - t) * 0.85) });
 }
 
 /**
@@ -298,14 +393,11 @@ export function renderLadderSegment(
   if (ladderAnimationDone(anim, now)) return null;
   anim.slot = Math.max(anim.slot, Array.from(label).length);
 
-  let cells = morphCells(anim, label, now, palette);
-  cells = cueTint(anim, cells, now, palette);
-  const shake = refusedShake(anim, now);
-  // Room for the shake: one cell either side of the slot.
+  anim.since ??= now;
+  const cells = refusedTint(anim, morphCells(anim, label, now, palette), now, palette);
+  // A blank either side keeps the label off the meter and off the bar's edge.
   const blank: LadderCell = { ch: " ", rgb: null };
   const labelRow: LadderCell[] = [blank, ...cells, blank];
-  if (shake > 0) { labelRow.pop(); labelRow.unshift(blank); }
-  if (shake < 0) { labelRow.shift(); labelRow.push(blank); }
   const meter = meterCells(anim, now, palette);
   let row: LadderCell[] = [...meter, ...labelRow];
   if (row.length > available) row = labelRow;
