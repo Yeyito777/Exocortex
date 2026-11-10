@@ -616,10 +616,10 @@ function usageBars(state: RenderState): StatusBlock | null {
   const share = fiveHourShare(usage, capacity);
   const weekly = renderWindowLine("Weekly", usage?.sevenDay ?? null, now, capacity);
   const fable = fableWindow(usage);
-  // No 5-hour limit to show: the Fable allowance takes the row, under the weekly limit it is a share of.
+  // No 5-hour limit to show: the Fable allowance takes the 5-hour row, above the weekly one (which always stays at the bottom).
   const fableOf = fableShare(usage, capacity);
   const lines = fable && !fiveHourApplies(usage, capacity)
-    ? [weekly, fableOf ? renderWindowLine("Fable", fable, now, fableOf.capacity, fableOf.crossed) : renderWindowLine("Fable", fable, now, capacity)]
+    ? [fableOf ? renderWindowLine("Fable", fable, now, fableOf.capacity, fableOf.crossed) : renderWindowLine("Fable", fable, now, capacity), weekly]
     : [
         share ? renderWindowLine("5-Hour", usage.fiveHour, now, share.capacity, share.crossed)
           : usage.fiveHour ? renderWindowLine("5-Hour", usage.fiveHour, now, capacity)

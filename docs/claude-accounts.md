@@ -456,7 +456,7 @@ Such an account always has full 5-hour headroom in routing.
 
 The Fable allowance (see "The Fable allowance") is a bar of its own, combined
 like the weekly one (`18/200%`, each account's reset). With no 5-hour limit on
-any account it takes the 5-Hour row's place, under Weekly; while that row is
+any account it takes the 5-Hour row's place, above Weekly (Weekly is always the bottom row); while that row is
 in use (some account has a 5-hour limit) it sits beside the bars as two short
 rows (`Fable 18/200%` over `resets in 4d6h · 4d11h`), which go first when the
 terminal is too narrow for both. Like the 5-hour bar it counts only the
