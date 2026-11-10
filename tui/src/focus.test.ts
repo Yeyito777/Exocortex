@@ -1076,6 +1076,7 @@ describe("conversation activity shortcuts", () => {
     expect(state.sidebar.selectedId).toBe("above");
 
     // From the last green row, t wraps to the top.
+    state.sidebar.selectedItem = { type: "conversation", id: "below" };
     state.convId = "below";
     expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({ type: "load_conversation", convId: "above" });
   });
@@ -1094,6 +1095,18 @@ describe("conversation activity shortcuts", () => {
     state.convId = "above";
     expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({ type: "load_conversation", convId: "below" });
     expect(state.panelFocus).toBe("sidebar");
+  });
+
+  test("t / Shift+T count from the sidebar cursor, not the open conversation", () => {
+    const state = activityState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.sidebar.conversations.push(conversation("last", 6, { unread: true }));
+    state.sidebar.selectedItem = { type: "conversation", id: "below" };
+
+    expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({ type: "load_conversation", convId: "last" });
+    state.sidebar.selectedItem = { type: "conversation", id: "below" };
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({ type: "load_conversation", convId: "above" });
   });
 
   test("Shift+T is T both as plain text and as a kitty key report with its text", () => {
