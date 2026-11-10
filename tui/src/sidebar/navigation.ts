@@ -3,6 +3,8 @@ import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import { focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
+import { isTreeFolderView } from "./tree";
+import { getActiveSidebarSearchQuery } from "../sidebarsearch";
 
 export function moveSelection(sidebar: SidebarState, delta: number): void {
   const displayRows = buildDisplayRows(sidebar);
@@ -35,12 +37,17 @@ export function moveSelection(sidebar: SidebarState, delta: number): void {
 }
 
 /**
- * Move to the nearest visible entry below (delta=1) or above (delta=-1) that
+ * Move to the nearest entry of `rows` below (delta=1) or above (delta=-1) that
  * matches, wrapping around and skipping the selected row. No match leaves the
- * selection where it is. Rows in collapsed folders are not listed.
+ * selection where it is. Focusing a row inside collapsed tree folders expands them.
  */
-function moveToVisibleEntry(sidebar: SidebarState, delta: 1 | -1, matches: (row: DisplayRow) => boolean): void {
-  const entries = buildDisplayRows(sidebar)
+function moveToEntry(
+  sidebar: SidebarState,
+  rows: readonly DisplayRow[],
+  delta: 1 | -1,
+  matches: (row: DisplayRow) => boolean,
+): void {
+  const entries = rows
     .map((row, rowIndex) => ({ row, rowIndex }))
     .filter(({ row }) => row.type === "entry" && row.item);
   const selectedKey = itemKey(sidebar.selectedItem);
@@ -57,16 +64,28 @@ function moveToVisibleEntry(sidebar: SidebarState, delta: 1 | -1, matches: (row:
 
 /** ] / [ in the sidebar: the next or previous visible folder row. */
 export function moveToFolder(sidebar: SidebarState, delta: 1 | -1): void {
-  moveToVisibleEntry(sidebar, delta, row => row.item?.type === "folder");
+  moveToEntry(sidebar, buildDisplayRows(sidebar), delta, row => row.item?.type === "folder");
 }
 
 /**
- * } / { in the sidebar: the next or previous visible conversation drawn as
+ * The tree as it would read with every folder expanded, so a jump can reach
+ * rows inside collapsed folders. Other views (navigate, search results) keep
+ * their visible rows.
+ */
+function fullyExpandedRows(sidebar: SidebarState): readonly DisplayRow[] {
+  if (!isTreeFolderView(sidebar) || getActiveSidebarSearchQuery(sidebar)) return buildDisplayRows(sidebar);
+  return buildDisplayRows({ ...sidebar, expandedFolderIds: new Set(sidebar.folders.map(folder => folder.id)) });
+}
+
+/**
+ * Shift+L / Shift+H in the sidebar: the next or previous conversation drawn as
  * streaming (blue) or waiting (yellow: a long Chrono sleep or wait, the global
- * idle gate, a provider wait). Folders and finished-unread rows are skipped.
+ * idle gate, a provider wait), in tree order with collapsed folders included;
+ * landing inside one expands it and its ancestors. Folders and finished-unread
+ * rows are skipped.
  */
 export function moveToActiveConversation(sidebar: SidebarState, delta: 1 | -1, inputs: SidebarActivityInputs): void {
-  moveToVisibleEntry(sidebar, delta, row => {
+  moveToEntry(sidebar, fullyExpandedRows(sidebar), delta, row => {
     const item = row.item;
     if (item?.type !== "conversation") return false;
     const listed = sidebar.conversations[row.convIdx ?? -1];

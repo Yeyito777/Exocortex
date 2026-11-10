@@ -75,7 +75,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `{` / `}` | In chat normal mode, focus history and jump among user-message starts |
 | `[` / `]` | In chat normal mode, focus history and jump among final AI-response text blocks |
 | `[` / `]` | In sidebar normal mode, move the cursor to the previous / next folder row, wrapping around (nested folders included; a collapsed folder's contents are skipped) |
-| `Shift+H` / `Shift+L` | In sidebar normal mode, move the cursor to the previous / next conversation that is streaming (blue) or waiting (yellow: a long Chrono sleep or wait, the global idle gate, a provider wait), wrapping around; folders and green finished-unread rows are skipped |
+| `Shift+H` / `Shift+L` | In sidebar normal mode, move the cursor to the previous / next conversation that is streaming (blue) or waiting (yellow: a long Chrono sleep or wait, the global idle gate, a provider wait), wrapping around; conversations in collapsed folders count too, and landing on one opens its folders; folders and green finished-unread rows are skipped |
 | `;` | In history visual mode, quote selection into the draft |
 | `;` / right click | On a sidebar conversation or folder, open its actions menu (a folder's starts on Edit instructions) |
 | `g a` | In normal mode (prompt, history or sidebar), open the Accounts screen |

@@ -218,17 +218,33 @@ describe("sidebar streaming/waiting jumps ({ and })", () => {
     expect(jump(sidebar, "nav_prev_streaming")).toEqual({ type: "conversation", id: "idle" });
   });
 
-  test("stops on conversations only: a folder showing descendant activity is skipped, its hidden rows too", () => {
+  test("reaches conversations in collapsed folders, expanding them; folders themselves are never stops", () => {
     const sidebar = createSidebarState("tree");
-    sidebar.folders = [folder("project", 1), folder("open", 2)];
+    sidebar.folders = [folder("project", 1), folder("open", 2), { ...folder("deep", 3), parentId: "project" }];
     sidebar.conversations = [
       conversation("root", 0),
       conversation("inside-closed", 1, { folderId: "project", streaming: true }),
       conversation("inside-open", 1, { folderId: "open", tasks: [longSleep] }),
+      conversation("nested", 1, { folderId: "deep", streaming: true }),
     ];
     sidebar.expandedFolderIds.add("open");
     select(sidebar, "root");
-    expect(jump(sidebar, "nav_next_streaming")).toEqual({ type: "conversation", id: "inside-open" });
-    expect(jump(sidebar, "nav_next_streaming")).toEqual({ type: "conversation", id: "inside-open" });
+    const seen = [0, 1, 2].map(() => (jump(sidebar, "nav_next_streaming") as { id: string }).id);
+    expect(new Set(seen)).toEqual(new Set(["inside-closed", "inside-open", "nested"]));
+    expect([...sidebar.expandedFolderIds].sort()).toEqual(["deep", "open", "project"]);
+    expect(buildDisplayRows(sidebar).some(row => row.item?.type === "conversation" && row.item.id === "nested")).toBe(true);
+  });
+
+  test("leaves collapsed folders closed when nothing inside them streams", () => {
+    const sidebar = createSidebarState("tree");
+    sidebar.folders = [folder("quiet", 1)];
+    sidebar.conversations = [
+      conversation("root", 0),
+      conversation("idle-inside", 1, { folderId: "quiet" }),
+      conversation("live", 2, { streaming: true }),
+    ];
+    select(sidebar, "root");
+    expect(jump(sidebar, "nav_next_streaming")).toEqual({ type: "conversation", id: "live" });
+    expect(sidebar.expandedFolderIds.size).toBe(0);
   });
 });
