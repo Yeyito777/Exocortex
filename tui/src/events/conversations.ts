@@ -205,13 +205,14 @@ function syncActiveConversationSummary(state: RenderState, summary: Conversation
   }
   const nextProvider = summary.provider ?? fallbackProvider(state);
   const nextModel = summary.model ?? state.model;
-  const providerOrModelChanged = nextProvider !== state.provider || nextModel !== state.model;
+  const providerChanged = nextProvider !== state.provider;
   syncChosenProvider(state, nextProvider);
   state.model = nextModel;
   state.effort = summary.effort ?? state.effort;
   state.fastMode = summary.fastMode ?? state.fastMode;
   state.goal = summary.goal ?? null;
-  if (providerOrModelChanged && state.contextTokens !== 0) state.contextTokens = null;
+  // The last context figure outlives a model change within one provider (commands/shared.ts).
+  if (providerChanged && state.contextTokens !== 0) state.contextTokens = null;
 }
 
 /**
