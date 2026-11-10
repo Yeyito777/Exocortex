@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { buildMessageLines } from "./conversation";
 import { handleFocusedKey } from "./focus";
 import { shiftJkRows, stripAnsi } from "./historycursor";
+import { sidebarListRows } from "./sidebar/rows";
 import { historySurfaceViewStart, activeHistorySurface } from "./historysurface";
 import { configureInlineImages, inlineImagesInternalsForTest, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
 import type { Block, ImageRef, Message } from "./messages";
@@ -341,14 +342,15 @@ describe("Shift+K / Shift+J in chat history", () => {
     expect(state.btw!.scrollOffset).toBe(10);
   });
 
-  function withConversations(state: RenderState): void {
-    state.sidebar.conversations = ["a", "b", "c"].map((id, i) => ({
+  function withConversations(state: RenderState, count = 0): void {
+    const ids = count > 0 ? Array.from({ length: count }, (_, i) => `c${i}`) : ["a", "b", "c"];
+    state.sidebar.conversations = ids.map((id, i) => ({
       id, provider: "openai", model: "gpt-5.4", effort: "high", createdAt: i, updatedAt: i, messageCount: 1,
       title: id, marked: false, pinned: false, muted: false, streaming: false, unread: false, sortOrder: i,
     })) as unknown as RenderState["sidebar"]["conversations"];
     state.sidebar.selectedIndex = 0;
-    state.sidebar.selectedId = "a";
-    state.sidebar.selectedItem = { type: "conversation", id: "a" };
+    state.sidebar.selectedId = ids[0];
+    state.sidebar.selectedItem = { type: "conversation", id: ids[0] };
   }
 
   test("from the prompt, Shift+K enters the history one Shift+K up from the bottom row; Shift+J does nothing", () => {
@@ -370,14 +372,23 @@ describe("Shift+K / Shift+J in chat history", () => {
     expect(state.scrollOffset).toBe(0);
   });
 
-  test("in the sidebar Shift+J/K still move the selection", () => {
+  test("in the sidebar Shift+J/K move the selection an eighth of the list, like the history cursor", () => {
     const state = historyState(lines(50));
-    withConversations(state);
+    withConversations(state, 40);
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
+    const step = shiftJkRows(sidebarListRows(state.rows, state.sidebar));
+    expect(step).toBeGreaterThan(1);
     handleFocusedKey(J, state);
-    expect(state.sidebar.selectedId).toBe("b");
+    expect(state.sidebar.selectedId).toBe(`c${step}`);
+    handleFocusedKey(J, state);
+    expect(state.sidebar.selectedId).toBe(`c${2 * step}`);
     handleFocusedKey(K, state);
-    expect(state.sidebar.selectedId).toBe("a");
+    expect(state.sidebar.selectedId).toBe(`c${step}`);
+    // It stops at the ends instead of wrapping.
+    for (let press = 0; press < 20; press++) handleFocusedKey(K, state);
+    expect(state.sidebar.selectedId).toBe("c0");
+    for (let press = 0; press < 20; press++) handleFocusedKey(J, state);
+    expect(state.sidebar.selectedId).toBe("c39");
   });
 });

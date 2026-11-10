@@ -43,7 +43,8 @@ import {
   openSidebarSearchBar,
 } from "./sidebarsearch";
 import { commitInsertSession, markInsertEntry, pushUndo } from "./undo";
-import { applyHistoryAction, placeAtVisibleBottom } from "./historycursor";
+import { applyHistoryAction, placeAtVisibleBottom, shiftJkRows } from "./historycursor";
+import { sidebarListRows } from "./sidebar/rows";
 import { imageAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { acceptAutocomplete, type PathCompletionProvider } from "./autocomplete";
 import { handleQueuePromptKey } from "./queue";
@@ -389,7 +390,9 @@ export function handleFocusedKey(
         return { type: "handled" };
       }
       ensureSidebarReady(state);
-      moveSelection(state.sidebar, action === "sidebar_next" ? 1 : -1);
+      // Like Shift+J/K in the history: an eighth of the visible list per press.
+      const steps = shiftJkRows(sidebarListRows(state.rows, state.sidebar));
+      for (let step = 0; step < steps; step++) moveSelection(state.sidebar, action === "sidebar_next" ? 1 : -1);
       return { type: "handled" };
     }
     case "scroll_line_up":
