@@ -30,7 +30,6 @@ import {
   handleSidebarMark,
   handleSidebarPromptKey,
   handleSidebarMenuAction,
-  handleSidebarViewportAction,
   moveSelection,
   openSelectedSidebarActionMenu,
   syncSelectedIndex,
@@ -534,7 +533,7 @@ export function handleFocusedKey(
     return { type: "handled" };
   }
 
-  // ── Sidebar jumps: [ ] between folders, { } between streaming or waiting conversations ──
+  // ── Sidebar jumps: [ ] between folders, Shift+H / Shift+L between streaming or waiting conversations ──
   if (state.panelFocus === "sidebar" && state.sidebar.open && state.vim.mode === "normal"
       && !vimHasPendingInput(state) && key.type === "char") {
     const action = resolveAction(key, "navigation");
@@ -611,11 +610,6 @@ export function handleFocusedKey(
 // ── Sidebar panel (non-vim path) ───────────────────────────────────
 
 function handleSidebarFocused(key: KeyEvent, state: RenderState): KeyResult {
-  const action = resolveAction(key, "navigation");
-  if (handleSidebarViewportAction(action, state.sidebar, state.rows)) {
-    return { type: "handled" };
-  }
-
   const result = handleSidebarKey(key, state.sidebar);
 
   if (result.type === "unhandled") {

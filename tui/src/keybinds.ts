@@ -80,9 +80,6 @@ export type Action =
   | "sidebar_focus_previous"
   | "sidebar_next_unread"
   | "sidebar_prev_unread"
-  | "sidebar_visible_top"
-  | "sidebar_visible_middle"
-  | "sidebar_visible_bottom"
   | SidebarTopShortcut
   // Sidebar jumps: streaming/waiting conversations, folders
   | "nav_prev_streaming"
@@ -211,10 +208,8 @@ const NAV_BINDS: Record<string, Action> = {
   "char:c":     "clone",
   "char:x":     "unwrap_folder",
   "char:u":     "undo_delete",
-  "char:H":     "sidebar_visible_top",
-  "char:L":     "sidebar_visible_bottom",
-  "char:{":     "nav_prev_streaming",
-  "char:}":     "nav_next_streaming",
+  "char:H":     "nav_prev_streaming",
+  "char:L":     "nav_next_streaming",
   "char:[":     "nav_prev_folder",
   "char:]":     "nav_next_folder",
 };
