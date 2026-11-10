@@ -2,7 +2,7 @@
  * The model ladder: Shift+Up / Shift+Down step the open conversation one rung
  * up or down
  *
- *   haiku/medium → sonnet/high → opus/high → fable/high → fable/xhigh
+ *   sonnet/medium → opus/high → opus/xhigh → fable/high → fable/xhigh
  *
  * setting model and effort together, as /model and /effort do (set_model with
  * its effort, or set_effort). Family names resolve to the newest model of that
@@ -43,9 +43,9 @@ export interface LadderRung {
 }
 
 export const MODEL_LADDER: readonly LadderRung[] = [
-  { family: "haiku", effort: "medium" },
-  { family: "sonnet", effort: "high" },
+  { family: "sonnet", effort: "medium" },
   { family: "opus", effort: "high" },
+  { family: "opus", effort: "xhigh" },
   { family: "fable", effort: "high" },
   { family: "fable", effort: "xhigh" },
 ];
