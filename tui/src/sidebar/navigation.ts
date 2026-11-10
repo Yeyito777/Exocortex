@@ -98,9 +98,9 @@ export function moveToActiveConversation(sidebar: SidebarState, delta: 1 | -1, i
 
 /**
  * The nearest conversation row below (delta=1) or above (delta=-1) showing the
- * green finished-and-unread indicator, wrapping around. Counts from the open
- * conversation's row, or the selection's when the open one is not listed, and
- * never returns the open conversation. Rows in collapsed folders are not listed.
+ * green finished-and-unread indicator, wrapping around. Counts from the sidebar
+ * cursor's row, or the open conversation's when the cursor is on no listed row,
+ * and never returns the open conversation. Rows in collapsed folders are not listed.
  */
 export function finishedUnreadConversationFrom(
   sidebar: SidebarState,
@@ -110,12 +110,10 @@ export function finishedUnreadConversationFrom(
 ): string | null {
   const entries = buildDisplayRows(sidebar).filter(row => row.type === "entry" && row.item);
   const count = entries.length;
-  let anchor = currentConvId
-    ? entries.findIndex(row => row.item?.type === "conversation" && row.item.id === currentConvId)
-    : -1;
-  if (anchor === -1) {
-    const selectedKey = itemKey(sidebar.selectedItem);
-    anchor = selectedKey === null ? -1 : entries.findIndex(row => itemKey(row.item ?? null) === selectedKey);
+  const selectedKey = itemKey(sidebar.selectedItem);
+  let anchor = selectedKey === null ? -1 : entries.findIndex(row => itemKey(row.item ?? null) === selectedKey);
+  if (anchor === -1 && currentConvId) {
+    anchor = entries.findIndex(row => row.item?.type === "conversation" && row.item.id === currentConvId);
   }
   for (let step = 1; step <= count; step++) {
     const index = anchor === -1

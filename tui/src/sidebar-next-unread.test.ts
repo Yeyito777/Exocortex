@@ -88,6 +88,21 @@ describe("finishedUnreadConversationFrom", () => {
     expect(finishedUnreadConversationFrom(sidebar, null, 1, { ...noActivity, optimisticStreamingConvId: "x" })).toBe("y");
   });
 
+  test("counts from the sidebar cursor, not the open conversation", () => {
+    const sidebar = treeSidebar();
+    sidebar.selectedItem = { type: "conversation", id: "c" };
+    // Open b would give c going down; the cursor on c gives p1 (wrapping) and a going up.
+    expect(finishedUnreadConversationFrom(sidebar, "b", 1, inputs)).toBe("p1");
+    expect(finishedUnreadConversationFrom(sidebar, "b", -1, inputs)).toBe("a");
+  });
+
+  test("a cursor on a folder row counts from that row", () => {
+    const sidebar = treeSidebar();
+    sidebar.selectedItem = { type: "folder", id: "shut" };
+    expect(finishedUnreadConversationFrom(sidebar, "a", 1, inputs)).toBe("p1");
+    expect(finishedUnreadConversationFrom(sidebar, "a", -1, inputs)).toBe("c");
+  });
+
   test("an unlisted open conversation counts from the selection", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [folder("elsewhere", 1)];

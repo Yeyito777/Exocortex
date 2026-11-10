@@ -170,7 +170,7 @@ function focusSidebarShortcutTarget(state: RenderState, focus: () => boolean): K
   return focus() ? loadSelectedConversation(state) : { type: "handled" };
 }
 
-/** t / Shift+T: open the next finished, unread conversation below / above the open one. */
+/** t / Shift+T: open the next finished, unread conversation below / above the sidebar cursor. */
 function loadFinishedUnreadConversation(state: RenderState, delta: 1 | -1): KeyResult {
   const convId = finishedUnreadConversationFrom(state.sidebar, state.convId, delta, sidebarActivityInputs(state));
   if (!convId) return { type: "handled" };
