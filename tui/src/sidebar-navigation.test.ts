@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { createSidebarState, handleSidebarAction } from "./sidebar";
+import { buildDisplayRows, createSidebarState, handleSidebarAction } from "./sidebar";
+import type { SidebarActivityInputs } from "./sidebar/activityindicator";
+import type { SidebarState } from "./sidebar/state";
 import type { ConversationSummary, FolderSummary } from "./messages";
 
 function conversation(id: string, sortOrder: number, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
@@ -35,115 +37,198 @@ function folder(id: string, sortOrder: number, overrides: Partial<FolderSummary>
   };
 }
 
-describe("sidebar streaming navigation", () => {
-  test("jumps to a folder with a descendant streaming conversation", () => {
-    const sidebar = createSidebarState("navigate");
-    sidebar.folders = [folder("project", 2)];
-    sidebar.conversations = [
-      conversation("root", 1),
-      conversation("inside", 1, { folderId: "project", streaming: true }),
+const NO_ACTIVITY: SidebarActivityInputs = { globalIdleConvIds: new Set(), optimisticStreamingConvId: null };
+
+function select(sidebar: SidebarState, id: string): void {
+  sidebar.selectedItem = { type: "conversation", id };
+  sidebar.selectedId = id;
+  sidebar.selectedIndex = sidebar.conversations.findIndex(conv => conv.id === id);
+}
+
+function jump(sidebar: SidebarState, action: string, activity: SidebarActivityInputs = NO_ACTIVITY): unknown {
+  expect(handleSidebarAction(action, sidebar, activity)).toEqual({ type: "handled" });
+  return sidebar.selectedItem;
+}
+
+function visibleOrder(sidebar: SidebarState): string[] {
+  return buildDisplayRows(sidebar).flatMap(row => row.type === "entry" && row.item && row.item.type !== "up"
+    ? [`${row.item.type === "folder" ? "f" : "c"}:${row.item.id}`]
+    : []);
+}
+
+const longSleep = { id: "chrono:sleep:long", kind: "chrono" as const, title: "Sleeping", startedAt: 1, chronoMode: "sleep" as const };
+
+describe("sidebar folder jumps ([ and ])", () => {
+  /** Tree view: pinned folder, then work (open) holding nested client (open) and archive (closed). */
+  function tree(): SidebarState {
+    const sidebar = createSidebarState("tree");
+    sidebar.folders = [
+      folder("pinned-folder", 1, { pinned: true }),
+      folder("work", 2),
+      folder("client", 1, { parentId: "work" }),
+      folder("archive", 2, { parentId: "work" }),
+      folder("hidden", 1, { parentId: "archive" }),
+      folder("last", 3),
     ];
-    sidebar.selectedItem = { type: "conversation", id: "root" };
-    sidebar.selectedId = "root";
-    sidebar.selectedIndex = 0;
+    sidebar.conversations = [
+      conversation("top", 0),
+      conversation("work-chat", 3, { folderId: "work" }),
+      conversation("client-chat", 1, { folderId: "client" }),
+      conversation("archived-chat", 1, { folderId: "archive" }),
+    ];
+    sidebar.expandedFolderIds.add("work");
+    sidebar.expandedFolderIds.add("client");
+    select(sidebar, "top");
+    return sidebar;
+  }
 
-    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
-
-    expect(sidebar.currentFolderId).toBeNull();
-    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "project" });
+  test("the fixture lists pinned and nested folders and hides a collapsed folder's contents", () => {
+    const order = visibleOrder(tree());
+    expect(order).toContain("f:pinned-folder");
+    expect(order).toContain("f:client");
+    expect(order).toContain("f:archive");
+    expect(order).not.toContain("f:hidden");
+    expect(order).not.toContain("c:archived-chat");
   });
 
-  test("jumps to a folder with a descendant durable Chrono sleep indicator", () => {
-    const sidebar = createSidebarState("navigate");
-    sidebar.folders = [folder("project", 2)];
-    sidebar.conversations = [
-      conversation("root", 1),
-      conversation("sleeping", 1, {
-        folderId: "project",
-        tasks: [{ id: "chrono:sleep:long", kind: "chrono", title: "Sleeping", startedAt: 1, chronoMode: "sleep" }],
-      }),
-    ];
-    sidebar.selectedItem = { type: "conversation", id: "root" };
-    sidebar.selectedId = "root";
-    sidebar.selectedIndex = 0;
-
-    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
-
-    expect(sidebar.currentFolderId).toBeNull();
-    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "project" });
+  test("] walks every visible folder downward in display order and wraps", () => {
+    const sidebar = tree();
+    const folders = visibleOrder(sidebar).filter(key => key.startsWith("f:")).map(key => key.slice(2));
+    const startRow = visibleOrder(sidebar).indexOf("c:top");
+    const after = visibleOrder(sidebar).slice(startRow + 1).filter(key => key.startsWith("f:")).map(key => key.slice(2));
+    const expected = [...after, ...folders.filter(id => !after.includes(id))];
+    const seen = expected.map(() => (jump(sidebar, "nav_next_folder") as { id: string }).id);
+    expect(seen).toEqual(expected);
+    expect(seen).not.toContain("hidden");
+    // Wrapped: the next ] starts the cycle again.
+    expect(jump(sidebar, "nav_next_folder")).toEqual({ type: "folder", id: expected[0] });
   });
 
-  test("uses visible sidebar order and wraps across folder streaming indicators", () => {
-    const sidebar = createSidebarState("navigate");
-    sidebar.folders = [folder("project", 1)];
-    sidebar.conversations = [
-      conversation("root-stream", 2, { unread: true }),
-      conversation("inside", 1, { folderId: "project", streaming: true }),
-    ];
-    sidebar.selectedItem = { type: "conversation", id: "root-stream" };
-    sidebar.selectedId = "root-stream";
-    sidebar.selectedIndex = 0;
-
-    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
-    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "project" });
-
-    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
-    expect(sidebar.selectedItem).toEqual({ type: "conversation", id: "root-stream" });
+  test("[ walks folders upward and wraps from the first to the last", () => {
+    const sidebar = tree();
+    const folders = visibleOrder(sidebar).filter(key => key.startsWith("f:")).map(key => key.slice(2));
+    sidebar.selectedItem = { type: "folder", id: folders[0] };
+    expect(jump(sidebar, "nav_prev_folder")).toEqual({ type: "folder", id: folders[folders.length - 1] });
+    expect(jump(sidebar, "nav_prev_folder")).toEqual({ type: "folder", id: folders[folders.length - 2] });
   });
 
-  test("jumps to a nested folder with descendant unread conversation", () => {
+  test("jumps into an open nested folder and skips a collapsed folder's subfolders", () => {
+    const sidebar = tree();
+    sidebar.selectedItem = { type: "folder", id: "work" };
+    expect(jump(sidebar, "nav_next_folder")).toEqual({ type: "folder", id: "client" });
+    expect(jump(sidebar, "nav_next_folder")).toEqual({ type: "folder", id: "archive" });
+    expect(jump(sidebar, "nav_next_folder")).toEqual({ type: "folder", id: "last" });
+    expect(jump(sidebar, "nav_prev_folder")).toEqual({ type: "folder", id: "archive" });
+  });
+
+  test("only moves the cursor: nothing opens, expands or collapses", () => {
+    const sidebar = tree();
+    const expanded = [...sidebar.expandedFolderIds];
+    jump(sidebar, "nav_next_folder");
+    jump(sidebar, "nav_next_folder");
+    expect([...sidebar.expandedFolderIds]).toEqual(expanded);
+  });
+
+  test("navigate view jumps among the open folder's subfolders, not the .. row", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.currentFolderId = "work";
-    sidebar.folders = [
-      folder("work", 1),
-      folder("client", 1, { parentId: "work" }),
-    ];
-    sidebar.conversations = [
-      conversation("work-chat", 1, { folderId: "work" }),
-      conversation("client-chat", 1, { folderId: "client", unread: true }),
-    ];
-    sidebar.selectedItem = { type: "conversation", id: "work-chat" };
-    sidebar.selectedId = "work-chat";
-    sidebar.selectedIndex = 0;
-
-    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
-
+    sidebar.folders = [folder("work", 1), folder("a", 1, { parentId: "work" }), folder("b", 2, { parentId: "work" })];
+    sidebar.conversations = [conversation("chat", 3, { folderId: "work" })];
+    select(sidebar, "chat");
+    const folders = visibleOrder(sidebar).filter(key => key.startsWith("f:"));
+    expect(folders).toEqual(["f:a", "f:b"]);
+    expect(jump(sidebar, "nav_next_folder")).toEqual({ type: "folder", id: "a" });
+    expect(jump(sidebar, "nav_next_folder")).toEqual({ type: "folder", id: "b" });
+    expect(jump(sidebar, "nav_next_folder")).toEqual({ type: "folder", id: "a" });
     expect(sidebar.currentFolderId).toBe("work");
-    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "client" });
   });
 
-  test("trusts canonical unread state without interpreting reserved folder names", () => {
-    const sidebar = createSidebarState("navigate");
-    sidebar.folders = [
-      folder("subagents", 1, { name: " SubAgents " }),
-      folder("batch", 1, { parentId: "subagents" }),
-    ];
-    sidebar.conversations = [
-      conversation("start", 0),
-      conversation("direct-agent", 0, { folderId: "subagents", unread: true }),
-      conversation("nested-agent", 0, { folderId: "batch", unread: true }),
-      conversation("ordinary-complete", 2, { unread: true }),
-    ];
-    sidebar.selectedItem = { type: "conversation", id: "start" };
-    sidebar.selectedId = "start";
-    sidebar.selectedIndex = 0;
+  test("no folders: the cursor stays put", () => {
+    const sidebar = createSidebarState("tree");
+    sidebar.conversations = [conversation("a", 1), conversation("b", 2)];
+    select(sidebar, "a");
+    expect(jump(sidebar, "nav_next_folder")).toEqual({ type: "conversation", id: "a" });
+    expect(jump(sidebar, "nav_prev_folder")).toEqual({ type: "conversation", id: "a" });
+  });
+});
 
-    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
-    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "subagents" });
+describe("sidebar streaming/waiting jumps ({ and })", () => {
+  function list(): SidebarState {
+    const sidebar = createSidebarState("tree");
+    sidebar.conversations = [
+      conversation("c1", 1),
+      conversation("streaming", 2, { streaming: true }),
+      conversation("idle", 3),
+      conversation("unread", 4, { unread: true }),
+      conversation("sleeping", 5, { tasks: [longSleep] }),
+      conversation("provider-wait", 6, { streaming: true, providerWaiting: true }),
+      conversation("c7", 7),
+    ];
+    select(sidebar, "c1");
+    return sidebar;
+  }
+
+  test("} visits streaming and waiting conversations downward and wraps; idle and green-unread rows are skipped", () => {
+    const sidebar = list();
+    const order = visibleOrder(sidebar).filter(key => ["c:streaming", "c:sleeping", "c:provider-wait"].includes(key));
+    const ids = order.map(key => key.slice(2));
+    const seen = [0, 1, 2, 3].map(() => (jump(sidebar, "nav_next_streaming") as { id: string }).id);
+    expect(seen).toEqual([...ids, ids[0]]);
+    expect(seen).not.toContain("unread");
+    expect(seen).not.toContain("idle");
   });
 
-  test("still jumps to subagents while they are actively streaming", () => {
-    const sidebar = createSidebarState("navigate");
-    sidebar.folders = [folder("subagents", 1, { name: "subagents" })];
-    sidebar.conversations = [
-      conversation("start", 0),
-      conversation("agent", 0, { folderId: "subagents", streaming: true, unread: true }),
-    ];
-    sidebar.selectedItem = { type: "conversation", id: "start" };
-    sidebar.selectedId = "start";
-    sidebar.selectedIndex = 0;
+  test("{ goes upward and wraps from the first match to the last", () => {
+    const sidebar = list();
+    const ids = visibleOrder(sidebar).filter(key => ["c:streaming", "c:sleeping", "c:provider-wait"].includes(key)).map(key => key.slice(2));
+    select(sidebar, ids[0]);
+    expect(jump(sidebar, "nav_prev_streaming")).toEqual({ type: "conversation", id: ids[2] });
+    expect(jump(sidebar, "nav_prev_streaming")).toEqual({ type: "conversation", id: ids[1] });
+  });
 
-    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
-    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "subagents" });
+  test("the global idle gate and a just-sent message count, from the TUI's activity inputs", () => {
+    const sidebar = createSidebarState("tree");
+    sidebar.conversations = [conversation("a", 1), conversation("gated", 2), conversation("sent", 3)];
+    select(sidebar, "a");
+    const activity: SidebarActivityInputs = { globalIdleConvIds: new Set(["gated"]), optimisticStreamingConvId: "sent" };
+    const seen = [jump(sidebar, "nav_next_streaming", activity), jump(sidebar, "nav_next_streaming", activity)]
+      .map(item => (item as { id: string }).id).sort();
+    expect(seen).toEqual(["gated", "sent"]);
+    // Without those inputs both are idle.
+    select(sidebar, "a");
+    expect(jump(sidebar, "nav_next_streaming")).toEqual({ type: "conversation", id: "a" });
+  });
+
+  test("no other streaming or waiting conversation: nothing happens", () => {
+    const sidebar = createSidebarState("tree");
+    sidebar.conversations = [
+      conversation("only", 1, { streaming: true }),
+      conversation("idle", 2),
+      conversation("unread", 3, { unread: true }),
+    ];
+    select(sidebar, "idle");
+    expect(jump(sidebar, "nav_next_streaming")).toEqual({ type: "conversation", id: "only" });
+    // The cursor's own row is not a target, so with it the only match nothing moves.
+    expect(jump(sidebar, "nav_next_streaming")).toEqual({ type: "conversation", id: "only" });
+    expect(jump(sidebar, "nav_prev_streaming")).toEqual({ type: "conversation", id: "only" });
+
+    sidebar.conversations = [conversation("idle", 2), conversation("unread", 3, { unread: true })];
+    select(sidebar, "idle");
+    expect(jump(sidebar, "nav_next_streaming")).toEqual({ type: "conversation", id: "idle" });
+    expect(jump(sidebar, "nav_prev_streaming")).toEqual({ type: "conversation", id: "idle" });
+  });
+
+  test("stops on conversations only: a folder showing descendant activity is skipped, its hidden rows too", () => {
+    const sidebar = createSidebarState("tree");
+    sidebar.folders = [folder("project", 1), folder("open", 2)];
+    sidebar.conversations = [
+      conversation("root", 0),
+      conversation("inside-closed", 1, { folderId: "project", streaming: true }),
+      conversation("inside-open", 1, { folderId: "open", tasks: [longSleep] }),
+    ];
+    sidebar.expandedFolderIds.add("open");
+    select(sidebar, "root");
+    expect(jump(sidebar, "nav_next_streaming")).toEqual({ type: "conversation", id: "inside-open" });
+    expect(jump(sidebar, "nav_next_streaming")).toEqual({ type: "conversation", id: "inside-open" });
   });
 });

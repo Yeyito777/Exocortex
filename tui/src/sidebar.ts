@@ -26,7 +26,8 @@ import {
 import { moveSelectionToDone } from "./sidebar/doneaction";
 import { sameSidebarItem as sameItem } from "./sidebar/items";
 import { areConversationNotificationsMuted, reconcileNotificationMutes } from "./sidebar/folders";
-import { moveSelection, moveToMarked, moveToStreaming } from "./sidebar/navigation";
+import { moveSelection, moveToActiveConversation, moveToFolder } from "./sidebar/navigation";
+import type { SidebarActivityInputs } from "./sidebar/activityindicator";
 import { applyPendingSidebarItemReorder } from "./sidebar/optimisticmove";
 import {
   focusConversationAt,
@@ -249,8 +250,14 @@ export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarK
   return handleSidebarAction(action, sidebar);
 }
 
+const NO_ACTIVITY_INPUTS: SidebarActivityInputs = { globalIdleConvIds: new Set(), optimisticStreamingConvId: null };
+
 /** Handle a semantic action on the sidebar — used by both key handler and vim. */
-export function handleSidebarAction(action: string, sidebar: SidebarState): SidebarKeyResult {
+export function handleSidebarAction(
+  action: string,
+  sidebar: SidebarState,
+  activity: SidebarActivityInputs = NO_ACTIVITY_INPUTS,
+): SidebarKeyResult {
   // Any action that isn't "delete" clears the pending delete.
   if (action !== "delete") {
     sidebar.pendingDeleteId = null;
@@ -388,19 +395,13 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       return moveSelectionToTop(sidebar);
 
     case "nav_next_streaming":
-      moveToStreaming(sidebar, 1);
-      return { type: "handled" };
-
     case "nav_prev_streaming":
-      moveToStreaming(sidebar, -1);
+      moveToActiveConversation(sidebar, action === "nav_next_streaming" ? 1 : -1, activity);
       return { type: "handled" };
 
-    case "nav_next_marked":
-      moveToMarked(sidebar, 1);
-      return { type: "handled" };
-
-    case "nav_prev_marked":
-      moveToMarked(sidebar, -1);
+    case "nav_next_folder":
+    case "nav_prev_folder":
+      moveToFolder(sidebar, action === "nav_next_folder" ? 1 : -1);
       return { type: "handled" };
 
     case "focus_prompt":

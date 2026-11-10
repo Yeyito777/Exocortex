@@ -1856,55 +1856,83 @@ describe("sidebar folders", () => {
   });
 });
 
-describe("sidebar marked navigation", () => {
-  test("[ and ] jump to the previous and next marked conversations in the sidebar", () => {
+describe("sidebar [ ] { } jumps", () => {
+  function sidebarFocused(): ReturnType<typeof createInitialState> {
     const state = createInitialState();
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
     state.chatFocus = "history";
     state.vim.mode = "normal";
+    return state;
+  }
+
+  function selectConversation(state: ReturnType<typeof createInitialState>, id: string): void {
+    state.sidebar.selectedItem = { type: "conversation", id };
+    state.sidebar.selectedId = id;
+    state.sidebar.selectedIndex = state.sidebar.conversations.findIndex(conv => conv.id === id);
+  }
+
+  test("] and [ move the cursor between folders, wrapping, and star marks no longer matter", () => {
+    const state = sidebarFocused();
+    state.sidebar.folders = [folder("alpha", 1), folder("beta", 2)];
     state.sidebar.conversations = [
-      { ...conversation("conv-1", 1), marked: true },
-      conversation("conv-2", 2),
-      { ...conversation("conv-3", 3), marked: true },
-      conversation("conv-4", 4),
-      { ...conversation("conv-5", 5), marked: true },
+      { ...conversation("starred", 1), marked: true },
+      conversation("plain", 2),
     ];
-    state.sidebar.selectedIndex = 2;
-    state.sidebar.selectedId = "conv-3";
+    selectConversation(state, "plain");
+    const folderOrder = buildDisplayRows(state.sidebar)
+      .flatMap(row => row.type === "entry" && row.item?.type === "folder" ? [row.item.id] : []);
+    expect(folderOrder).toEqual(["alpha", "beta"]);
 
     expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-5");
-
+    const first = state.sidebar.selectedItem;
+    expect(first?.type).toBe("folder");
     expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-1");
-
+    expect(state.sidebar.selectedItem?.type).toBe("folder");
+    expect(state.sidebar.selectedItem).not.toEqual(first);
+    expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedItem).toEqual(first);
     expect(handleFocusedKey({ type: "char", char: "[" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-5");
-
-    expect(handleFocusedKey({ type: "char", char: "[" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-3");
+    expect(state.sidebar.selectedItem?.type).toBe("folder");
+    expect(state.sidebar.selectedItem).not.toEqual(first);
+    expect(state.sidebar.expandedFolderIds.size).toBe(0);
   });
 
-  test("[ and ] do nothing when no other conversations are marked", () => {
-    const state = createInitialState();
-    state.sidebar.open = true;
-    state.panelFocus = "sidebar";
-    state.chatFocus = "history";
-    state.vim.mode = "normal";
+  test("} and { move between streaming and waiting conversations without opening them", () => {
+    const state = sidebarFocused();
+    state.convId = "open";
     state.sidebar.conversations = [
-      conversation("conv-1", 1),
-      { ...conversation("conv-2", 2), marked: true },
-      conversation("conv-3", 3),
+      conversation("open", 1),
+      conversation("streaming", 2, { streaming: true }),
+      conversation("unread", 3, { unread: true }),
+      conversation("gated", 4),
+      conversation("idle", 5),
     ];
-    state.sidebar.selectedIndex = 1;
-    state.sidebar.selectedId = "conv-2";
+    state.queuedMessages = [{ convId: "gated", text: "later", timing: "next-turn", source: "global-idle" }];
+    selectConversation(state, "open");
 
-    expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-2");
+    const visited = new Set<string>();
+    for (let i = 0; i < 3; i++) {
+      expect(handleFocusedKey({ type: "char", char: "}" }, state)).toEqual({ type: "handled" });
+      visited.add(state.sidebar.selectedId ?? "");
+    }
+    expect([...visited].sort()).toEqual(["gated", "streaming"]);
+    expect(state.convId).toBe("open");
 
-    expect(handleFocusedKey({ type: "char", char: "[" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-2");
+    const before = state.sidebar.selectedId;
+    expect(handleFocusedKey({ type: "char", char: "{" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).not.toBe(before);
+    expect(["gated", "streaming"]).toContain(state.sidebar.selectedId ?? "");
+  });
+
+  test("} does nothing when no other conversation streams or waits", () => {
+    const state = sidebarFocused();
+    state.sidebar.conversations = [conversation("a", 1), conversation("b", 2, { unread: true })];
+    selectConversation(state, "a");
+    expect(handleFocusedKey({ type: "char", char: "}" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("a");
+    expect(handleFocusedKey({ type: "char", char: "{" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("a");
   });
 });
 
