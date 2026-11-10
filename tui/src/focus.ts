@@ -154,6 +154,10 @@ function vimHasPendingInput(state: RenderState): boolean {
   );
 }
 
+const SIDEBAR_JUMP_ACTIONS: ReadonlySet<string> = new Set([
+  "nav_next_folder", "nav_prev_folder", "nav_next_streaming", "nav_prev_streaming",
+]);
+
 function loadSelectedConversation(state: RenderState): KeyResult {
   const convId = state.sidebar.selectedId;
   return convId && convId !== state.convId
@@ -525,6 +529,15 @@ export function handleFocusedKey(
       && key.type === "char" && key.char === ";") {
     openSelectedSidebarActionMenu(state.sidebar);
     return { type: "handled" };
+  }
+
+  // ── Sidebar jumps: [ ] between folders, { } between streaming or waiting conversations ──
+  if (state.panelFocus === "sidebar" && state.sidebar.open && state.vim.mode === "normal"
+      && !vimHasPendingInput(state) && key.type === "char") {
+    const action = resolveAction(key, "navigation");
+    if (action && SIDEBAR_JUMP_ACTIONS.has(action)) {
+      return mapSidebarResult(handleSidebarAction(action, state.sidebar, sidebarActivityInputs(state)));
+    }
   }
 
   // ── Sidebar shortcuts that would otherwise be eaten by Vim commands ──

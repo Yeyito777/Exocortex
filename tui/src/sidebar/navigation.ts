@@ -1,10 +1,8 @@
-import { hasInProgressModelWork } from "../taskvisibility";
 import { conversationActivityState, sidebarConversationActivityContext, type SidebarActivityInputs } from "./activityindicator";
 import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
-import { focusConversationAt, focusSidebarItem } from "./selection";
+import { focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
-import { isTreeFolderView } from "./tree";
 
 export function moveSelection(sidebar: SidebarState, delta: number): void {
   const displayRows = buildDisplayRows(sidebar);
@@ -36,92 +34,47 @@ export function moveSelection(sidebar: SidebarState, delta: number): void {
   else if (delta > 0) focusSidebarItem(sidebar, lastEntry);
 }
 
-function foldersWithStreamingIndicator(
-  sidebar: SidebarState,
-): Set<string> {
-  const ids = new Set<string>();
-  if (sidebar.folders.length === 0) return ids;
-
-  const parentById = new Map<string, string | null>();
-  for (const folder of sidebar.folders) parentById.set(folder.id, folder.parentId ?? null);
-
-  for (const conv of sidebar.conversations) {
-    const hasModelWork = hasInProgressModelWork(conv);
-    const hasVisibleUnread = conv.unread && !hasModelWork;
-    if (!hasModelWork && !hasVisibleUnread) continue;
-    let folderId = conv.folderId ?? null;
-    const seen = new Set<string>();
-    while (folderId && parentById.has(folderId) && !seen.has(folderId)) {
-      seen.add(folderId);
-      ids.add(folderId);
-      folderId = parentById.get(folderId) ?? null;
-    }
-  }
-
-  return ids;
-}
-
-function hasStreamingIndicator(
-  sidebar: SidebarState,
-  row: DisplayRow,
-  streamingFolderIds: Set<string>,
-): boolean {
-  const item = row.item ?? null;
-  if (item?.type === "conversation") {
-    const conv = row.convIdx === undefined ? sidebar.conversations.find(c => c.id === item.id) : sidebar.conversations[row.convIdx];
-    if (!conv) return false;
-    const hasModelWork = hasInProgressModelWork(conv);
-    return hasModelWork || (conv.unread && !hasModelWork);
-  }
-  if (item?.type === "folder") {
-    return streamingFolderIds.has(item.id);
-  }
-  return false;
-}
-
-/** Jump to the next (delta=1) or previous (delta=-1) visible entry with a streaming/unread indicator, wrapping around. */
-export function moveToStreaming(sidebar: SidebarState, delta: 1 | -1): void {
+/**
+ * Move to the nearest visible entry below (delta=1) or above (delta=-1) that
+ * matches, wrapping around and skipping the selected row. No match leaves the
+ * selection where it is. Rows in collapsed folders are not listed.
+ */
+function moveToVisibleEntry(sidebar: SidebarState, delta: 1 | -1, matches: (row: DisplayRow) => boolean): void {
   const entries = buildDisplayRows(sidebar)
     .map((row, rowIndex) => ({ row, rowIndex }))
     .filter(({ row }) => row.type === "entry" && row.item);
-  const streamingFolderIds = foldersWithStreamingIndicator(sidebar);
-  const targets = entries.filter(({ row }) => hasStreamingIndicator(sidebar, row, streamingFolderIds));
-  if (targets.length === 0) return;
-
   const selectedKey = itemKey(sidebar.selectedItem);
   const selectedRowIndex = entries.find(({ row }) => itemKey(row.item ?? null) === selectedKey)?.rowIndex;
+  const targets = entries.filter(({ row, rowIndex }) => rowIndex !== selectedRowIndex && matches(row));
+  if (targets.length === 0) return;
   const target = selectedRowIndex === undefined
     ? (delta > 0 ? targets[0] : targets[targets.length - 1])
     : delta > 0
       ? targets.find(({ rowIndex }) => rowIndex > selectedRowIndex) ?? targets[0]
       : targets.findLast(({ rowIndex }) => rowIndex < selectedRowIndex) ?? targets[targets.length - 1];
-
   focusSidebarItem(sidebar, target.row.item ?? null);
 }
 
-/** Jump to the next (delta=1) or previous (delta=-1) boolean-marked conversation, wrapping around. */
-export function moveToMarked(sidebar: SidebarState, delta: 1 | -1): void {
-  const indices: number[] = [];
-  if (isTreeFolderView(sidebar)) {
-    // Every expanded level is on screen, in display order.
-    for (const row of buildDisplayRows(sidebar)) {
-      if (row.type === "entry" && row.convIdx !== undefined) indices.push(row.convIdx);
-    }
-  } else {
-    for (let index = 0; index < sidebar.conversations.length; index++) {
-      if ((sidebar.conversations[index].folderId ?? null) === sidebar.currentFolderId) indices.push(index);
-    }
-  }
-  const len = indices.length;
-  if (len === 0) return;
-  const current = Math.max(0, indices.indexOf(sidebar.selectedIndex));
-  for (let step = 1; step < len; step++) {
-    const idx = indices[((current + delta * step) % len + len) % len];
-    if (sidebar.conversations[idx]?.marked) {
-      focusConversationAt(sidebar, idx);
-      return;
-    }
-  }
+/** ] / [ in the sidebar: the next or previous visible folder row. */
+export function moveToFolder(sidebar: SidebarState, delta: 1 | -1): void {
+  moveToVisibleEntry(sidebar, delta, row => row.item?.type === "folder");
+}
+
+/**
+ * } / { in the sidebar: the next or previous visible conversation drawn as
+ * streaming (blue) or waiting (yellow: a long Chrono sleep or wait, the global
+ * idle gate, a provider wait). Folders and finished-unread rows are skipped.
+ */
+export function moveToActiveConversation(sidebar: SidebarState, delta: 1 | -1, inputs: SidebarActivityInputs): void {
+  moveToVisibleEntry(sidebar, delta, row => {
+    const item = row.item;
+    if (item?.type !== "conversation") return false;
+    const listed = sidebar.conversations[row.convIdx ?? -1];
+    const conv = listed?.id === item.id ? listed : sidebar.conversations.find(c => c.id === item.id);
+    if (!conv) return false;
+    const state = conversationActivityState(conv, sidebarConversationActivityContext(sidebar, conv, inputs));
+    return state === "streaming" || state === "warning";
+  });
 }
 
 /**

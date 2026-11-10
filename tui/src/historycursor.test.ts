@@ -467,6 +467,30 @@ describe("history bracket navigation", () => {
     expect(state.cursorPos).toBe(2);
   });
 
+  test("with the sidebar open but the chat focused, [ ] { } keep their history meanings", () => {
+    const state = setupHistoryState();
+    const aiBounds = boundsByRole(state, "assistant");
+    const userBounds = boundsByRole(state, "user");
+    state.layout.messageAreaHeight = 3;
+    state.historyCursor = { row: 0, col: 0 };
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.sidebar.open = true;
+    state.panelFocus = "chat";
+    state.sidebar.folders = [{ id: "f", name: "f", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 }];
+    state.sidebar.selectedItem = null;
+
+    expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
+    expect(state.historyCursor.row).toBe(aiBounds[0].contentStart);
+    expect(handleFocusedKey({ type: "char", char: "}" }, state)).toEqual({ type: "handled" });
+    expect(state.historyCursor.row).toBe(userBounds[1].contentStart);
+    expect(handleFocusedKey({ type: "char", char: "{" }, state)).toEqual({ type: "handled" });
+    expect(state.historyCursor.row).toBe(userBounds[0].contentStart);
+    expect(handleFocusedKey({ type: "char", char: "[" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedItem).toBeNull();
+    expect(state.panelFocus).toBe("chat");
+  });
+
   test("] from prompt normal mode focuses history at the conversation end", () => {
     const state = setupHistoryState();
     state.layout.messageAreaHeight = 3;

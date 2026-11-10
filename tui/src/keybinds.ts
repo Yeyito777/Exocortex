@@ -84,11 +84,11 @@ export type Action =
   | "sidebar_visible_middle"
   | "sidebar_visible_bottom"
   | SidebarTopShortcut
-  // Streaming navigation
+  // Sidebar jumps: streaming/waiting conversations, folders
   | "nav_prev_streaming"
   | "nav_next_streaming"
-  | "nav_prev_marked"
-  | "nav_next_marked"
+  | "nav_prev_folder"
+  | "nav_next_folder"
   // History cursor motions
   | "history_left"
   | "history_right"
@@ -214,8 +214,8 @@ const NAV_BINDS: Record<string, Action> = {
   "char:L":     "sidebar_visible_bottom",
   "char:{":     "nav_prev_streaming",
   "char:}":     "nav_next_streaming",
-  "char:[":     "nav_prev_marked",
-  "char:]":     "nav_next_marked",
+  "char:[":     "nav_prev_folder",
+  "char:]":     "nav_next_folder",
 };
 
 // ── Context ─────────────────────────────────────────────────────────
