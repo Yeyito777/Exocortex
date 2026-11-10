@@ -70,9 +70,6 @@ export { renderSidebar } from "./sidebar/render";
 export { buildDisplayRows } from "./sidebar/rows";
 export {
   handleSidebarScrollAction,
-  handleSidebarViewportAction,
-  jumpSidebarSelectionToVisibleEdge,
-  jumpSidebarSelectionToVisibleMiddle,
   scrollSidebar,
 } from "./sidebar/scroll";
 export {

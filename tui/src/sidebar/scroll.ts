@@ -1,5 +1,4 @@
 import type { Action } from "../keybinds";
-import type { SidebarSelectableItem } from "./items";
 import {
   clampViewStart,
   ensureCursorRowVisibleInViewport,
@@ -7,35 +6,14 @@ import {
   scrollPageWithCursorInViewport,
   scrollWithCursorInViewport,
 } from "../viewportscroll";
-import { sameSidebarItem as sameItem } from "./items";
 import {
   buildDisplayRows,
-  findDisplayEntry,
   nearestDisplayEntry,
   sidebarListRows,
   snapSidebarViewStartToEntry,
 } from "./rows";
 import { focusSidebarItem, selectedDisplayRow } from "./selection";
 import type { SidebarState } from "./state";
-
-/** Handle sidebar actions that depend on the current viewport height. */
-export function handleSidebarViewportAction(action: Action | null, sidebar: SidebarState, totalRows: number): boolean {
-  if (!action) return false;
-
-  switch (action) {
-    case "sidebar_visible_top":
-      jumpSidebarSelectionToVisibleEdge(sidebar, totalRows, "top");
-      return true;
-    case "sidebar_visible_middle":
-      jumpSidebarSelectionToVisibleMiddle(sidebar, totalRows);
-      return true;
-    case "sidebar_visible_bottom":
-      jumpSidebarSelectionToVisibleEdge(sidebar, totalRows, "bottom");
-      return true;
-    default:
-      return false;
-  }
-}
 
 function sidebarScrollDirection(action: Action): -1 | 0 | 1 {
   switch (action) {
@@ -193,76 +171,6 @@ export function handleSidebarScrollAction(action: Action, sidebar: SidebarState,
     action === "scroll_page_down" ? "top" : action === "scroll_page_up" ? "bottom" : null,
   );
   return true;
-}
-
-/** Vim-like H/L for the sidebar — jump to the top/bottom visible conversation. */
-export function jumpSidebarSelectionToVisibleEdge(
-  sidebar: SidebarState,
-  totalRows: number,
-  edge: "top" | "bottom",
-): void {
-  const displayRows = buildDisplayRows(sidebar);
-  const listRows = sidebarListRows(totalRows, sidebar);
-  if (displayRows.length === 0 || listRows <= 0) return;
-
-  const maxScroll = Math.max(0, displayRows.length - listRows);
-  if (sidebar.scrollOffset > maxScroll) sidebar.scrollOffset = maxScroll;
-
-  const viewStart = sidebar.scrollOffset;
-  const viewEnd = Math.min(viewStart + listRows - 1, displayRows.length - 1);
-
-  if (edge === "top") {
-    let target: SidebarSelectableItem | null = findDisplayEntry(displayRows, viewStart, viewEnd, 1);
-    if (target == null) return;
-
-    if (sameItem(sidebar.selectedItem, target)) {
-      const halfPage = Math.floor(listRows / 2);
-      sidebar.scrollOffset = Math.max(0, sidebar.scrollOffset - halfPage);
-      const nextEnd = Math.min(sidebar.scrollOffset + listRows - 1, displayRows.length - 1);
-      target = findDisplayEntry(displayRows, sidebar.scrollOffset, nextEnd, 1);
-      if (target == null) return;
-    }
-
-    focusSidebarItem(sidebar, target);
-  } else {
-    let target: SidebarSelectableItem | null = findDisplayEntry(displayRows, viewEnd, viewStart, -1);
-    if (target == null) return;
-
-    if (sameItem(sidebar.selectedItem, target)) {
-      const halfPage = Math.floor(listRows / 2);
-      sidebar.scrollOffset = Math.min(maxScroll, sidebar.scrollOffset + halfPage);
-      const nextEnd = Math.min(sidebar.scrollOffset + listRows - 1, displayRows.length - 1);
-      target = findDisplayEntry(displayRows, nextEnd, sidebar.scrollOffset, -1);
-      if (target == null) return;
-    }
-
-    focusSidebarItem(sidebar, target);
-  }
-
-  sidebar.pendingDeleteId = null;
-}
-
-/** Vim-like M for the sidebar — jump to the middle visible conversation. */
-export function jumpSidebarSelectionToVisibleMiddle(sidebar: SidebarState, totalRows: number): void {
-  const displayRows = buildDisplayRows(sidebar);
-  const listRows = sidebarListRows(totalRows, sidebar);
-  if (displayRows.length === 0 || listRows <= 0) return;
-
-  const maxScroll = Math.max(0, displayRows.length - listRows);
-  if (sidebar.scrollOffset > maxScroll) sidebar.scrollOffset = maxScroll;
-
-  const viewStart = sidebar.scrollOffset;
-  const viewEnd = Math.min(viewStart + listRows - 1, displayRows.length - 1);
-  const midRow = Math.floor((viewStart + viewEnd) / 2);
-
-  let target = findDisplayEntry(displayRows, midRow, viewEnd, 1);
-  if (target == null) {
-    target = findDisplayEntry(displayRows, midRow - 1, viewStart, -1);
-  }
-  if (target == null) return;
-
-  focusSidebarItem(sidebar, target);
-  sidebar.pendingDeleteId = null;
 }
 
 /** Scroll the sidebar list by a number of entries (positive = down, negative = up). */

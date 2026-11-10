@@ -1898,7 +1898,7 @@ describe("sidebar [ ] { } jumps", () => {
     expect(state.sidebar.expandedFolderIds.size).toBe(0);
   });
 
-  test("} and { move between streaming and waiting conversations without opening them", () => {
+  test("Shift+L and Shift+H move between streaming and waiting conversations without opening them", () => {
     const state = sidebarFocused();
     state.convId = "open";
     state.sidebar.conversations = [
@@ -1913,25 +1913,35 @@ describe("sidebar [ ] { } jumps", () => {
 
     const visited = new Set<string>();
     for (let i = 0; i < 3; i++) {
-      expect(handleFocusedKey({ type: "char", char: "}" }, state)).toEqual({ type: "handled" });
+      expect(handleFocusedKey({ type: "char", char: "L" }, state)).toEqual({ type: "handled" });
       visited.add(state.sidebar.selectedId ?? "");
     }
     expect([...visited].sort()).toEqual(["gated", "streaming"]);
     expect(state.convId).toBe("open");
 
     const before = state.sidebar.selectedId;
-    expect(handleFocusedKey({ type: "char", char: "{" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "H" }, state)).toEqual({ type: "handled" });
     expect(state.sidebar.selectedId).not.toBe(before);
     expect(["gated", "streaming"]).toContain(state.sidebar.selectedId ?? "");
   });
 
-  test("} does nothing when no other conversation streams or waits", () => {
+  test("{ and } leave the sidebar cursor alone", () => {
+    const state = sidebarFocused();
+    state.sidebar.conversations = [conversation("a", 1), conversation("b", 2, { streaming: true })];
+    selectConversation(state, "a");
+    handleFocusedKey({ type: "char", char: "}" }, state);
+    handleFocusedKey({ type: "char", char: "{" }, state);
+    expect(state.sidebar.selectedId).toBe("a");
+    expect(state.panelFocus).toBe("sidebar");
+  });
+
+  test("Shift+L does nothing when no other conversation streams or waits", () => {
     const state = sidebarFocused();
     state.sidebar.conversations = [conversation("a", 1), conversation("b", 2, { unread: true })];
     selectConversation(state, "a");
-    expect(handleFocusedKey({ type: "char", char: "}" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "L" }, state)).toEqual({ type: "handled" });
     expect(state.sidebar.selectedId).toBe("a");
-    expect(handleFocusedKey({ type: "char", char: "{" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "H" }, state)).toEqual({ type: "handled" });
     expect(state.sidebar.selectedId).toBe("a");
   });
 });
@@ -2208,35 +2218,6 @@ describe("sidebar visible jumps", () => {
     return state;
   }
 
-  test("Shift+H jumps to the top visible conversation and repeats by scrolling half a page", () => {
-    const state = setupSidebarJumpState();
-    state.sidebar.scrollOffset = 2;
-    state.sidebar.selectedIndex = 4;
-    state.sidebar.selectedId = "conv-5";
-
-    expect(handleFocusedKey({ type: "char", char: "H" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-3");
-    expect(state.sidebar.scrollOffset).toBe(2);
-
-    expect(handleFocusedKey({ type: "char", char: "H" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-1");
-    expect(state.sidebar.scrollOffset).toBe(0);
-  });
-
-  test("Shift+L jumps to the bottom visible conversation and repeats by scrolling half a page", () => {
-    const state = setupSidebarJumpState();
-    state.sidebar.selectedIndex = 1;
-    state.sidebar.selectedId = "conv-2";
-
-    expect(handleFocusedKey({ type: "char", char: "L" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-6");
-    expect(state.sidebar.scrollOffset).toBe(0);
-
-    expect(handleFocusedKey({ type: "char", char: "L" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-8");
-    expect(state.sidebar.scrollOffset).toBe(2);
-  });
-
   test("Shift+M toggles mute on the selected conversation", () => {
     const state = setupSidebarJumpState();
     state.sidebar.scrollOffset = 1;
@@ -2252,28 +2233,5 @@ describe("sidebar visible jumps", () => {
     expect(state.sidebar.selectedId).toBe("conv-1");
     expect(state.sidebar.conversations[0]?.notificationsMuted).toBe(true);
     expect(state.sidebar.scrollOffset).toBe(1);
-  });
-
-  test("visible jumps skip section chrome and land on actual conversations", () => {
-    const state = createInitialState();
-    state.rows = 6;
-    state.sidebar.open = true;
-    state.panelFocus = "sidebar";
-    state.chatFocus = "history";
-    state.vim.mode = "normal";
-    state.sidebar.conversations = [
-      { ...conversation("conv-1", 1), pinned: true },
-      { ...conversation("conv-2", 2), pinned: true },
-      conversation("conv-3", 3),
-      conversation("conv-4", 4),
-    ];
-    state.sidebar.selectedIndex = 2;
-    state.sidebar.selectedId = "conv-3";
-
-    expect(handleFocusedKey({ type: "char", char: "H" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-1");
-
-    expect(handleFocusedKey({ type: "char", char: "L" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-2");
   });
 });
