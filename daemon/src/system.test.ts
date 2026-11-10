@@ -60,7 +60,7 @@ describe("system prompt", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
     expect(prompt).toContain("## exo\nDo the user's task yourself by default");
-    expect(prompt).toContain("fable for ambiguous root-cause investigations");
+    expect(prompt).toContain("Use fable only when the user asks for it.");
     expect(prompt).toContain("Otherwise sol fast");
     expect(prompt).toContain("same tools");
     expect(prompt).toContain("docs/daemon-ipc.md");
