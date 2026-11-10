@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# claude-web-session — store a Claude account's claude.ai session for the limit
+# resets on the Accounts screen (daemon/src/providers/anthropic/web-session-cli.ts).
+#
+# Usage:
+#   scripts/claude-web-session <account> [--context NAME] [--check]
+set -euo pipefail
+PROJECT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+exec bun "$PROJECT_DIR/daemon/src/providers/anthropic/web-session-cli.ts" "$@"

@@ -1414,7 +1414,11 @@ export interface ClaudeAccountInfo {
   loginCommand: string | null;
   /** Its plan's Claude API credits, when the API-credit fallback has a key for it with grants configured. */
   credits?: AccountCredits | null;
+  /** Its claude.ai session for limit resets (providers.anthropic.webResets) needs the owner: none stored, expired, or another account's. */
+  webSession?: ClaudeWebSessionProblem | null;
 }
+
+export type ClaudeWebSessionProblem = "missing" | "expired" | "other_account";
 
 /** Prepaid API credits: what is left of the grants that have not expired. */
 export interface AccountCredits {

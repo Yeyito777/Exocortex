@@ -31,7 +31,7 @@
  * says so, or that the link is down.
  */
 
-import type { AccountCredits, AccountsEvent, AccountsSnapshot, Event, ClaudeAccountInfo, ClaudeAccountsInfo } from "./protocol";
+import type { AccountCredits, AccountsEvent, AccountsSnapshot, Event, ClaudeAccountInfo, ClaudeAccountsInfo, ClaudeWebSessionProblem } from "./protocol";
 import type { ApiKeyCredit, UsageData, UsageResetCredits, UsageWindow } from "./messages";
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
@@ -273,6 +273,8 @@ export function openAICredits(credit: ApiKeyCredit | null | undefined): AccountC
 export interface ResetCell {
   count: string;
   expiry: string;
+  /** In place of a count: why the resets cannot be read ("web session expired"). */
+  note?: string;
 }
 
 /** The Resets cell for these reset grants; null when none is left. */
@@ -280,6 +282,17 @@ export function resetCell(credits: UsageResetCredits | null | undefined, now: nu
   if (!credits || credits.availableCount <= 0) return null;
   if (credits.nextExpiresAt !== null && credits.nextExpiresAt <= now) return null;
   return { count: String(credits.availableCount), expiry: credits.nextExpiresAt === null ? "" : formatCreditCountdown(credits.nextExpiresAt - now) };
+}
+
+const WEB_SESSION_NOTES: Record<ClaudeWebSessionProblem, string> = {
+  missing: "no web session",
+  expired: "web session expired",
+  other_account: "web session is another account's",
+};
+
+/** The Resets cell of an account whose claude.ai session needs the owner (providers.anthropic.webResets). */
+export function webSessionCell(problem: ClaudeWebSessionProblem | null | undefined): ResetCell | null {
+  return problem ? { count: "", expiry: "", note: WEB_SESSION_NOTES[problem] } : null;
 }
 
 interface TableRow {
@@ -359,7 +372,7 @@ function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: 
     tag: tags.length > 0 ? [tagColor, tags.join(" · ")] : undefined,
     windows: note ? undefined : windows,
     note,
-    resets: note ? null : resetCell(account.usage?.resetCredits, now),
+    resets: note ? null : resetCell(account.usage?.resetCredits, now) ?? webSessionCell(account.webSession),
     credits: note ? null : creditCell(account.credits, now),
   };
 }
@@ -478,10 +491,12 @@ const RESETS_LABEL = "Resets";
 const CREDITS_LABEL = "Credits";
 
 function resetWidth(cell: ResetCell): number {
+  if (cell.note) return termWidth(cell.note);
   return termWidth(cell.count) + (cell.expiry ? 1 + termWidth(cell.expiry) : 0);
 }
 
 function resetSegments(cell: ResetCell): Segment[] {
+  if (cell.note) return [[theme.muted, cell.note]];
   return [[theme.accent, cell.count], ...(cell.expiry ? [[theme.muted, ` ${cell.expiry}`]] as Segment[] : [])];
 }
 const ACTIVE_MARK = " ◀";
