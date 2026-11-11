@@ -32,12 +32,15 @@ const MAX2_ORG = "00000000-0000-4000-8000-0000000000b2";
 const NOW = Date.parse("2026-11-09T22:00:00Z");
 const ENDS = Date.parse("2027-03-09T07:59:00Z");
 
-// claude.ai's `usage?cedar_ember=1` answer on Nov 9 2026 (main), trimmed to what matters.
-function grant(id: string, left: number, endsAt = "2027-03-09T07:59:00+00:00") {
+// claude.ai's `usage?cedar_ember=1` answer (main), trimmed to what matters. Weekly
+// ("full") resets clear seven_day; the Nov 9 launch grants cleared only the Fable allowance.
+const WEEKLY = ["seven_day", "seven_day_overage_included"];
+const FABLE_ONLY = ["seven_day_overage_included"];
+function grant(id: string, left: number, endsAt = "2027-03-09T07:59:00+00:00", clears = WEEKLY) {
   return {
-    id, label: "New model launch", resets_total: 1, resets_left: left,
+    id, label: "Limit reset", resets_total: 1, resets_left: left,
     starts_at: "2026-11-09T18:00:00+00:00", ends_at: endsAt,
-    clears: ["seven_day_overage_included"], paused: false, usable_now: true, use_requires_limit: false,
+    clears, paused: false, usable_now: true, use_requires_limit: false,
     percent_used: { seven_day_overage_included: 21, seven_day: 49 }, blocking: [], arm: null, type: "full",
     unavailable_reason: null, gives_back_weekly: true,
   };
@@ -87,6 +90,10 @@ describe("claude.ai's usage answer", () => {
     const mixed = { cedar_ember: { grants: [grant("a", 0), grant("b", 2, "2027-05-01T00:00:00Z"), grant("c", 1, "2026-11-01T00:00:00Z"), grant("d", 1, "2027-01-01T00:00:00Z")] } };
     // Used up and ended grants count for nothing.
     expect(webResetCreditsFromUsage(mixed, NOW)).toEqual({ availableCount: 3, nextExpiresAt: Date.parse("2027-01-01T00:00:00Z") });
+    // Nov 11 2026 shape: one full reset beside the two Fable-only launch grants. Only the full one counts.
+    const nov11 = { cedar_ember: { grants: [grant("full-reset-2611", 1, "2026-12-10T22:00:00+00:00"), grant("launch-2610-fable", 1, undefined, FABLE_ONLY), grant("launch-2610-fable-6mo", 1, undefined, FABLE_ONLY)] } };
+    expect(webResetCreditsFromUsage(nov11, NOW)).toEqual({ availableCount: 1, nextExpiresAt: Date.parse("2026-12-10T22:00:00Z") });
+    expect(webResetCreditsFromUsage({ cedar_ember: { grants: [grant("f", 2, undefined, FABLE_ONLY)] } }, NOW)).toBeNull();
     expect(webResetCreditsFromUsage({ cedar_ember: null }, NOW)).toBeNull();
     expect(webResetCreditsFromUsage({ cedar_ember: { grants: [] } }, NOW)).toBeNull();
     expect(webResetCreditsFromUsage("<html>", NOW)).toBeNull();

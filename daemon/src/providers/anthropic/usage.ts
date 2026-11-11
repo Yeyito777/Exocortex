@@ -297,6 +297,8 @@ export function resetCreditsFromPlanRateLimits(rateLimits: Record<string, unknow
   let count = 0;
   let next: number | null = null;
   for (const grant of grants as Array<Record<string, unknown> | null>) {
+    // Only resets of the weekly limit count; Fable-only grants (clears: seven_day_overage_included alone) are left out.
+    if (Array.isArray(grant?.clears) && !grant.clears.includes("seven_day")) continue;
     const left = typeof grant?.resets_left === "number" && Number.isFinite(grant.resets_left) ? Math.floor(grant.resets_left) : 0;
     const ends = typeof grant?.ends_at === "string" ? Date.parse(grant.ends_at) : Number.NaN;
     if (left <= 0 || (Number.isFinite(ends) && ends <= now)) continue;
