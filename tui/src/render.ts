@@ -538,12 +538,48 @@ interface FloatingHistoryViewportCacheEntry {
  */
 const floatingHistoryViewportCache = new WeakMap<string[], FloatingHistoryViewportCacheEntry>();
 
-function wrapRenderedHistoryLine(line: string, width: number): { lines: string[]; joins: string[] } {
+function wrapRenderedLine(line: string, width: number): { lines: string[]; joins: string[] } {
   if (line.includes("\x1b[")) {
     return wrapAnsiLine(line, width);
   }
   const wrapped = wordWrap(line, width);
   return { lines: wrapped.lines, joins: wrapped.join };
+}
+
+/** A rendered row's leading spaces, with any SGR sequences among them. */
+const LEADING_INDENT_RE = /^(?:\x1b\[[0-9;]*m| )*/;
+
+/**
+ * Wrap a rendered history row to the rows beside the side cards.
+ *
+ * A row that opens with a run wider than `width` (a table border, a rule, a
+ * long URL) has its only break point inside its leading indentation. Breaking
+ * there leaves an empty first row and consumes nothing: composing one row at
+ * a time then repeated that empty row until the row cleared the cards, a gap
+ * in the history with the table kept below it. The indentation stays with the
+ * run, and the run breaks like any other overlong word.
+ */
+function wrapRenderedHistoryLine(line: string, width: number): { lines: string[]; joins: string[] } {
+  const wrapped = wrapRenderedLine(line, width);
+  if (wrapped.lines.length <= 1 || stripAnsi(wrapped.lines[0]).trim() !== "") return wrapped;
+
+  const lead = LEADING_INDENT_RE.exec(line)![0];
+  const sgr = lead.replaceAll(" ", "");
+  const indentWidth = lead.length - sgr.length;
+  if (indentWidth === 0 || indentWidth >= width) return wrapped;
+
+  const body = wrapRenderedLine(sgr + line.slice(lead.length), width - indentWidth);
+  if (body.lines.length <= 1 || !body.lines[0].startsWith(sgr)) return wrapped;
+  const rest = wrapRenderedHistoryLine(
+    body.lines.slice(1)
+      .map((chunk, index) => `${index === 0 ? "" : (body.joins[index + 1] ?? "")}${chunk}`)
+      .join(""),
+    width,
+  );
+  return {
+    lines: [lead + body.lines[0].slice(sgr.length), ...rest.lines],
+    joins: ["", body.joins[1] ?? "", ...rest.joins.slice(1)],
+  };
 }
 
 function isRightAlignedHistorySegment(segment: RenderLineSegment | undefined): boolean {
