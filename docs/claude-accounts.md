@@ -471,7 +471,10 @@ Free limit resets (Claude Code's report carries them as `cedar_ember.grants`,
 null on Nov 9 2026) show like OpenAI's reset credits once it does: the status
 bar's `Usage Resets` / `Next Expiry` block with every account's together, and a
 Resets column on the Accounts screen (`2 4d`: how many, and the time until the
-nearest expires). Exocortex only shows them; spending one is done on claude.ai.
+nearest expires). Only resets of the weekly limit count (grants whose `clears`
+lists `seven_day`, e.g. Nov 2026's "One full limit reset"); grants that clear
+only the Fable allowance (`seven_day_overage_included`) are left out. Exocortex
+only shows them; spending one is done on claude.ai.
 
 ### Limit resets from claude.ai
 

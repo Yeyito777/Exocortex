@@ -537,8 +537,9 @@ describe("Claude's free limit resets (cedar_ember) and the combined Fable allowa
   const NOW = Date.parse("2026-11-09T20:00:00Z");
   /** The grants as claude.ai's usage page gets them; Claude Code's report had the key null on Nov 9 2026. */
   const GRANTS = { grants: [
-    { label: "Limit reset", resets_left: 1, ends_at: "2027-03-09T00:00:00Z", usable_now: true, clears: ["seven_day_overage_included"], gives_back_weekly: false },
-    { label: "Limit reset", resets_left: 2, ends_at: "2026-12-01T00:00:00Z", usable_now: false, clears: ["seven_day_overage_included"], gives_back_weekly: true },
+    { label: "Limit reset", resets_left: 1, ends_at: "2027-03-09T00:00:00Z", usable_now: true, clears: ["seven_day", "seven_day_overage_included"], gives_back_weekly: false },
+    { label: "Limit reset", resets_left: 2, ends_at: "2026-12-01T00:00:00Z", usable_now: false, clears: ["seven_day", "seven_day_overage_included"], gives_back_weekly: true },
+    { label: "Fable only", resets_left: 4, ends_at: "2026-11-25T00:00:00Z", usable_now: true, clears: ["seven_day_overage_included"] },
     { label: "Used up", resets_left: 0, ends_at: "2026-11-20T00:00:00Z" },
     { label: "Expired", resets_left: 3, ends_at: "2026-11-01T00:00:00Z" },
   ] };
