@@ -18,6 +18,7 @@ import { providerProxyRoute, providerProxySupports, proxiedConversationName } fr
 import { PROVIDER_PROXY_CONVERSATION_HEADER, PROVIDER_PROXY_NO_API_CREDITS_HEADER } from "@exocortex/shared/provider-proxy";
 import { conversationAllowsApiCredits } from "../../app-registry";
 import { claudeAccountEnv } from "./accounts";
+import { claudeTokenEnv } from "./account-token";
 import { apiCreditClaudeSettings, type ApiCreditKey } from "./api-credits";
 import { claudeEntrypointEnv, claudeEntrypointSettings } from "./entrypoint";
 
@@ -106,11 +107,16 @@ function claudeProxyEnv(base: Record<string, string | undefined>, convId?: strin
  * account still picks the configuration directory, so sessions resume as usual. It keeps
  * the SDK's own entrypoint and user agent, the only ones the credits pay for
  * (entrypoint.ts).
+ *
+ * An account with a long-lived token (account-token.ts) runs on it rather
+ * than on the login in its directory, unless `token: false` (the plan's usage
+ * report, which only the login can read).
  */
-export function claudeProcessOptions(cwd: string, account?: string, convId?: string, apiCredit?: ApiCreditKey | null): ClaudeQueryOptions {
+export function claudeProcessOptions(cwd: string, account?: string, convId?: string, apiCredit?: ApiCreditKey | null, options: { token?: boolean } = {}): ClaudeQueryOptions {
   const base = apiCredit ? claudeCleanEnv(process.env) : claudeSubscriptionEnv();
   const proxy = apiCredit ? {} : claudeProxyEnv(base, convId);
-  const accountEnv = Object.keys(proxy).length > 0 ? {} : claudeAccountEnv(account);
+  const proxied = Object.keys(proxy).length > 0;
+  const accountEnv = proxied ? {} : { ...claudeAccountEnv(account), ...(apiCredit || options.token === false ? {} : claudeTokenEnv(account)) };
   const creditSettings = apiCredit ? apiCreditClaudeSettings(apiCredit) : null;
   if (apiCredit && !creditSettings) throw new Error("No `secrets` CLI to read the API-credit key with.");
   const settings = apiCredit ? creditSettings : claudeEntrypointSettings();
@@ -225,10 +231,14 @@ export function parseClaudeAuthStatus(text: string): ClaudeAuthStatus {
   }
 }
 
-/** True when Claude Code is signed in with a claude.ai subscription (not an API key or cloud provider). */
+/**
+ * True when Claude Code is signed in with a claude.ai subscription (not an API
+ * key or cloud provider): its own login, or a long-lived subscription token
+ * (`oauth_token`: `claude setup-token`, account-token.ts).
+ */
 export function isSubscriptionAuth(status: ClaudeAuthStatus): boolean {
   return status.loggedIn
-    && status.authMethod === "claude.ai"
+    && (status.authMethod === "claude.ai" || status.authMethod === "oauth_token")
     && (status.apiProvider === undefined || status.apiProvider === "firstParty");
 }
 

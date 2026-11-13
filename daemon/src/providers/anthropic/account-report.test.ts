@@ -47,3 +47,32 @@ describe("/account claude and the 5-hour limit", () => {
     expect(text).toContain("Combined (the usage bars): 5-hour n/a · weekly 11/300% · Fable 102/300%");
   });
 });
+
+describe("/account claude and a long-lived token", () => {
+  const DAY = 24 * H;
+  const withToken = (mintedAt: number, tokenProblem?: string): ClaudeAccountReport => {
+    const base = report("max2", verified);
+    return {
+      ...base,
+      account: { ...base.account, token: { secret: "CLAUDE_SETUP_TOKEN_MAX2", mintedAt: new Date(mintedAt).toISOString() } },
+      status: { loggedIn: true, authMethod: tokenProblem ? "claude.ai" : "oauth_token", subscriptionType: "max", ...(tokenProblem ? { tokenProblem } : {}) },
+    };
+  };
+  const text = (entry: ClaudeAccountReport) => formatClaudeAccountReports([entry], null, NOW);
+
+  test("says until when the token lasts, and reminds in its last month", () => {
+    const fresh = text(withToken(NOW - 10 * DAY));
+    expect(fresh).toContain("max2 — max — ready");
+    expect(fresh).toContain(`long-lived token until ${new Date(NOW + 355 * DAY).toISOString().slice(0, 10)}`);
+    expect(fresh).not.toContain("setup-token");
+    const ending = text(withToken(NOW - 350 * DAY));
+    expect(ending).toContain("long-lived token ends in 15d0h");
+    expect(ending).toContain("mint a new one with `claude setup-token`, then scripts/claude-account-token max2");
+    expect(text(withToken(NOW - 366 * DAY))).toContain("long-lived token past its year");
+  });
+
+  test("says why a token is not in use", () => {
+    expect(text(withToken(NOW - 10 * DAY, "HTTP 401 OAuth token has expired"))).toContain("long-lived token not in use (HTTP 401 OAuth token has expired)");
+    expect(text(report("main", verified))).not.toContain("long-lived token");
+  });
+});

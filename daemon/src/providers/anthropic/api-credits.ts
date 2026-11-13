@@ -215,6 +215,14 @@ const cliSecrets: ApiCreditSecrets = {
   },
 };
 
+/** A value in the secrets store by name, for a stated purpose (the store logs it); null when it cannot be read. Never logged here. */
+export async function readStoredSecret(name: string, purpose: string): Promise<string | null> {
+  if (!SECRET_NAME_RE.test(name)) return null;
+  const result = await runSecrets(["run", "--allow", name, "--clean-env", "--purpose", purpose, "--", "printenv", name]);
+  const value = result?.exitCode === 0 ? result.stdout.trim() : "";
+  return value || null;
+}
+
 let secrets: ApiCreditSecrets = cliSecrets;
 let secretNames: { at: number; names: Set<string> } | null = null;
 let namesRefresh: Promise<void> | null = null;

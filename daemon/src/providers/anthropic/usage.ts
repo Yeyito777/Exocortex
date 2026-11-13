@@ -23,6 +23,10 @@
  * only it clears the window (noFiveHourLimit); an event may leave a window out
  * for no reason.
  *
+ * An account on a long-lived token (account-token.ts) has no `/usage` once its
+ * login has ended: the token cannot read it. Its usage then comes from the
+ * headers of a 1-token request, the same figures the rate_limit_events carry.
+ *
  * Fable models draw on an allowance of their own, a share of the weekly limit
  * (`usage.fable`): `/usage` lists it as a `weekly_scoped` row and the
  * rate_limit_events as the `seven_day_overage_included` window. A refusal
@@ -38,7 +42,8 @@ import { runtimeDir } from "@exocortex/shared/paths";
 import type { FableUsage, UsageData, UsageResetCredits, UsageWindow } from "../../messages";
 import { emitClaudeAccountsChanged } from "./account-events";
 import { claudeDailyReset } from "../../usage-limit-wait";
-import { MAIN_ACCOUNT_ID } from "./accounts";
+import { getClaudeAccount, MAIN_ACCOUNT_ID } from "./accounts";
+import { hasClaudeToken, probeClaudeToken, type ClaudeTokenProbe } from "./account-token";
 import { claudeProcessOptions } from "./cli";
 
 export const CLAUDE_RATE_LIMIT_HEADER = "x-exocortex-claude-rate-limit";
@@ -82,6 +87,13 @@ interface UsageFile {
   version: 2;
   accounts: Record<string, { usage: UsageData | null; limitedUntil?: number | null }>;
 }
+
+/** A token account's usage is asked for with a request at most this often. */
+export const TOKEN_USAGE_PROBE_INTERVAL_MS = 5 * 60_000;
+/** Its Fable allowance, which takes a request on the Fable model, at most this often. */
+export const TOKEN_FABLE_PROBE_INTERVAL_MS = 30 * 60_000;
+/** After its login gave no report, the login is not asked again for this long. */
+const LOGIN_REPORT_RETRY_MS = 30 * 60_000;
 
 const entries = new Map<string, AccountUsageEntry>(loadFromDisk());
 let usageGeneration = 0;
@@ -232,6 +244,43 @@ export function usageFromRateLimitInfo(info: Record<string, unknown>, previous: 
   };
 }
 
+function headerNumber(value: string | null): number | undefined {
+  if (value === null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * An Anthropic response's `anthropic-ratelimit-unified-*` headers as the
+ * rate_limit_event info Claude Code would report for them, or null when the
+ * limiter did not run.
+ */
+export function rateLimitInfoFromHeaders(headers: Headers): Record<string, unknown> | null {
+  const status = headers.get("anthropic-ratelimit-unified-status");
+  if (!status) return null;
+  const windows: Record<string, { utilization?: number; resetsAt?: number; status?: string }> = {};
+  // `7d_oi`: the Fable allowance (the weekly window that includes what overage would otherwise pay).
+  for (const [name, short] of [["five_hour", "5h"], ["seven_day", "7d"], [FABLE_RATE_LIMIT_TYPE, "7d_oi"]] as const) {
+    const utilization = headerNumber(headers.get(`anthropic-ratelimit-unified-${short}-utilization`));
+    const resetsAt = headerNumber(headers.get(`anthropic-ratelimit-unified-${short}-reset`));
+    const windowStatus = headers.get(`anthropic-ratelimit-unified-${short}-status`);
+    if (utilization === undefined && resetsAt === undefined) continue;
+    windows[name] = { ...(utilization !== undefined ? { utilization } : {}), ...(resetsAt !== undefined ? { resetsAt } : {}), ...(windowStatus ? { status: windowStatus } : {}) };
+  }
+  const overage = headers.get("anthropic-ratelimit-unified-overage-status");
+  const resetsAt = headerNumber(headers.get("anthropic-ratelimit-unified-reset"));
+  // Which limit the verdict is about: a refusal naming the Fable allowance leaves the account's other models usable.
+  const claim = headers.get("anthropic-ratelimit-unified-representative-claim");
+  return {
+    status,
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+    ...(claim ? { rateLimitType: claim } : {}),
+    // Refused by the plan but carried on extra usage: Exocortex keeps work off such an account, as for its own turns.
+    ...(status === "rejected" && (overage === "allowed" || overage === "allowed_warning") ? { isUsingOverage: true } : {}),
+    unifiedWindows: windows,
+  };
+}
+
 /**
  * Whether a refused request (or one moved onto extra usage) ran out of the
  * Fable allowance only, which leaves the account's other models usable.
@@ -369,6 +418,8 @@ export function clearUsage(account?: string): void {
   if (account) entries.delete(account);
   else entries.clear();
   remoteRefreshes.clear();
+  if (account) tokenUsage.delete(account);
+  else tokenUsage.clear();
   try {
     if (entries.size === 0) {
       if (existsSync(USAGE_FILE)) unlinkSync(USAGE_FILE);
@@ -463,7 +514,8 @@ async function fetchPlanRateLimits(account: string): Promise<Record<string, unkn
   const runtime = query({
     prompt: silentInput(stop.signal),
     options: {
-      ...claudeProcessOptions(process.cwd(), account),
+      // On the account's own login: a long-lived token cannot read the report.
+      ...claudeProcessOptions(process.cwd(), account, undefined, null, { token: false }),
       tools: [],
       settingSources: [],
       strictMcpConfig: true,
@@ -504,13 +556,125 @@ export function applyPlanRateLimits(account: string, limits: Record<string, unkn
   }
 }
 
+// ── Accounts on a long-lived token ──────────────────────────────────
+
+interface TokenUsageState {
+  /** Last request that asked for the plan's usage, and for the Fable allowance. */
+  probedAt: number;
+  fableProbedAt: number;
+  /** When the account's own login last gave no report. */
+  loginReportFailedAt: number;
+}
+
+const tokenUsage = new Map<string, TokenUsageState>();
+let planReport: (account: string) => Promise<Record<string, unknown> | null> = fetchPlanRateLimits;
+
+/** Tests substitute the `/usage` report of an account's own login. */
+export function setPlanReportForTests(next: ((account: string) => Promise<Record<string, unknown> | null>) | null): void {
+  planReport = next ?? fetchPlanRateLimits;
+  tokenUsage.clear();
+}
+
+function tokenUsageState(account: string): TokenUsageState {
+  let state = tokenUsage.get(account);
+  if (!state) {
+    state = { probedAt: 0, fableProbedAt: 0, loginReportFailedAt: 0 };
+    tokenUsage.set(account, state);
+  }
+  return state;
+}
+
+/**
+ * When the login in a configuration directory ends (`refreshTokenExpiresAt`
+ * of Claude Code's `.credentials.json`; nothing else of the file is read):
+ * a time, "none" when there is no login file, or null when it does not say.
+ */
+export function claudeLoginEnd(configDir: string): number | "none" | null {
+  const file = join(configDir, ".credentials.json");
+  try {
+    if (!existsSync(file)) return process.platform === "darwin" ? null : "none";
+    const end = (JSON.parse(readFileSync(file, "utf-8")) as { claudeAiOauth?: { refreshTokenExpiresAt?: unknown } }).claudeAiOauth?.refreshTokenExpiresAt;
+    return typeof end === "number" && Number.isFinite(end) ? end : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a token account's own login may still give the `/usage` report. */
+function loginReportDue(account: string, now: number): boolean {
+  if (now - tokenUsageState(account).loginReportFailedAt < LOGIN_REPORT_RETRY_MS) return false;
+  const configDir = getClaudeAccount(account)?.configDir;
+  if (!configDir) return false;
+  const end = claudeLoginEnd(configDir);
+  return end === null || (end !== "none" && end > now);
+}
+
+function applyProbeHeaders(account: string, headers: Headers, fable: boolean, now: number): void {
+  const info = rateLimitInfoFromHeaders(headers);
+  if (!info) return;
+  applyUsageHeaders(new Headers({
+    [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify(info),
+    ...(account !== MAIN_ACCOUNT_ID ? { [CLAUDE_ACCOUNT_HEADER]: account } : {}),
+    ...(fable ? { [CLAUDE_FABLE_TURN_HEADER]: "1" } : {}),
+  }), now);
+  // The answer is a report of this moment, whatever it changed.
+  entryFor(account).updatedAt = now;
+}
+
+/**
+ * A token account's usage from the headers of a 1-token request: the 5-hour
+ * and weekly windows, and every TOKEN_FABLE_PROBE_INTERVAL_MS a second request
+ * on the Fable model for its allowance. Skipped (null) within
+ * TOKEN_USAGE_PROBE_INTERVAL_MS of the last one unless `force`. The answer
+ * also says whether Anthropic still takes the token (auth-cache.ts), which
+ * does not wait for the Fable request (`fableInBackground`): a turn may be
+ * waiting on it.
+ */
+export async function probeTokenAccountUsage(account: string, options: { force?: boolean; fableInBackground?: boolean; signal?: AbortSignal; now?: number } = {}): Promise<ClaudeTokenProbe | null> {
+  const now = options.now ?? Date.now();
+  const state = tokenUsageState(account);
+  if (!options.force && now - state.probedAt < TOKEN_USAGE_PROBE_INTERVAL_MS) return null;
+  state.probedAt = now;
+  const probe = await probeClaudeToken(account, { signal: options.signal, now });
+  if (probe.outcome !== "ok") return probe;
+  applyProbeHeaders(account, probe.headers, false, now);
+  // The Fable allowance shows only on a Fable request; not while the plan itself refuses requests.
+  if (probe.status < 400 && now - state.fableProbedAt >= TOKEN_FABLE_PROBE_INTERVAL_MS) {
+    state.fableProbedAt = now;
+    const fable = probeClaudeToken(account, { fable: true, ...(options.fableInBackground ? {} : { signal: options.signal }), now }).then((answer) => {
+      if (answer.outcome === "ok") applyProbeHeaders(account, answer.headers, true, now);
+    }).catch(() => {});
+    if (!options.fableInBackground) await fable;
+  }
+  return probe;
+}
+
+/** A token account's usage: its own login's report while the login lasts, else the token's headers. */
+async function refreshTokenAccountUsage(account: string, generation: number): Promise<void> {
+  const now = Date.now();
+  if (loginReportDue(account, now)) {
+    const limits = await planReport(account).catch(() => null);
+    if (generation !== usageGeneration) return;
+    if (usageFromPlanRateLimits(limits)) {
+      applyPlanRateLimits(account, limits);
+      return;
+    }
+    tokenUsageState(account).loginReportFailedAt = now;
+  }
+  await probeTokenAccountUsage(account);
+}
+
 /** Ask Claude Code for one account's usage; concurrent calls share one process. */
 export function refreshAccountUsage(account: string): Promise<UsageData | null> {
   const running = remoteRefreshes.get(account);
   if (running) return running;
   const generation = usageGeneration;
   const refresh = (async () => {
-    const limits = await fetchPlanRateLimits(account);
+    if (hasClaudeToken(account)) {
+      await refreshTokenAccountUsage(account, generation);
+      return getAccountUsage(account);
+    }
+    const limits = await planReport(account);
     if (generation !== usageGeneration) return getAccountUsage(account);
     applyPlanRateLimits(account, limits);
     return getAccountUsage(account);

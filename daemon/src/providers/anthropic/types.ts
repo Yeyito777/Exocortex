@@ -19,4 +19,6 @@ export interface ClaudeAuthStatus {
   orgId?: string;
   orgName?: string;
   subscriptionType?: string;
+  /** Why the account's long-lived token is not in use (refused, another organization's, not in the secrets store). */
+  tokenProblem?: string;
 }

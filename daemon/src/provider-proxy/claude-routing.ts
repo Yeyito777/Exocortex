@@ -19,7 +19,7 @@
  * request with it, and what it spends is counted from the response stream.
  */
 
-import { CLAUDE_RATE_LIMIT_HEADER, CLAUDE_ACCOUNT_HEADER, CLAUDE_FABLE_TURN_HEADER, FABLE_RATE_LIMIT_TYPE, applyUsageHeaders } from "../providers/anthropic/usage";
+import { CLAUDE_RATE_LIMIT_HEADER, CLAUDE_ACCOUNT_HEADER, CLAUDE_FABLE_TURN_HEADER, applyUsageHeaders, rateLimitInfoFromHeaders } from "../providers/anthropic/usage";
 import { isFableModel } from "../providers/anthropic/models";
 import { beginAccountTurn, beginApiCreditTurn, getConversationAccount, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount, touchConversationCredit } from "../providers/anthropic/account-pool";
 import type { RouteDecision } from "../providers/anthropic/routing";
@@ -74,42 +74,8 @@ export interface ProxiedClaudeRouter {
   lease(conversation: string | null, signal?: AbortSignal, options?: { apiCredits?: boolean; model?: string | null }): Promise<ProxiedClaudeLease>;
 }
 
-function number(value: string | null): number | undefined {
-  if (value === null || value === "") return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-/**
- * An upstream response's `anthropic-ratelimit-unified-*` headers as the
- * rate_limit_event info Claude Code would report for them (usage.ts reads
- * that), or null when the limiter did not run.
- */
-export function rateLimitInfoFromHeaders(headers: Headers): Record<string, unknown> | null {
-  const status = headers.get("anthropic-ratelimit-unified-status");
-  if (!status) return null;
-  const windows: Record<string, { utilization?: number; resetsAt?: number; status?: string }> = {};
-  // `7d_oi`: the Fable allowance (the weekly window that includes what overage would otherwise pay).
-  for (const [name, short] of [["five_hour", "5h"], ["seven_day", "7d"], [FABLE_RATE_LIMIT_TYPE, "7d_oi"]] as const) {
-    const utilization = number(headers.get(`anthropic-ratelimit-unified-${short}-utilization`));
-    const resetsAt = number(headers.get(`anthropic-ratelimit-unified-${short}-reset`));
-    const windowStatus = headers.get(`anthropic-ratelimit-unified-${short}-status`);
-    if (utilization === undefined && resetsAt === undefined) continue;
-    windows[name] = { ...(utilization !== undefined ? { utilization } : {}), ...(resetsAt !== undefined ? { resetsAt } : {}), ...(windowStatus ? { status: windowStatus } : {}) };
-  }
-  const overage = headers.get("anthropic-ratelimit-unified-overage-status");
-  const resetsAt = number(headers.get("anthropic-ratelimit-unified-reset"));
-  // Which limit the verdict is about: a refusal naming the Fable allowance leaves the account's other models usable.
-  const claim = headers.get("anthropic-ratelimit-unified-representative-claim");
-  return {
-    status,
-    ...(resetsAt !== undefined ? { resetsAt } : {}),
-    ...(claim ? { rateLimitType: claim } : {}),
-    // Refused by the plan but carried on extra usage: Exocortex keeps work off such an account, as for its own turns.
-    ...(status === "rejected" && (overage === "allowed" || overage === "allowed_warning") ? { isUsingOverage: true } : {}),
-    unifiedWindows: windows,
-  };
-}
+// The headers' reading lives with the rest of the usage formats.
+export { rateLimitInfoFromHeaders };
 
 export interface ProxiedClaudeRouterDeps {
   route?: (key: string | undefined, signal?: AbortSignal, model?: string) => Promise<RouteDecision & { apiCredit?: ApiCreditKey | null; apiCreditDetail?: string; apiCreditMovedFrom?: ApiCreditKey | null }>;

@@ -6,11 +6,18 @@
  * which leaves the login expired (anthropics/claude-code#95822). So the status
  * is checked at most once per TTL per account, not before every turn, and a
  * Claude Code process that is working for an account counts as a fresh check.
+ *
+ * An account on a long-lived token (account-token.ts) is checked by asking
+ * Anthropic whether it takes the token (`claude auth status` would only say
+ * that one is set). A refused token leaves the account on its own login.
  */
 
 import { log } from "../../log";
 import { emitClaudeAccountsChanged } from "./account-events";
+import { getClaudeAccount } from "./accounts";
+import { onClaudeTokenRejected, warnClaudeTokenExpiry } from "./account-token";
 import { getClaudeAuthStatus, isSubscriptionAuth } from "./cli";
+import { probeTokenAccountUsage } from "./usage";
 import type { ClaudeAuthStatus } from "./types";
 
 /** A signed-in account is checked again after this long without a working turn. */
@@ -33,7 +40,40 @@ interface Entry {
 type Probe = (account: string, signal?: AbortSignal) => Promise<ClaudeAuthStatus>;
 
 const entries = new Map<string, Entry>();
-const defaultProbe: Probe = (account, signal) => getClaudeAuthStatus(signal, account);
+
+/**
+ * The sign-in of an account, by its long-lived token when it has one that
+ * Anthropic takes (its owner as recorded with it; the organization as
+ * Anthropic's answer names it), else by the login in its directory.
+ */
+export async function claudeAccountAuthStatus(
+  account: string,
+  signal?: AbortSignal,
+  login: (account: string, signal?: AbortSignal) => Promise<ClaudeAuthStatus> = (id, abort) => getClaudeAuthStatus(abort, id),
+): Promise<ClaudeAuthStatus> {
+  const token = getClaudeAccount(account)?.token;
+  if (!token) return login(account, signal);
+  warnClaudeTokenExpiry(account);
+  const probe = await probeTokenAccountUsage(account, { force: true, fableInBackground: true, signal });
+  // No answer either way (network): the token stands as it was.
+  if (probe && (probe.outcome === "ok" || probe.outcome === "unknown")) {
+    const orgId = (probe.outcome === "ok" ? probe.orgId : null) ?? token.orgId;
+    return {
+      loggedIn: true,
+      authMethod: "oauth_token",
+      apiProvider: "firstParty",
+      ...(token.email ? { email: token.email } : {}),
+      ...(orgId ? { orgId } : {}),
+      ...(token.orgName ? { orgName: token.orgName } : {}),
+      ...(token.subscriptionType ? { subscriptionType: token.subscriptionType } : {}),
+    };
+  }
+  // No usable token: the account's own login, if it still has one.
+  const status = await login(account, signal);
+  return { ...status, tokenProblem: probe?.detail ?? "not checked" };
+}
+
+const defaultProbe: Probe = (account, signal) => claudeAccountAuthStatus(account, signal);
 let probe = defaultProbe;
 let probes = 0;
 
@@ -88,7 +128,7 @@ export async function cachedClaudeAuthStatus(
   if (entry.pending) return entry.pending;
   const generation = entry.generation;
   probes += 1;
-  log("info", `anthropic: checking Claude account ${account} with claude auth status`);
+  log("info", `anthropic: checking Claude account ${account} with ${getClaudeAccount(account)?.token ? "its long-lived token" : "claude auth status"}`);
   const pending = probe(account, options.signal).then((status) => {
     if (entry.generation === generation) {
       entry.status = status;
@@ -146,3 +186,9 @@ export function invalidateClaudeAuthStatus(account?: string): void {
     entry.pending = null;
   }
 }
+
+// A token set aside outside a sign-in check (a refused /proxy request): check the account again.
+onClaudeTokenRejected((account) => {
+  invalidateClaudeAuthStatus(account);
+  emitClaudeAccountsChanged();
+});

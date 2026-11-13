@@ -2,7 +2,7 @@
 
 import { homedir } from "os";
 import type { UsageData, UsageWindow } from "../../messages";
-import { claudeLoginCommand, MAIN_ACCOUNT_ID } from "./accounts";
+import { CLAUDE_TOKEN_WARNING_MS, claudeLoginCommand, claudeTokenExpiresAt, MAIN_ACCOUNT_ID } from "./accounts";
 import type { ClaudeAccountReport } from "./account-pool";
 import { isSubscriptionAuth } from "./cli";
 
@@ -39,11 +39,26 @@ function formatState(report: ClaudeAccountReport, now: number): string {
   return "ready";
 }
 
+/** The account's long-lived token: when its year ends, a reminder once that is near, and why it is not in use. */
+function formatToken(report: ClaudeAccountReport, now: number): string | null {
+  const token = report.account.token;
+  if (!token) return null;
+  const end = claudeTokenExpiresAt(token);
+  const date = new Date(end).toISOString().slice(0, 10);
+  const mint = `mint a new one with \`claude setup-token\`, then scripts/claude-account-token ${report.account.id}`;
+  if (report.status?.tokenProblem) return `long-lived token not in use (${report.status.tokenProblem}): ${mint}`;
+  if (end <= now) return `long-lived token past its year (${date}): ${mint}`;
+  if (end - now <= CLAUDE_TOKEN_WARNING_MS) return `long-lived token ends in ${formatDuration(end - now)} (${date}): ${mint}`;
+  return `long-lived token until ${date}`;
+}
+
 function formatAccount(report: ClaudeAccountReport, now: number): string[] {
   const { account, status } = report;
   const who = [status?.email, status?.subscriptionType].filter(Boolean).join(" · ");
   const lines = [`  ${account.id}${who ? ` — ${who}` : ""} — ${formatState(report, now)}`];
   lines.push(`      ${account.id === MAIN_ACCOUNT_ID ? "Claude Code's own login" : "config"}: ${displayPath(account.configDir)}`);
+  const token = formatToken(report, now);
+  if (token) lines.push(`      ${token}`);
   if (report.available) {
     const activity = [
       report.activeTurns > 0 ? `${report.activeTurns} turn${report.activeTurns === 1 ? "" : "s"} running` : null,

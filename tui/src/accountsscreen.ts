@@ -295,6 +295,18 @@ export function webSessionCell(problem: ClaudeWebSessionProblem | null | undefin
   return problem ? { count: "", expiry: "", note: WEB_SESSION_NOTES[problem] } : null;
 }
 
+/** How long before a long-lived token's end the row says so. */
+const TOKEN_NOTE_MS = 30 * 86_400_000;
+
+/** What an account's row says of its long-lived token: nothing until it was refused or is about to end. */
+export function tokenNote(token: ClaudeAccountInfo["token"], now: number): string | null {
+  if (!token) return null;
+  if (token.problem) return "token refused";
+  const left = token.expiresAt - now;
+  if (left > TOKEN_NOTE_MS) return null;
+  return left <= 0 ? "token past its year" : `token ends ${formatDuration(left)}`;
+}
+
 interface TableRow {
   dot: string;
   name: Segment;
@@ -365,6 +377,9 @@ function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: 
   // A Fable request was refused while the allowance still reads under 100%: the bar alone would not say.
   const fable = account.usage?.fable;
   if (fable?.limitedUntil != null && fable.limitedUntil > now && fable.utilization < 100) tags.push("Fable out");
+  // Its long-lived token: only once it needs the owner (refused, or within a month of its year's end).
+  const tokenTag = tokenNote(account.token, now);
+  if (tokenTag) tags.push(tokenTag);
   if (claude.nextNewWork?.account === account.id) tags.push("new work");
   return {
     dot,

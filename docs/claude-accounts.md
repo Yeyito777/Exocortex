@@ -18,6 +18,9 @@ it is not logged, not stored elsewhere, and never sent over the /proxy link.
 An expiring token is refreshed by Claude Code itself (a bare usage probe on
 that account), so refresh-token rotation stays with Claude Code.
 
+An account may also hold a year-long token that its turns run on instead of
+the four-week login: see [Long-lived tokens](#long-lived-tokens).
+
 Code: `daemon/src/providers/anthropic/accounts.ts` (registry and directories),
 `routing.ts` (decisions), `account-pool.ts` (runtime state, combined usage),
 `auth-cache.ts` (sign-in checks), `usage.ts` (per-account usage).
@@ -456,6 +459,71 @@ jq '.claudeAiOauth.refreshTokenExpiresAt / 1000 | todate' ~/.claude-max2/.creden
 ```
 
 Signing in again before that date starts a new four weeks.
+
+### Long-lived tokens
+
+An account can run on a `claude setup-token` token instead: Anthropic issues
+it for a year, it bills the same subscription, and Claude Code's own
+time-limit message recommends it for unattended use. Measured on Nov 13 2026
+(Claude Code 2.1.321, a Max account): the same models and effort levels, the
+1-hour prompt cache, and the same limit events during turns as the login.
+
+What the token cannot do: it carries the inference scope only, so Anthropic
+refuses it the plan's usage report (`/usage`: "OAuth token does not meet scope
+requirement user:profile") and it cannot say whose it is or when it ends.
+Exocortex makes up for each:
+
+| Without the login | What Exocortex does |
+|---|---|
+| No usage report | One request of one output token (Haiku) at most every 5 minutes while the account is idle; its response headers carry the 5-hour and weekly windows. Every 30 minutes one more on the Fable model, for the Fable allowance. Turns report usage as always. |
+| No owner | The email, organization and plan are recorded with the token when it is set, from the account's login at that moment. Anthropic's answers name the organization; a token of another organization is refused. |
+| No end date | The mint date is recorded; `/account claude` shows the end, and from 30 days before it the account's row on the Accounts screen says `token ends 12d` and the log repeats it daily. |
+| No reset counts | They still need the account's claude.ai session (below), which still ends every four weeks. |
+
+While the account's login also lasts, the usage report comes from the login
+(the full one: reset grants, the Fable allowance's share), and no request is
+sent for it.
+
+To put an account on a token, signed in to that account in the browser:
+
+```bash
+CLAUDE_CONFIG_DIR=$(mktemp -d) claude setup-token   # authorize in the browser; it prints the token once
+secrets add CLAUDE_SETUP_TOKEN_MAX2 --stdin          # paste it; never into a file or a chat
+scripts/claude-account-token max2                    # checks it with Anthropic, records it
+```
+
+`scripts/claude-account-token <account>` reads the secret
+`CLAUDE_SETUP_TOKEN_<ACCOUNT>` (or `--secret NAME`), asks Anthropic that it is
+taken and belongs to the organization the account's login is signed in to, and
+writes the secret's name, the mint date (today, or `--minted DATE`) and the
+owner to `tokens` in `anthropic-accounts.json`. The running daemon picks it up
+at the account's next sign-in check. `--check` only checks; `--remove` puts the
+account back on its login. For a new token a year later, replace the secret
+and run it again.
+
+How it runs:
+
+- **Turns.** The account's Claude Code processes get the token as
+  `CLAUDE_CODE_OAUTH_TOKEN`, which Claude Code prefers to the login in the
+  directory and does not pass on to the commands its tools run. The directory
+  stays the same, so sessions resume as before. The value is read from the
+  secrets store into the daemon's memory; it is never logged or written out.
+- **Sign-in check.** The 1-token request is the check: `claude auth status`
+  would only say that a token is set. The account shows as signed in with
+  the recorded email and plan.
+- **A refused token** (401, or a 403 naming the token) is set aside and the
+  account goes back to the login in its directory. With no login left it is
+  signed out, and its turns move to another account as for an ended login.
+  The same token is asked about again after 15 minutes, a changed secret at
+  once.
+- **/proxy.** Requests routed to the account are signed with the token; a 401
+  sets it aside and the retry uses the login.
+- **API credits.** Unchanged: the `apiKeyHelper` of a credit turn takes
+  precedence over the token as it does over a login, and such a process is
+  not given the token.
+
+Code: `account-token.ts` (the value, the request, refusals), `usage.ts`
+(`probeTokenAccountUsage`), `auth-cache.ts` (`claudeAccountAuthStatus`).
 
 ## Usage bars
 

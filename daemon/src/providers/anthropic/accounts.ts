@@ -9,6 +9,11 @@
  * credentials in these directories: it only picks the directory a Claude
  * Code process starts with.
  *
+ * An account may also carry a long-lived token (`claude setup-token`), kept in
+ * the secrets store and named here: its turns then run on the token, which
+ * lasts a year instead of the login's four weeks (account-token.ts,
+ * docs/claude-accounts.md#long-lived-tokens).
+ *
  * Each added directory links the main directory's sessions (`projects/`) and
  * user settings, so a conversation's Claude Code session resumes on any
  * account and every account runs with the same settings, skills and plugins.
@@ -22,6 +27,22 @@ import { dataDir } from "@exocortex/shared/paths";
 
 export const MAIN_ACCOUNT_ID = "main";
 
+/**
+ * An account's long-lived token (`claude setup-token`). The token carries the
+ * inference scope only, so it cannot say whose it is or when it ends: both
+ * are recorded here when it is set (scripts/claude-account-token).
+ */
+export interface ClaudeAccountToken {
+  /** Its name in the secrets store; the value is never written anywhere else. */
+  secret: string;
+  /** When it was minted (ISO 8601). Anthropic issues it for a year. */
+  mintedAt: string;
+  email?: string;
+  orgId?: string;
+  orgName?: string;
+  subscriptionType?: string;
+}
+
 export interface ClaudeAccount {
   id: string;
   /** Claude Code configuration directory. */
@@ -29,11 +50,21 @@ export interface ClaudeAccount {
   /** Whether Exocortex created the directory (and its links) itself. */
   managed?: boolean;
   addedAt?: string;
+  /** Its long-lived token, when it has one. */
+  token?: ClaudeAccountToken;
 }
 
 interface AccountsFile {
   accounts: ClaudeAccount[];
+  /** Long-lived tokens by account name, `main` included (which has no entry in `accounts`). */
+  tokens?: Record<string, ClaudeAccountToken>;
 }
+
+/** How long Anthropic issues a `claude setup-token` token for. */
+export const CLAUDE_TOKEN_LIFETIME_MS = 365 * 86_400_000;
+/** The owner is told this long before a token ends. */
+export const CLAUDE_TOKEN_WARNING_MS = 30 * 86_400_000;
+const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
 /** Entries of the main configuration directory every account shares. */
 export const SHARED_CONFIG_ENTRIES = [
@@ -71,31 +102,93 @@ function expandHome(path: string): string {
   return path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }
 
-function readAccountsFile(): ClaudeAccount[] {
+function parseToken(value: unknown): ClaudeAccountToken | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.secret !== "string" || !SECRET_NAME_RE.test(raw.secret)) return null;
+  if (typeof raw.mintedAt !== "string" || !Number.isFinite(Date.parse(raw.mintedAt))) return null;
+  const str = (field: unknown) => typeof field === "string" && field ? field : undefined;
+  const token: ClaudeAccountToken = { secret: raw.secret, mintedAt: raw.mintedAt };
+  for (const name of ["email", "orgId", "orgName", "subscriptionType"] as const) {
+    const field = str(raw[name]);
+    if (field) token[name] = field;
+  }
+  return token;
+}
+
+function readRegistry(): { accounts: ClaudeAccount[]; tokens: Record<string, ClaudeAccountToken> } {
   try {
     const path = accountsFile();
-    if (!existsSync(path)) return [];
+    if (!existsSync(path)) return { accounts: [], tokens: {} };
     const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<AccountsFile>;
-    if (!Array.isArray(parsed.accounts)) return [];
-    return parsed.accounts.filter((account): account is ClaudeAccount =>
+    const accounts = !Array.isArray(parsed.accounts) ? [] : parsed.accounts.filter((account): account is ClaudeAccount =>
       typeof account?.id === "string" && ACCOUNT_ID_RE.test(account.id) && account.id !== MAIN_ACCOUNT_ID
-      && typeof account.configDir === "string" && account.configDir.length > 0);
+      && typeof account.configDir === "string" && account.configDir.length > 0)
+      // Tokens live in `tokens` only.
+      .map(({ token: _token, ...account }) => account);
+    const tokens: Record<string, ClaudeAccountToken> = {};
+    if (parsed.tokens && typeof parsed.tokens === "object") {
+      for (const [id, value] of Object.entries(parsed.tokens)) {
+        const token = parseToken(value);
+        if (token && (id === MAIN_ACCOUNT_ID || accounts.some(account => account.id === id))) tokens[id] = token;
+      }
+    }
+    return { accounts, tokens };
   } catch {
-    return [];
+    return { accounts: [], tokens: {} };
   }
 }
 
-function writeAccountsFile(accounts: ClaudeAccount[]): void {
+function readAccountsFile(): ClaudeAccount[] {
+  return readRegistry().accounts;
+}
+
+function writeRegistry(accounts: ClaudeAccount[], tokens: Record<string, ClaudeAccountToken>): void {
   const path = accountsFile();
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ accounts } satisfies AccountsFile, null, 2) + "\n");
+  const file: AccountsFile = { accounts, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
+  writeFileSync(tmp, JSON.stringify(file, null, 2) + "\n");
   renameSync(tmp, path);
+}
+
+/** Rewrite the accounts, keeping the tokens of those that remain. */
+function writeAccountsFile(accounts: ClaudeAccount[]): void {
+  const tokens = readRegistry().tokens;
+  for (const id of Object.keys(tokens)) {
+    if (id !== MAIN_ACCOUNT_ID && !accounts.some(account => account.id === id)) delete tokens[id];
+  }
+  writeRegistry(accounts, tokens);
 }
 
 /** Every account, `main` first, in the order they were added. */
 export function listClaudeAccounts(): ClaudeAccount[] {
-  return [{ id: MAIN_ACCOUNT_ID, configDir: mainClaudeConfigDir() }, ...readAccountsFile()];
+  const { accounts, tokens } = readRegistry();
+  return [{ id: MAIN_ACCOUNT_ID, configDir: mainClaudeConfigDir() }, ...accounts]
+    .map(account => tokens[account.id] ? { ...account, token: tokens[account.id] } : account);
+}
+
+/** The secret a token is kept under unless another is named: CLAUDE_SETUP_TOKEN_MAIN, CLAUDE_SETUP_TOKEN_MAX2, … */
+export function claudeTokenSecretName(account: string): string {
+  return `CLAUDE_SETUP_TOKEN_${account.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+}
+
+/** When the token ends: a year after it was minted. */
+export function claudeTokenExpiresAt(token: ClaudeAccountToken): number {
+  return Date.parse(token.mintedAt) + CLAUDE_TOKEN_LIFETIME_MS;
+}
+
+/** Give an account a long-lived token, or take it away (`null`): its turns then run on its own login again. */
+export function setClaudeAccountToken(id: string, token: ClaudeAccountToken | null): void {
+  const { accounts, tokens } = readRegistry();
+  if (id !== MAIN_ACCOUNT_ID && !accounts.some(account => account.id === id)) throw new Error(`Unknown Claude account "${id}".`);
+  if (token === null) delete tokens[id];
+  else {
+    const parsed = parseToken(token);
+    if (!parsed) throw new Error("A token needs a secret name and the date it was minted.");
+    tokens[id] = parsed;
+  }
+  writeRegistry(accounts, tokens);
 }
 
 export function getClaudeAccount(id: string): ClaudeAccount | undefined {
