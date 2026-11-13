@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultInputTransport, isBluetoothTransport } from "./macaudio";
 
 export type VoicePromptPhase = "recording" | "transcribing";
 
@@ -358,43 +359,64 @@ export function builtInMicrophoneName(profilerJson: string): string | null {
   return null;
 }
 
-/** undefined: not looked up yet; null: this Mac has no built-in microphone right now. */
-let darwinBackupMicrophone: string | null | undefined;
-let darwinBackupMicrophoneLookup = false;
+/** What is known about the Mac's built-in microphone. */
+export interface BuiltInMicrophone {
+  /** undefined: not looked up yet; null: this Mac has none right now (lid closed). */
+  name: string | null | undefined;
+  looking: boolean;
+  /** Recordings in a row that it failed to open; after two it is left alone. */
+  failures: number;
+}
+
+const BUILT_IN_MICROPHONE_MAX_FAILURES = 2;
+const builtInMicrophone: BuiltInMicrophone = { name: undefined, looking: false, failures: 0 };
+let coreAudioWarmed = false;
 
 /**
  * Look up the Mac's built-in microphone in the background so a recording can
- * capture it next to the default input (see VoiceRecorder). Takes ~0.7 s, so
- * it runs at startup and again before a recording that still has no answer.
+ * use it (see VoiceRecorder). Takes ~0.7 s, so it runs at startup and again
+ * before a recording that still has no answer. Also loads CoreAudio ahead of
+ * the first recording.
  */
 export function prepareVoiceRecorder(): void {
   if (process.platform !== "darwin" || process.env.EXOCORTEX_VOICE_AVFOUNDATION_DEVICE) return;
-  if (darwinBackupMicrophone || darwinBackupMicrophoneLookup) return;
-  darwinBackupMicrophoneLookup = true;
+  if (!coreAudioWarmed) {
+    coreAudioWarmed = true;
+    setTimeout(() => { defaultInputTransport(); }, 500).unref?.();
+  }
+  if (builtInMicrophone.name || builtInMicrophone.looking) return;
+  builtInMicrophone.looking = true;
   try {
     execFile("system_profiler", ["SPAudioDataType", "-json"], { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-      darwinBackupMicrophoneLookup = false;
-      darwinBackupMicrophone = err ? null : builtInMicrophoneName(String(stdout));
+      builtInMicrophone.looking = false;
+      builtInMicrophone.name = err ? null : builtInMicrophoneName(String(stdout));
     });
   } catch {
-    darwinBackupMicrophoneLookup = false;
+    builtInMicrophone.looking = false;
   }
 }
 
-const BACKUP_FILE_NAME = "backup.wav";
+/** It could not be opened (lid just closed, a stale name): look it up again before the next recording. */
+function builtInMicrophoneFailed(microphone: BuiltInMicrophone): void {
+  microphone.failures++;
+  microphone.name = undefined;
+}
 
 interface VoiceRecorderDeps {
   platform?: NodeJS.Platform;
   hasCommand?: (command: string) => boolean;
   spawnRecorder?: (command: string, args: string[]) => ChildProcess;
-  /** macOS: a second microphone recorded alongside the default input; null for none. */
-  backupMicrophone?: string | null;
+  /** macOS: the built-in microphone, in place of the one looked up for this process. */
+  builtInMicrophone?: BuiltInMicrophone;
+  /** macOS: the default input device's CoreAudio transport type ("blue", "bltn", …). */
+  defaultInputTransport?: () => string | null;
   note?: (message: string) => void;
 }
 
 /** One recorder process writing one WAV file. */
 class RecorderProcess {
-  private readonly exitPromise: Promise<void>;
+  /** Resolves when the recorder process is gone, however it ended. */
+  readonly exitPromise: Promise<void>;
   private stderr = "";
 
   constructor(private readonly child: ChildProcess, readonly filePath: string) {
@@ -455,18 +477,30 @@ function hasSound(bytes: Buffer | null): boolean {
   return !!bytes && bytes.length > 0 && !isDigitallySilentWav(bytes);
 }
 
+type SpawnRecorder = (command: string, args: string[]) => ChildProcess;
+
+/**
+ * Records one hold-to-talk clip.
+ *
+ * Linux, and macOS with a wired, USB or built-in default input: the default
+ * input device. On a Mac with a built-in microphone that one is recorded too
+ * and used when the default input's recording is all zeros or missing.
+ *
+ * macOS with a Bluetooth default input (AirPods): the built-in microphone
+ * alone. Opening a headset's microphone pulls the headset over from whatever
+ * device is playing to it, drops its playback to call quality, loses the
+ * first ~0.5 s while the microphone link comes up, and right after such a
+ * handover can record nothing but zeros.
+ */
 export class VoiceRecorder {
   private finished = false;
+  /** The built-in microphone is being recorded in place of a Bluetooth default input. */
+  private insteadOfBluetooth = false;
+  private backupMicrophone: BuiltInMicrophone | null = null;
 
   private constructor(
-    private readonly primary: RecorderProcess,
-    /**
-     * macOS only: the built-in microphone, recorded at the same time. A
-     * Bluetooth headset that another device was just using (AirPods playing
-     * from an iPhone) can hand the default input over without ever starting
-     * its microphone link, and that whole recording is zeros; the words are
-     * then taken from this one instead of being lost.
-     */
+    private primary: RecorderProcess,
+    /** The built-in microphone, recorded next to a default input that is not Bluetooth. */
     private readonly backup: RecorderProcess | null,
     private readonly tmpDir: string,
     private readonly platform: NodeJS.Platform,
@@ -476,36 +510,64 @@ export class VoiceRecorder {
   static start(deps: VoiceRecorderDeps = {}): VoiceRecorder {
     const platform = deps.platform ?? process.platform;
     const hasCommand = deps.hasCommand ?? commandExists;
-    const spawnRecorder = deps.spawnRecorder
-      ?? ((command: string, args: string[]) => spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] }));
+    const spawnRecorder: SpawnRecorder = deps.spawnRecorder
+      ?? ((command, args) => spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] }));
+    const note = deps.note ?? (() => {});
     const tmpDir = mkdtempSync(join(tmpdir(), "exocortex-voice-"));
     const filePath = join(tmpDir, "input.wav");
-    const recorder = chooseRecorderCommand(platform, hasCommand, filePath);
-    if (!recorder) {
+    const command = chooseRecorderCommand(platform, hasCommand, filePath);
+    if (!command) {
       cleanupPath(tmpDir);
       throw new Error(recorderDependencyMessage(platform));
     }
-    const primary = new RecorderProcess(spawnRecorder(recorder.command, recorder.args), filePath);
+    const record = (recorder: RecorderCommand, path: string) => new RecorderProcess(spawnRecorder(recorder.command, recorder.args), path);
+
+    // An explicitly chosen device is recorded alone.
+    if (platform !== "darwin" || process.env.EXOCORTEX_VOICE_AVFOUNDATION_DEVICE) {
+      return new VoiceRecorder(record(command, filePath), null, tmpDir, platform, note);
+    }
+
+    if (!deps.builtInMicrophone) prepareVoiceRecorder();
+    const microphone = deps.builtInMicrophone ?? builtInMicrophone;
+    const builtInPath = join(tmpDir, "built-in.wav");
+    const builtInCommand = microphone.name && microphone.failures < BUILT_IN_MICROPHONE_MAX_FAILURES
+      ? chooseDarwinRecorderCommand(hasCommand, builtInPath, `none:${microphone.name}`)
+      : null;
+
+    if (builtInCommand && isBluetoothTransport((deps.defaultInputTransport ?? defaultInputTransport)())) {
+      note("voice: the default input is a Bluetooth device; recording the built-in microphone instead");
+      const builtIn = record(builtInCommand, builtInPath);
+      const recorder = new VoiceRecorder(builtIn, null, tmpDir, platform, note);
+      recorder.insteadOfBluetooth = true;
+      void builtIn.exitPromise.then(() => {
+        if (recorder.finished) {
+          if (builtIn.read()) microphone.failures = 0;
+          return;
+        }
+        // It could not be opened: record the default input for the rest of this hold.
+        builtInMicrophoneFailed(microphone);
+        note(`voice: the built-in microphone could not be recorded (${builtIn.errorMessage() || "recorder exited"}); recording the default input`);
+        recorder.insteadOfBluetooth = false;
+        try {
+          recorder.primary = record(command, filePath);
+        } catch {
+          // stop() reports the built-in recorder's error.
+        }
+      });
+      return recorder;
+    }
 
     let backup: RecorderProcess | null = null;
-    if (platform === "darwin") {
-      let microphone = deps.backupMicrophone;
-      if (microphone === undefined) {
-        // An explicitly chosen device is recorded alone.
-        prepareVoiceRecorder();
-        microphone = process.env.EXOCORTEX_VOICE_AVFOUNDATION_DEVICE ? null : darwinBackupMicrophone;
-      }
-      const backupPath = join(tmpDir, BACKUP_FILE_NAME);
-      const command = microphone ? chooseDarwinRecorderCommand(hasCommand, backupPath, `none:${microphone}`) : null;
-      if (command) {
-        try {
-          backup = new RecorderProcess(spawnRecorder(command.command, command.args), backupPath);
-        } catch {
-          // The default input is still being recorded.
-        }
+    if (builtInCommand) {
+      try {
+        backup = record(builtInCommand, builtInPath);
+      } catch {
+        // The default input is still being recorded.
       }
     }
-    return new VoiceRecorder(primary, backup, tmpDir, platform, deps.note ?? (() => {}));
+    const recorder = new VoiceRecorder(record(command, filePath), backup, tmpDir, platform, note);
+    recorder.backupMicrophone = microphone;
+    return recorder;
   }
 
   async stop(): Promise<RecordedVoiceClip> {
@@ -517,8 +579,13 @@ export class VoiceRecorder {
     try {
       const bytes = this.primary.read();
       const backupBytes = this.backup?.read() ?? null;
-      if (this.backup && !backupBytes) {
-        this.note(`voice: the built-in microphone was not recorded: ${this.backup.errorMessage() || "no audio file"}`);
+      if (this.backup && this.backupMicrophone) {
+        if (backupBytes) {
+          this.backupMicrophone.failures = 0;
+        } else {
+          builtInMicrophoneFailed(this.backupMicrophone);
+          this.note(`voice: the built-in microphone was not recorded: ${this.backup.errorMessage() || "no audio file"}`);
+        }
       }
       if (bytes && hasSound(bytes)) return { bytes, mimeType: "audio/wav" };
       if (backupBytes && hasSound(backupBytes)) {
@@ -531,6 +598,10 @@ export class VoiceRecorder {
       }
       if (bytes.length === 0) {
         throw new Error(stderr || "captured audio file was empty; check microphone access and hold Space while speaking");
+      }
+      if (this.insteadOfBluetooth) {
+        this.note("voice: the built-in microphone recorded only silence");
+        throw new Error(stderr || "the built-in microphone recorded only silence (it is used while the input device is a Bluetooth headset)");
       }
       this.note("voice: the default input recorded only silence");
       throw new Error(stderr || silentCaptureMessage(this.platform));
