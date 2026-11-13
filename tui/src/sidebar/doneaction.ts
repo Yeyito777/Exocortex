@@ -12,6 +12,8 @@ export const DONE_FOLDER_NAME = "done";
 export type DoneDestination =
   | { type: "folder"; folderId: string }
   | { type: "create_top_level" }
+  /** Filed directly in a done folder: back out to that folder's parent (null = top level). */
+  | { type: "out_of_done"; parentId: string | null }
   | { type: "already_done" };
 
 function doneChild(sidebar: SidebarState, parentId: string | null): string | null {
@@ -34,15 +36,17 @@ function insideDoneFolder(sidebar: SidebarState, folderId: string | null): boole
 
 /**
  * Where `.` files a conversation: its own folder's `done/`, else the top-level
- * `done/` (created when missing). A conversation already filed under a `done`
- * folder stays put, unless its folder keeps its own `done/` (done/x/done).
+ * `done/` (created when missing). One filed directly in a `done` folder comes
+ * back out to that folder's parent (done/ -> top level, proj/done -> proj), like
+ * a folder does. One deeper under a `done` folder stays put, unless its folder
+ * keeps its own `done/` (done/x/done).
  */
 export function doneDestination(sidebar: SidebarState, convId: string): DoneDestination | null {
   const conversation = sidebar.conversations.find(conv => conv.id === convId);
   if (!conversation) return null;
   const folderId = conversation.folderId ?? null;
   const folder = folderId ? sidebar.folders.find(candidate => candidate.id === folderId) : undefined;
-  if (folder?.name === DONE_FOLDER_NAME) return { type: "already_done" };
+  if (folder?.name === DONE_FOLDER_NAME) return { type: "out_of_done", parentId: folder.parentId ?? null };
   const local = doneChild(sidebar, folderId);
   if (local) return { type: "folder", folderId: local };
   if (insideDoneFolder(sidebar, folderId)) return { type: "already_done" };
@@ -69,7 +73,8 @@ function leavesView(sidebar: SidebarState, destination: string | null): boolean 
 
 /**
  * `.`: file the selected conversation, or every conversation in a visual block,
- * into done/; a folder filed in a done folder comes back out of it.
+ * into done/; a conversation or folder filed directly in a done folder comes
+ * back out of it.
  */
 export function moveSelectionToDone(sidebar: SidebarState): SidebarKeyResult {
   const cursor = getSelectedSidebarItem(sidebar);
@@ -93,6 +98,7 @@ export function moveSelectionToDone(sidebar: SidebarState): SidebarKeyResult {
     const destination = doneDestination(sidebar, item.id);
     if (!destination) continue;
     if (destination.type === "already_done") alreadyDone++;
+    else if (destination.type === "out_of_done") byFolder.set(destination.parentId, [...byFolder.get(destination.parentId) ?? [], item]);
     else if (destination.type === "create_top_level") create.push(item);
     else byFolder.set(destination.folderId, [...byFolder.get(destination.folderId) ?? [], item]);
   }
