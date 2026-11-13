@@ -31,11 +31,12 @@ import {
 } from "./activitypanel";
 import { focusedConversation, type RenderState } from "./state";
 import { sliceByWidth, termWidth } from "./textwidth";
-import { theme } from "./theme";
+import { hexToAnsi, theme } from "./theme";
 
 export const SCRATCHPAD_TITLE = "Scratchpad";
 /** The collapsed card's cap, as for Tasks. */
 export const MAX_SCRATCHPAD_PANEL_HEIGHT = MAX_TASK_PANEL_HEIGHT;
+const HEADING_HEX = "#b4bac4";
 
 export type ScratchpadLineKind = "heading" | "open" | "done" | "bullet" | "note";
 
@@ -171,9 +172,9 @@ interface LineStyle {
 
 function lineStyle(kind: ScratchpadLineKind): LineStyle {
   switch (kind) {
-    case "heading": return { glyph: "", glyphColor: "", text: `${theme.bold}${theme.heading}`, urgent: `${theme.bold}${theme.warning}` };
+    case "heading": return { glyph: "", glyphColor: "", text: `${theme.bold}${hexToAnsi(HEADING_HEX)}`, urgent: `${theme.bold}${theme.warning}` };
     case "open": return { glyph: "○ ", glyphColor: theme.muted, text: theme.text, urgent: theme.warning };
-    case "done": return { glyph: "✓ ", glyphColor: `${theme.success}${theme.dim}`, text: `${theme.text}${theme.dim}`, urgent: `${theme.warning}${theme.dim}` };
+    case "done": return { glyph: "✓ ", glyphColor: `${theme.dim}${theme.success}`, text: `${theme.dim}${theme.text}`, urgent: `${theme.dim}${theme.warning}` };
     case "bullet": return { glyph: "• ", glyphColor: theme.muted, text: theme.text, urgent: theme.warning };
     case "note": return { glyph: "", glyphColor: "", text: theme.muted, urgent: theme.warning };
   }

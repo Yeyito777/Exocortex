@@ -10,7 +10,7 @@ import { convDisplayName, formatModelDisplayName } from "./messages";
 import { termWidth, truncateToWidth } from "./textwidth";
 import { theme } from "./theme";
 import { activeProviderProxy } from "./provider-proxies";
-import { ansiColorToRgb, hexToRgb } from "./terminalcolors";
+import { ansiColorToRgb } from "./terminalcolors";
 import { terminalColorLevel } from "./theme";
 import { renderLadderSegment, type LadderPalette, type Rgb } from "./modelladder-anim";
 import type { EffortLevel, ModelId, ProviderId } from "./messages";
@@ -62,23 +62,14 @@ export function topbarModelLabel(
 
 const WHITE: Rgb = [255, 255, 255];
 
-/**
- * Colours the ladder animation blends between: the bar's background and its
- * label colour. The label is drawn in the terminal's default foreground, which
- * is the theme's `terminalFg` when it sets one.
- */
+/** Colours the ladder animation blends between: the bar's background and its label colour. */
 export function topbarLadderPalette(): LadderPalette {
   return {
     bg: ansiColorToRgb(theme.topbarBg, 48) ?? [29, 155, 240],
-    fg: theme.terminalFg ? hexToRgb(theme.terminalFg) : WHITE,
-    light: ansiColorToRgb(theme.ladderLight, 38) ?? undefined,
-    refused: ansiColorToRgb(theme.ladderRefused, 38) ?? undefined,
+    fg: WHITE,
     level: terminalColorLevel,
   };
 }
-
-/** Ends `topbarDim`, which is SGR faint or a colour, without touching the bar's background. */
-const TOPBAR_DIM_OFF = "\x1b[22;39m";
 
 export function renderTopbar(state: RenderState, width?: number, now = Date.now()): string {
   const w = width ?? state.cols;
@@ -108,7 +99,8 @@ export function renderTopbar(state: RenderState, width?: number, now = Date.now(
   const rightWidth = rightLabel ? termWidth(rightLabel) + 1 : 0;
   const padding = Math.max(0, w - termWidth(leftPlain) - rightWidth);
 
-  const markerStyled = marker ? `${theme.topbarDim}${marker}${TOPBAR_DIM_OFF}` : "";
+  // SGR 22 ends dim (and bold) without resetting the bar's background.
+  const markerStyled = marker ? `${theme.dim}${marker}\x1b[22m` : "";
   // Shift+Up/Down: the model ladder plays over the right of the bar. It only
   // takes cells the bar leaves blank, so nothing to its left moves.
   const ladder = state.modelLadder?.anim;
@@ -120,6 +112,6 @@ export function renderTopbar(state: RenderState, width?: number, now = Date.now(
     }
   }
   // Without the animation a waiting switch is simply dimmed.
-  const rightStyled = queued && rightLabel ? `${theme.topbarDim}${rightLabel}${TOPBAR_DIM_OFF}` : rightLabel;
+  const rightStyled = queued && rightLabel ? `${theme.dim}${rightLabel}\x1b[22m` : rightLabel;
   return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(padding)}${rightStyled}${rightLabel ? " " : ""}${theme.reset}`;
 }

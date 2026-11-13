@@ -35,6 +35,11 @@ export const cursor_bar = `${ESC}6 q`;         // steady bar (vim insert / defau
 export const erase_to_eol = `${ESC}K`;         // erase to end of line (uses current bg)
 export const RESET = `${ESC}0m`;
 
+/** OSC 12: set terminal cursor color (hex string like "#rrggbb"). */
+export const set_cursor_color = (hex: string) => `\x1b]12;${hex}\x1b\\`;
+/** OSC 112: reset terminal cursor color to default. */
+export const reset_cursor_color = `\x1b]112\x1b\\`;
+
 // ── Rendering primitives ──────────────────────────────────────────
 
 /**

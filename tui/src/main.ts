@@ -57,8 +57,7 @@ import {
   SmoothScroller, parseSmoothScrollReport, setSmoothScroller, smoothScrollerFor,
   IMAGE_CLIP_QUERY, parseImageClipReport,
 } from "./smoothscroll";
-import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse } from "./terminal";
-import { TERMINAL_COLORS_QUERY, handleTerminalColorReply, terminalThemeReset, terminalThemeSequence } from "./terminaltheme";
+import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, markStoppedLocally, releaseLocalStop, isActiveConversationLoading, isProvisionalStale, isStaleCopyMarked, STALE_COPY_MARK_DELAY_MS, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, pushSystemMessage, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { workingRowVisible } from "./conversation";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
@@ -1394,8 +1393,10 @@ function handleSubmit(): void {
           if (state.convId) generateTitle(state.convId, state, daemon, scheduleRender);
           break;
         case "theme_changed":
-          // The terminal's cursor and default colours follow the theme.
-          process.stdout.write(terminalThemeSequence());
+          // Re-emit the cursor color escape for the new theme
+          if (theme.cursorColor) {
+            process.stdout.write(set_cursor_color(theme.cursorColor));
+          }
           break;
         case "get_system_prompt":
           daemon.getSystemPrompt(state.convId ?? undefined);
@@ -2465,14 +2466,13 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
 // ── Terminal setup ──────────────────────────────────────────────────
 
 function setupTerminal(): void {
-  // Ask for the terminal's own colours before the theme replaces them.
-  const themeColorSeq = TERMINAL_COLORS_QUERY + terminalThemeSequence();
+  const cursorColorSeq = theme.cursorColor ? set_cursor_color(theme.cursorColor) : '';
   // App-driven smooth scrolling (st mode 2032) is only queried with region
   // scrolls on; after a suspend the known terminal is told again.
   const smoothScroller = smoothScrollerFor(state);
   smoothScroller?.terminalReset();
   const smoothQuery = smoothScroller ? SMOOTH_SCROLL_ON : scrollRegionsEnabled() ? SMOOTH_SCROLL_QUERY + IMAGE_CLIP_QUERY : "";
-  process.stdout.write(enter_alt + hide_cursor + CELL_SIZE_QUERY + smoothQuery + enable_bracketed_paste + query_clipboard_paste_events + enable_clipboard_paste_events + enable_kitty_kbd + enable_mouse + themeColorSeq);
+  process.stdout.write(enter_alt + hide_cursor + CELL_SIZE_QUERY + smoothQuery + enable_bracketed_paste + query_clipboard_paste_events + enable_clipboard_paste_events + enable_kitty_kbd + enable_mouse + cursorColorSeq);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   terminalSetUp = true;
@@ -2502,12 +2502,13 @@ function startEventLoopLagMonitor(): void {
 function restoreTerminal(): void {
   if (!terminalSetUp) return;
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  const cursorResetSeq = theme.cursorColor ? reset_cursor_color : '';
   terminalGraphicsDetector?.dispose();
   disposeMathImages();
   stopVideo();
   process.stdout.write(disposeHistoryImages(state));
   const smoothOff = smoothScrollerFor(state) ? SMOOTH_SCROLL_OFF : "";
-  process.stdout.write(smoothOff + disable_mouse + disable_kitty_kbd + disable_clipboard_paste_events + disable_bracketed_paste + show_cursor + terminalThemeReset() + leave_alt);
+  process.stdout.write(smoothOff + disable_mouse + disable_kitty_kbd + disable_clipboard_paste_events + disable_bracketed_paste + show_cursor + cursorResetSeq + leave_alt);
   terminalSetUp = false;
 }
 
@@ -2674,7 +2675,6 @@ async function main(): Promise<void> {
         }
         return;
       }
-      if (handleTerminalColorReply(sequence)) return;
       const cell = parseCellSizeResponse(sequence);
       if (cell) {
         setInlineImageCellSize(cell);

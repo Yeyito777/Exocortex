@@ -30,7 +30,7 @@ import { conversationById } from "./sidebar/state";
 import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap } from "./textwrap";
-import { theme, toolColor } from "./theme";
+import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
 export const MAX_PANEL_WIDTH = 50;
 export const MIN_PANEL_WIDTH = 30;
@@ -47,6 +47,7 @@ const ELAPSED_WIDTH = 7;
 export const EXPANDED_SUBAGENT_TITLE_CHARS = 160;
 export const EXPANDED_SUBAGENT_TITLE_ROWS = 3;
 const INTEGRATION_STATE_WIDTH = 14;
+const PANEL_BG_HEX = "#00050f";
 const EXOCORTEX_FALLBACK_HEX = "#1d9bf0";
 const BASH_FALLBACK_HEX = "#d19a66";
 const GOAL_FALLBACK_HEX = "#c792ea";
@@ -242,7 +243,7 @@ function backgroundTaskName(toolName: string | undefined): string {
 
 function taskColor(state: RenderState, toolName: "exo" | "bash" | "goal" | "chrono", fallback: string): string {
   const color = state.toolRegistry.find(tool => tool.name === toolName)?.color ?? fallback;
-  return toolColor(color);
+  return hexToAnsi(color);
 }
 
 function cleanPanelText(text: string): string {
@@ -347,9 +348,9 @@ export interface PanelPalette {
 }
 
 export function panelPalette(state: RenderState): PanelPalette {
-  const panelBg = theme.panelBg;
+  const panelBg = hexToAnsiBg(PANEL_BG_HEX);
   return {
-    outline: `${theme.text}${theme.dim}`,
+    outline: `${theme.dim}${theme.text}`,
     topOutline: `${theme.bold}${theme.muted}`,
     exocortex: taskColor(state, "exo", EXOCORTEX_FALLBACK_HEX),
     bash: taskColor(state, "bash", BASH_FALLBACK_HEX),
@@ -495,7 +496,7 @@ function integrationStyle(state: RenderState, integration: ExternalIntegrationSu
   const style = state.externalToolStyles.find(candidate => candidate.cmd === integration.toolName);
   return {
     label: cleanPanelText(style?.label ?? integration.toolName) || "External",
-    color: style ? toolColor(style.color) : theme.tool,
+    color: style ? hexToAnsi(style.color) : theme.tool,
   };
 }
 
