@@ -1416,6 +1416,8 @@ export interface ClaudeAccountInfo {
   credits?: AccountCredits | null;
   /** Its claude.ai session for limit resets (providers.anthropic.webResets) needs the owner: none stored, expired, or another account's. */
   webSession?: ClaudeWebSessionProblem | null;
+  /** Its long-lived token (`claude setup-token`), when it has one: when the year it was issued for ends, and why it is not in use if Anthropic refused it. */
+  token?: { expiresAt: number; problem?: string } | null;
 }
 
 export type ClaudeWebSessionProblem = "missing" | "expired" | "other_account";

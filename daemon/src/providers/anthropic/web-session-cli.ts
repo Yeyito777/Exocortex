@@ -122,7 +122,9 @@ async function main(): Promise<void> {
   const browserContext = context ?? `claude-${account.id}`;
   if (!CONTEXT_RE.test(browserContext)) fail(`not a browser context name: ${browserContext}`);
 
-  const status = await getClaudeAuthStatus(undefined, account.id);
+  const login = await getClaudeAuthStatus(undefined, account.id);
+  // An account on a long-lived token keeps its owner with the token, also after its login ended.
+  const status = login.orgId ? login : { ...login, orgId: account.token?.orgId, email: login.email ?? account.token?.email };
   if (!status.orgId) fail(`Claude Code is not signed in to "${account.id}" with a claude.ai subscription; sign it in first`);
 
   const vimbrowser = tool("vimbrowser");

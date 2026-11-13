@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalUpstreamAuth, readClaudeCodeOAuth, UpstreamAuthError } from "./upstream-auth";
 import { resetProviderProxyRoutesForTest, setProviderProxyRoute } from "./route";
-import { setClaudeAccountsFileForTests } from "../providers/anthropic/accounts";
+import { setClaudeAccountToken, setClaudeAccountsFileForTests } from "../providers/anthropic/accounts";
+import { claudeTokenRejection, setClaudeTokenDepsForTests } from "../providers/anthropic/account-token";
 
 const dirs: string[] = [];
 const originalClaudeDir = process.env.CLAUDE_CONFIG_DIR;
@@ -104,6 +105,70 @@ describe("remote credentials for /proxy", () => {
     } finally {
       setClaudeAccountsFileForTests(null);
     }
+  });
+
+  test("an account with a long-lived token signs with it; a 401 sets it aside and its own login takes over", async () => {
+    claudeDir("login-token", Date.now() + 3_600_000);
+    let token: string | null = "setup-token";
+    const rejected: string[] = [];
+    let refreshed = 0;
+    const auth = createLocalUpstreamAuth({
+      anthropicLogin: signedIn,
+      refreshClaudeLogin: async () => { refreshed++; },
+      claudeToken: async () => token,
+      rejectClaudeToken: (_account, detail) => {
+        if (token === null) return false;
+        rejected.push(detail);
+        token = null;
+        return true;
+      },
+    });
+    const first = await auth.headers("anthropic", "https://api.anthropic.com/v1/messages", { afterRejection: false, clientHeaders: { "anthropic-beta": "claude-code-20250219" } });
+    expect(first).toEqual({ authorization: "Bearer setup-token", "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" });
+    // Anthropic answered 401: the retry is signed with the login, which is not blamed for the token's refusal.
+    const retry = await auth.headers("anthropic", "https://api.anthropic.com/v1/messages", { afterRejection: true, clientHeaders: {} });
+    expect(retry.authorization).toBe("Bearer login-token");
+    expect(rejected).toEqual(["HTTP 401 from Anthropic"]);
+    expect(refreshed).toBe(0);
+    // A later 401 is the login's own: refreshed as before, and refused when that changes nothing.
+    await expect(auth.headers("anthropic", "u", { afterRejection: true, clientHeaders: {} })).rejects.toBeInstanceOf(UpstreamAuthError);
+    expect(refreshed).toBe(1);
+  });
+
+  test("the token comes from the secrets store by the name in the accounts registry", async () => {
+    const dir = claudeDir("login-token", Date.now() + 3_600_000);
+    setClaudeAccountsFileForTests(join(dir, "accounts.json"));
+    setClaudeTokenDepsForTests({ secret: async name => name === "CLAUDE_SETUP_TOKEN_MAIN" ? "stored-token" : null });
+    try {
+      const auth = createLocalUpstreamAuth({ anthropicLogin: signedIn, refreshClaudeLogin: async () => {} });
+      // No token recorded: the login, as always.
+      expect((await auth.headers("anthropic", "u", { afterRejection: false, clientHeaders: {} })).authorization).toBe("Bearer login-token");
+      setClaudeAccountToken("main", { secret: "CLAUDE_SETUP_TOKEN_MAIN", mintedAt: "2026-11-13T00:00:00Z" });
+      expect((await auth.headers("anthropic", "u", { afterRejection: false, clientHeaders: {} })).authorization).toBe("Bearer stored-token");
+      // Two requests the token signed both come back 401: neither blames the login.
+      expect((await auth.headers("anthropic", "u", { afterRejection: true, clientHeaders: {} })).authorization).toBe("Bearer login-token");
+      expect((await auth.headers("anthropic", "u", { afterRejection: true, clientHeaders: {} })).authorization).toBe("Bearer login-token");
+      expect(claudeTokenRejection("main")?.detail).toBe("HTTP 401 from Anthropic");
+      expect((await auth.headers("anthropic", "u", { afterRejection: false, clientHeaders: {} })).authorization).toBe("Bearer login-token");
+    } finally {
+      setClaudeTokenDepsForTests(null);
+      setClaudeAccountsFileForTests(null);
+    }
+  });
+
+  test("a refused token with no login behind it cannot sign: the pool moves the request on", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "exocortex-claude-nologin-"));
+    dirs.push(dir);
+    process.env.CLAUDE_CONFIG_DIR = dir;
+    let token: string | null = "setup-token";
+    const auth = createLocalUpstreamAuth({
+      anthropicLogin: signedIn,
+      refreshClaudeLogin: async () => {},
+      claudeToken: async () => token,
+      rejectClaudeToken: () => { const had = token !== null; token = null; return had; },
+    });
+    expect((await auth.headers("anthropic", "u", { afterRejection: false, clientHeaders: {} })).authorization).toBe("Bearer setup-token");
+    await expect(auth.headers("anthropic", "u", { afterRejection: true, clientHeaders: {} })).rejects.toBeInstanceOf(UpstreamAuthError);
   });
 
   test("a remote whose main is signed out still serves Claude while another account of its pool can", async () => {

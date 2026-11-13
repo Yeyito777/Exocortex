@@ -7,7 +7,9 @@
  * login of the account the pool routed them to (claude-routing.ts): Claude
  * Code's own stored login in that account's configuration directory, which
  * Claude Code itself keeps refreshed, or, while every account is at a usage
- * limit, an API-credit key (providers/anthropic/api-credits.ts).
+ * limit, an API-credit key (providers/anthropic/api-credits.ts). An account
+ * with a long-lived token (providers/anthropic/account-token.ts) signs with
+ * the token instead of its stored login, until Anthropic refuses it.
  */
 
 import { createHash } from "node:crypto";
@@ -25,6 +27,7 @@ import { requireSubscriptionAuth } from "../providers/anthropic/auth";
 import { refreshAccountUsage } from "../providers/anthropic/usage";
 import { getClaudeAccount, MAIN_ACCOUNT_ID } from "../providers/anthropic/accounts";
 import { claudeAccountStates } from "../providers/anthropic/account-pool";
+import { claudeTokenRejection, hasClaudeToken, loadClaudeToken, noteClaudeTokenRejected } from "../providers/anthropic/account-token";
 import { apiCreditKeyValue, type ApiCreditKey } from "../providers/anthropic/api-credits";
 import { agentSdkUserAgent } from "../providers/anthropic/entrypoint";
 import { log } from "../log";
@@ -150,7 +153,14 @@ export interface UpstreamCredentialSources {
   openaiSession(options: { forceRefresh?: boolean }): Promise<{ accessToken: string; accountId: string | null }>;
   /** An API-credit key's value (read again with `fresh`). */
   apiCreditKey(key: ApiCreditKey, fresh: boolean): Promise<string | null>;
+  /** An account's long-lived token, if it has one Anthropic has not refused. */
+  claudeToken(account: string): Promise<string | null>;
+  /** Anthropic refused a request signed with the account's token: set it aside. Returns whether a token was (or just had been) in use. */
+  rejectClaudeToken(account: string, detail: string): boolean;
 }
+
+/** A token refused this recently explains a 401 that arrives now: the request was signed before the refusal. */
+const TOKEN_REJECTION_SETTLE_MS = 60_000;
 
 const defaultSources: UpstreamCredentialSources = {
   anthropicLogin: () => requireSubscriptionAuth()
@@ -163,6 +173,14 @@ const defaultSources: UpstreamCredentialSources = {
   // /proxy forwards to the ChatGPT backend, so only the ChatGPT login can serve it.
   openaiSession: (options) => getVerifiedSession({ ...options, chatgptOnly: true }),
   apiCreditKey: (key, fresh) => apiCreditKeyValue(key, { fresh }),
+  claudeToken: account => hasClaudeToken(account) ? loadClaudeToken(account) : Promise.resolve(null),
+  rejectClaudeToken: (account, detail) => {
+    if (!hasClaudeToken(account)) return false;
+    const known = claudeTokenRejection(account);
+    if (known) return Date.now() - known.at < TOKEN_REJECTION_SETTLE_MS;
+    noteClaudeTokenRejected(account, detail);
+    return claudeTokenRejection(account) !== null;
+  },
 };
 
 export class UpstreamAuthError extends Error {
@@ -201,6 +219,10 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
   const readClaudeOAuth = (account: string) => account === MAIN_ACCOUNT_ID ? sources.readClaudeOAuth() : sources.readClaudeOAuth(account);
 
   const claudeAccessToken = async (afterRejection: boolean, account: string): Promise<string> => {
+    // A 401 for a request the token signed: the token is set aside, and the account's own login gets its first try.
+    if (afterRejection && sources.rejectClaudeToken(account, "HTTP 401 from Anthropic")) afterRejection = false;
+    const token = await sources.claudeToken(account);
+    if (token) return token;
     let oauth = readClaudeOAuth(account);
     const stale = !oauth || (oauth.expiresAt !== null && oauth.expiresAt - Date.now() < CLAUDE_TOKEN_REFRESH_MARGIN_MS);
     if (stale || afterRejection) {

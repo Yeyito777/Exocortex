@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# claude-account-token — run a Claude account on a long-lived token
+# (`claude setup-token`) instead of its four-week login
+# (daemon/src/providers/anthropic/account-token-cli.ts).
+#
+# Usage:
+#   scripts/claude-account-token <account> [--secret NAME] [--minted DATE] [--check]
+#   scripts/claude-account-token <account> --remove
+set -euo pipefail
+PROJECT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+exec bun "$PROJECT_DIR/daemon/src/providers/anthropic/account-token-cli.ts" "$@"

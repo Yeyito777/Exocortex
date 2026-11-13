@@ -11,6 +11,7 @@ import {
   renderAccountsScreen,
   requestAccountsScreen,
   resetCell,
+  tokenNote,
   webSessionCell,
 } from "./accountsscreen";
 import { tryCommand } from "./commands";
@@ -775,4 +776,17 @@ test("an account whose claude.ai session needs the owner says so quietly in the 
   // With the switch off nothing is sent, and the table is the one from before.
   const off = screenText(openScreen(snapshot({}, [claude("main", { usage: usage() }), claude("max2", { usage: usage() })])).state);
   expect(off.find(row => row.includes("5-Hour"))).not.toContain("Resets");
+});
+
+test("an account's long-lived token shows only once it needs the owner", () => {
+  const DAY = 24 * H;
+  const usage = { fiveHour: null, sevenDay: { utilization: 43, resetsAt: NOW + 108 * H }, noFiveHourLimit: true };
+  const row = (token: ClaudeAccountInfo["token"]) =>
+    screenText(openScreen(snapshot({}, [claude("main", { usage }), claude("max2", { usage, token })])).state).find(line => line.includes("● max2"))!;
+  expect(row({ expiresAt: NOW + 300 * DAY })).not.toContain("token");
+  expect(row({ expiresAt: NOW + 12 * DAY + H })).toContain("token ends 12d");
+  expect(row({ expiresAt: NOW + 300 * DAY, problem: "HTTP 401" })).toContain("token refused");
+  expect(tokenNote({ expiresAt: NOW - DAY }, NOW)).toBe("token past its year");
+  expect(tokenNote(null, NOW)).toBeNull();
+  expect(tokenNote(undefined, NOW)).toBeNull();
 });

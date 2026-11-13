@@ -18,7 +18,8 @@ import { isProviderProxied, providerProxyConnect, providerProxyOutage, providerP
 import { isFableModel } from "./models";
 import type { ProviderProxyApiCredits } from "@exocortex/shared/provider-proxy";
 import { emitClaudeAccountsChanged } from "./account-events";
-import { claudeLoginCommand, displayPath, listClaudeAccounts, MAIN_ACCOUNT_ID, type ClaudeAccount } from "./accounts";
+import { claudeLoginCommand, claudeTokenExpiresAt, displayPath, listClaudeAccounts, MAIN_ACCOUNT_ID, type ClaudeAccount } from "./accounts";
+import { claudeTokenRejection } from "./account-token";
 import { hasConfiguredCredentials } from "./auth";
 import {
   cachedClaudeAuthStatus,
@@ -767,6 +768,7 @@ export function claudeAccountsInfo(currentConvId: string | null = null, now = Da
     const signedIn = status !== null && isSubscriptionAuth(status);
     const updatedAt = getAccountUsageUpdatedAt(account.id);
     const webSession = webSessionProblem(account.id);
+    const tokenProblem = account.token ? claudeTokenRejection(account.id, now)?.detail ?? status?.tokenProblem : undefined;
     return {
       id: account.id,
       email: status?.email ?? null,
@@ -783,6 +785,7 @@ export function claudeAccountsInfo(currentConvId: string | null = null, now = Da
       loginCommand: !signedIn && !block && !state.available ? claudeLoginCommand(account) : null,
       credits: apiCreditAccountCredits(account.id, new Set(activeCreditTurns.keys()), now),
       ...(webSession ? { webSession } : {}),
+      ...(account.token ? { token: { expiresAt: claudeTokenExpiresAt(account.token), ...(tokenProblem ? { problem: tokenProblem } : {}) } } : {}),
     };
   });
   const current = currentConvId ? getConversationAccount(currentConvId) : null;
