@@ -95,6 +95,7 @@ import { activeDurableSleepMetadataStartedAt, focusedInlineSleepStartedAt, inlin
 import { msUntilLiveChronoChange } from "./chronocalls";
 import type { DaemonShutdownMode, Event, MachineResources, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
+import { prepareVoiceRecorder } from "./voice";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
 import { startManualCompaction } from "./compact";
@@ -2594,6 +2595,7 @@ async function main(): Promise<void> {
     },
   });
   daemon.onConnectionLost(handleDaemonConnectionLost);
+  prepareVoiceRecorder();
   voiceInput = createVoiceInputController(state, daemon, scheduleRender, {
     submitPendingTranscription: submitPendingVoiceTranscription,
     completePendingTranscription: completePendingVoiceTranscription,

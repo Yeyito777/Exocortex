@@ -309,6 +309,13 @@ input additionally requires FFmpeg; with Homebrew:
 brew install ffmpeg
 ```
 
+Voice input records the default input device (System Settings › Sound › Input).
+On a Mac with a built-in microphone it records that one alongside and uses it
+only when the default input delivered no signal at all, as a Bluetooth headset
+can right after another device was using it. Setting
+`EXOCORTEX_VOICE_AVFOUNDATION_DEVICE` (an FFmpeg AVFoundation input such as
+`none:1`) records that device alone.
+
 Text and image clipboard integration uses macOS's built-in `pbcopy`, `pbpaste`,
 and `osascript` commands.
 

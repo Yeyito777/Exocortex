@@ -12,6 +12,7 @@ import type { QueuedMessage, RenderState } from "./state";
 import { focusPrompt, pushSystemMessage } from "./state";
 import { theme } from "./theme";
 import { pushUndo } from "./undo";
+import { log } from "./log";
 import {
   VoiceRecorder,
   VOICE_SPINNER_FRAMES,
@@ -114,7 +115,8 @@ export function createVoiceInputController(
   scheduleRender: () => void,
   deps: VoiceInputDeps = {},
 ): VoiceInputController {
-  const startRecorder = deps.startRecorder ?? (() => VoiceRecorder.start());
+  const startRecorder = deps.startRecorder
+    ?? (() => VoiceRecorder.start({ note: message => log("info", message) }));
   const now = deps.now ?? (() => Date.now());
   const session: VoiceSession = {
     animationTimer: null,
