@@ -101,9 +101,11 @@ describe("`.` destination", () => {
     expect(doneDestination(sidebar, "p-a")).toEqual({ type: "folder", folderId: "proj-done" });
   });
 
-  test("already under a done folder: stays, unless its folder keeps its own done/", () => {
+  test("directly in a done folder: back out to its parent; deeper: stays, unless its folder keeps its own done/", () => {
     const sidebar = sidebarWith("navigate");
-    expect(doneDestination(sidebar, "in-done")).toEqual({ type: "already_done" });
+    expect(doneDestination(sidebar, "in-done")).toEqual({ type: "out_of_done", parentId: null });
+    sidebar.conversations.push(conversation("p-done", 9, { folderId: "proj-done" }));
+    expect(doneDestination(sidebar, "p-done")).toEqual({ type: "out_of_done", parentId: "proj" });
     expect(doneDestination(sidebar, "old-a")).toEqual({ type: "already_done" });
     expect(doneDestination(sidebar, "arch-a")).toEqual({ type: "folder", folderId: "arch-done" });
   });
@@ -161,13 +163,22 @@ describe("`.` key", () => {
     expect(sidebar.selectedItem).toEqual(conv("c"));
   });
 
-  test("already in done/: no move, a short notice", () => {
+  test("in done/: `.` brings the conversation back out to the top level", () => {
     const sidebar = sidebarWith("navigate");
     sidebar.currentFolderId = "root-done";
     select(sidebar, conv("in-done"));
+    const result = pressDot(sidebar);
+    expect(result.moves).toMatchObject([{ items: [conv("in-done")], parentId: null }]);
+    expect(result.notice).toBeUndefined();
+    expect(folderOf(sidebar, "in-done")).toBeNull();
+  });
+
+  test("deeper under done/ (done/old/x): no move, a short notice", () => {
+    const sidebar = sidebarWith("navigate");
+    sidebar.currentFolderId = "old";
+    select(sidebar, conv("old-a"));
     expect(pressDot(sidebar)).toEqual({ type: "move_to_done", moves: [], create: [], notice: "Already in a done folder" });
-    expect(folderOf(sidebar, "in-done")).toBe("root-done");
-    expect(sidebar.selectedItem).toEqual(conv("in-done"));
+    expect(folderOf(sidebar, "old-a")).toBe("old");
   });
 
   test("a folder row outside a done folder: nothing", () => {
@@ -200,7 +211,7 @@ describe("`.` key", () => {
     });
   }
 
-  test("tree view: a block across folders splits by destination and reports the ones already done", () => {
+  test("tree view: a block across folders splits by destination; a conversation in done/ comes out", () => {
     const sidebar = sidebarWith("tree");
     sidebar.expandedFolderIds.add("root-done");
     sidebar.expandedFolderIds.add("proj");
@@ -208,11 +219,12 @@ describe("`.` key", () => {
     select(sidebar, conv("a"), conv("in-done"));
     const result = pressDot(sidebar);
     expect(result.moves).toEqual([
+      expect.objectContaining({ items: [conv("in-done")], parentId: null }),
       expect.objectContaining({ items: [conv("p-a"), conv("p-b")], parentId: "proj-done" }),
       expect.objectContaining({ items: [conv("a")], parentId: "root-done" }),
     ]);
-    expect(result.notice).toBe("1 already in a done folder; left in place");
-    expect(folderOf(sidebar, "in-done")).toBe("root-done");
+    expect(result.notice).toBeUndefined();
+    expect(folderOf(sidebar, "in-done")).toBeNull();
     expect(folderOf(sidebar, "p-b")).toBe("proj-done");
     // root-done is expanded, so `a` stays in view and keeps the cursor.
     expect(sidebar.selectedItem).toEqual(conv("a"));
@@ -292,10 +304,10 @@ describe("`.` on a folder filed in done/", () => {
     select(sidebar, conv("a"), dir("arch"));
     const result = pressDot(sidebar);
     expect(result.moves).toEqual([
-      expect.objectContaining({ items: [dir("arch")], parentId: null }),
+      expect.objectContaining({ items: [dir("arch"), conv("in-done")], parentId: null }),
       expect.objectContaining({ items: [conv("a")], parentId: "root-done" }),
     ]);
-    expect(result.notice).toBe("1 already in a done folder; left in place");
+    expect(result.notice).toBeUndefined();
     expect(parentOf(sidebar, "arch")).toBeNull();
     expect(parentOf(sidebar, "proj")).toBeNull();
     expect(folderOf(sidebar, "a")).toBe("root-done");
