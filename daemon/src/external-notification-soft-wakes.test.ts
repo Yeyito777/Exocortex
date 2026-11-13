@@ -333,4 +333,74 @@ describe("external notification command soft wakes", () => {
     await waitUntil(() => listPendingExternalNotificationSoftWakes().length === 0);
     expect(getQueuedMessages(convId)).toEqual([]);
   });
+
+  test("passes events containing U+2028/U+2029 to the filter intact", async () => {
+    // A WhatsApp newsletter post with a line separator split the runner's JSON
+    // request line and failed forever as an infrastructure error (Nov 2026).
+    const convId = makeConversation("soft-wake-line-separator");
+    registerExternalNotificationSource({ toolName: "whatsapp", id: "incoming", label: "Incoming" });
+    const subscription = subscribeExternalNotification({
+      toolName: "whatsapp",
+      sourceId: "incoming",
+      convId,
+      delivery: "soft",
+      softWake: {
+        command: platformCommand(
+          "payload=$(cat); [[ \"$payload\" == *'/ai after'* ]] || exit 0; printf 'matched'; exit 10",
+          "$payload = [Console]::In.ReadToEnd(); if ($payload -notlike '*/ai after*') { exit 0 }; [Console]::Write('matched'); exit 10",
+        ),
+        timeoutMs: 2_000,
+        hardWake: { when: "failure", message: "Handle /ai.", includeOutput: true },
+      },
+    });
+    const content = "Hey hey everyone!!  /ai after end";
+    enqueueExternalNotificationSoftWake(subscription, {
+      eventId: "120363426825434285@newsletter:3AE4B11F90AB5D9E6D91",
+      text: `120363426825434285 <120363426825434285@newsletter>:\n${content}`,
+      data: { schemaVersion: 1, kind: "incoming_message", sender: { id: "120363426825434285@newsletter" }, content },
+    });
+    startExternalNotificationSoftWakeService();
+
+    await waitUntil(() => listPendingExternalNotificationSoftWakes().length === 0 || Boolean(listPendingExternalNotificationSoftWakes()[0]?.retryAt));
+    expect(listPendingExternalNotificationSoftWakes()).toEqual([]);
+    expect(getQueuedMessages(convId)).toHaveLength(1);
+    expect(getQueuedMessages(convId)[0].text).toContain("matched");
+  });
+
+  test("gives up on a permanently failing runner so later events for the subscription still run", async () => {
+    const convId = makeConversation("soft-wake-runner-give-up");
+    registerExternalNotificationSource({ toolName: "whatsapp", id: "incoming", label: "Incoming" });
+    const subscription = subscribeExternalNotification({
+      toolName: "whatsapp",
+      sourceId: "incoming",
+      convId,
+      delivery: "soft",
+      softWake: {
+        command: platformCommand("true", "exit 0"),
+        timeoutMs: 2_000,
+        hardWake: { when: "failure", message: "Handle /ai.", includeOutput: true },
+      },
+    });
+    const first = enqueueExternalNotificationSoftWake(subscription, { eventId: "stuck", text: "stuck message" });
+    enqueueExternalNotificationSoftWake(subscription, { eventId: "behind", text: "later message" });
+    setIsolatedBashRunnerPathForTest("/definitely/missing/exocortex-bash-runner.ts");
+    startExternalNotificationSoftWakeService();
+
+    for (let attempt = 0; attempt < 20 && listPendingExternalNotificationSoftWakes()[0]?.id === first.occurrenceId; attempt++) {
+      await waitUntil(() => listPendingExternalNotificationSoftWakes()[0]?.id !== first.occurrenceId
+        || Boolean(listPendingExternalNotificationSoftWakes()[0]?.retryAt));
+      if (listPendingExternalNotificationSoftWakes()[0]?.id === first.occurrenceId) retryExternalNotificationSoftWakesNowForTest();
+    }
+    await waitUntil(() => listPendingExternalNotificationSoftWakes()[0]?.id !== first.occurrenceId);
+    expect(getQueuedMessages(convId)).toHaveLength(1);
+    expect(getQueuedMessages(convId)[0].text).toContain("External notification filter failed");
+    expect(getQueuedMessages(convId)[0].text).toContain("stuck message");
+
+    // The later event now runs (against the still-missing runner) instead of waiting.
+    await waitUntil(() => Boolean(listPendingExternalNotificationSoftWakes()[0]?.retryAt));
+    setIsolatedBashRunnerPathForTest(null);
+    retryExternalNotificationSoftWakesNowForTest();
+    await waitUntil(() => listPendingExternalNotificationSoftWakes().length === 0);
+    expect(getQueuedMessages(convId)).toHaveLength(1);
+  }, 20_000);
 });

@@ -33,6 +33,7 @@ import {
   suppressBackgroundTaskNotification,
 } from "../background-task-state";
 import { toolTextSource } from "./tool-text";
+import { jsonLine } from "./json-line";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -585,7 +586,7 @@ async function executeBashImpl(
     function writeRunnerRequest(request: object): boolean {
       if (runner.stdin.destroyed) return false;
       try {
-        runner.stdin.write(`${JSON.stringify(request)}\n`);
+        runner.stdin.write(jsonLine(request));
         return true;
       } catch {
         return false;

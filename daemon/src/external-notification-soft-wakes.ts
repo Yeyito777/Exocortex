@@ -34,6 +34,10 @@ const MAX_PENDING_SOFT_WAKES = 256;
 const MAX_PENDING_PER_SUBSCRIPTION = 64;
 const MAX_PENDING_STATE_BYTES = 16 * 1024 * 1024;
 const RETRY_DELAY_MS = 5_000;
+const MAX_RETRY_DELAY_MS = 5 * 60_000;
+// A runner that keeps failing on one event (about ten minutes of backoff)
+// becomes a failed filter result, so it cannot hold its subscription's FIFO.
+const MAX_INFRASTRUCTURE_ATTEMPTS = 8;
 const MAX_COMMAND_OUTPUT_IN_WAKE = 8_000;
 
 export interface ExternalNotificationEvent {
@@ -56,6 +60,8 @@ export interface PendingExternalNotificationSoftWake {
   createdAt: number;
   sequence: number;
   retryAt?: number;
+  /** Runner infrastructure failures so far. */
+  attempts?: number;
   commandResult?: { failed: boolean; selected?: boolean; output: string };
 }
 
@@ -124,6 +130,7 @@ function normalizeOccurrence(raw: unknown): PendingExternalNotificationSoftWake 
     createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now(),
     sequence: Number.isFinite(value.sequence) ? Number(value.sequence) : 0,
     ...(Number.isFinite(value.retryAt) ? { retryAt: Number(value.retryAt) } : {}),
+    ...(Number.isFinite(value.attempts) ? { attempts: Number(value.attempts) } : {}),
     ...(value.commandResult && typeof value.commandResult.failed === "boolean" && typeof value.commandResult.output === "string"
       ? { commandResult: {
           failed: value.commandResult.failed,
@@ -388,17 +395,26 @@ async function executeOccurrence(occurrence: PendingExternalNotificationSoftWake
         });
         if (controller.signal.aborted || !started) return;
         if (result.failureKind === "infrastructure") {
-          throw new Error(`Bash infrastructure failure: ${result.output}`);
+          const attempts = (occurrence.attempts ?? 0) + 1;
+          if (attempts < MAX_INFRASTRUCTURE_ATTEMPTS) {
+            occurrence.attempts = attempts;
+            throw new Error(`Bash infrastructure failure: ${result.output}`);
+          }
+          output = `Filter could not run after ${attempts} attempts: ${result.output}`;
+          failed = true;
+          selected = false;
+        } else {
+          selected = result.exitCode === 10;
+          output = selected
+            ? result.output.replace(/(?:^|\n)\(exit code 10\)\s*$/, "").trimEnd()
+            : result.output;
+          failed = result.isError && !selected;
         }
-        selected = result.exitCode === 10;
-        output = selected
-          ? result.output.replace(/(?:^|\n)\(exit code 10\)\s*$/, "").trimEnd()
-          : result.output;
-        failed = result.isError && !selected;
       }
 
       occurrence.commandResult = { failed, ...(selected ? { selected: true } : {}), output };
       delete occurrence.retryAt;
+      delete occurrence.attempts;
       mutatePendingDurably(() => pending.set(occurrence.id, occurrence));
     }
 
@@ -411,7 +427,8 @@ async function executeOccurrence(occurrence: PendingExternalNotificationSoftWake
     );
   } catch (error) {
     if (controller.signal.aborted || !started) return;
-    occurrence.retryAt = Date.now() + RETRY_DELAY_MS;
+    const backoff = RETRY_DELAY_MS * 2 ** Math.max(0, (occurrence.attempts ?? 1) - 1);
+    occurrence.retryAt = Date.now() + Math.min(backoff, MAX_RETRY_DELAY_MS);
     let persistenceError: unknown;
     try {
       mutatePendingDurably(() => pending.set(occurrence.id, occurrence));
