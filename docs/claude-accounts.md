@@ -164,7 +164,9 @@ still keeps them in place.
   turns but still counts in the usage bars at its full share.
 - A turn that fails authentication on an account keeps that account out of
   routing for 15 minutes when there are other accounts, then its sign-in is
-  checked again. Signed-out accounts take no turns.
+  checked again. If another account is signed in, the failed turn runs again
+  on it at once instead of ending in an error. Signed-out accounts take no
+  turns.
 - An account's usage comes from its turns' `rate_limit_event`s and from the
   `/usage` poll, which reads about a point higher for the same moment. Within
   one window (same reset time) a report up to 5 points lower keeps the higher
@@ -435,6 +437,25 @@ OAuth refresh and exit before saving it, which leaves the login expired
 so a new login shows up), and not before every turn. A turn that reports usage
 counts as a fresh check. `/account claude` and `/login anthropic` check right
 away.
+
+### A login ends about four weeks after sign-in
+
+Anthropic ends each Claude Code login a fixed time after `claude auth login`
+(27.6 to 28.6 days seen, Nov 2026), however often it was used. The next
+refresh is then refused with "Refresh token expired", Claude Code reports
+"this login reached its time limit and cannot be renewed", clears the tokens,
+and the account shows as signed out until someone signs in again. Nothing
+on this machine causes or can extend it. A claude.ai browser session ends on
+about the same schedule, so an account's limit-resets session (below) made
+on the same day as its login goes on the same day.
+
+The end date is in the login itself, not a secret:
+
+```bash
+jq '.claudeAiOauth.refreshTokenExpiresAt / 1000 | todate' ~/.claude-max2/.credentials.json
+```
+
+Signing in again before that date starts a new four weeks.
 
 ## Usage bars
 

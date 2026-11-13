@@ -331,10 +331,15 @@ export async function refreshClaudeAccountStatuses(options: { signal?: AbortSign
 /**
  * A turn on this account failed authentication. With other accounts to use,
  * keep it out of routing for a while; either way check its sign-in again.
+ * Returns whether another signed-in account can take the turn now.
  */
-export function noteAccountAuthFailure(account: string, reason: string): void {
-  if (multipleClaudeAccounts()) noteClaudeAccountAuthFailure(account, reason);
-  else invalidateClaudeAuthStatus(account);
+export function noteAccountAuthFailure(account: string, reason: string): boolean {
+  if (!multipleClaudeAccounts()) {
+    invalidateClaudeAuthStatus(account);
+    return false;
+  }
+  noteClaudeAccountAuthFailure(account, reason);
+  return claudeAccountStates().some(state => state.id !== account && state.available);
 }
 
 export function multipleClaudeAccounts(): boolean {

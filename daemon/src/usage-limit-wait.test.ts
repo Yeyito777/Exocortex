@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { claudeDailyReset, isUsageLimitError, runWithUsageLimitWait, UsageLimitedError } from "./usage-limit-wait";
+import { claudeDailyReset, isUsageLimitError, MAX_RETRIES_AT_ONCE, runWithUsageLimitWait, UsageLimitedError } from "./usage-limit-wait";
 import { RetryableStreamAbortController } from "./watchdog-retry";
 
 const refused = () => new Error("Claude Code: You've hit your session limit · resets 9:10pm (America/Panama)");
@@ -18,6 +18,27 @@ describe("usage capacity waits", () => {
     const now = Date.parse("2026-10-15T23:00:00Z");
     expect(claudeDailyReset(refused().message, now)).toBe(Date.parse("2026-10-16T02:10:00Z"));
     expect(claudeDailyReset("resets 9pm (Not/AZone)", now)).toBeNull();
+  });
+
+  test("an error that says to run again at once does, with no shown wait, and only so many times", async () => {
+    const moved = new Error("this account's login ended; another can take the turn");
+    const waits: Array<number | null> = [];
+    const hooks = { start(resetAt: number | null) { waits.push(resetAt); }, end() {} };
+    const ready = () => ({ ready: true, resetAt: null });
+    let calls = 0;
+    const result = await runWithUsageLimitWait(new RetryableStreamAbortController(), async () => {
+      if (++calls === 1) throw moved;
+      return "ran";
+    }, ready, hooks, { ...options, retryAtOnce: error => error === moved });
+    expect(result).toBe("ran");
+    expect(calls).toBe(2);
+    expect(waits).toEqual([]);
+
+    calls = 0;
+    const always = runWithUsageLimitWait(new RetryableStreamAbortController(), async () => { calls++; throw moved; },
+      ready, hooks, { ...options, retryAtOnce: error => error === moved });
+    await expect(always).rejects.toBe(moved);
+    expect(calls).toBe(MAX_RETRIES_AT_ONCE + 1);
   });
 
   test("moves to a second account without resolving the turn or losing committed output", async () => {

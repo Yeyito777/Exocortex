@@ -43,6 +43,9 @@ export function claudeDailyReset(message: string, now = Date.now()): number | nu
   return null;
 }
 
+/** How often one turn runs again at once (`retryAtOnce`); past it the error ends the turn. */
+export const MAX_RETRIES_AT_ONCE = 3;
+
 export interface UsageAvailability {
   ready: boolean;
   resetAt: number | null;
@@ -54,12 +57,17 @@ export async function runWithUsageLimitWait<T>(
   operation: () => Promise<T>,
   availability: () => UsageAvailability,
   hooks: { start(resetAt: number | null): void; end(): void },
-  options: { probeMs?: number; retryFloorMs?: number; shouldRetry?: (error: unknown) => boolean; failInsteadOfWaiting?: boolean } = {},
+  options: {
+    probeMs?: number; retryFloorMs?: number; shouldRetry?: (error: unknown) => boolean; failInsteadOfWaiting?: boolean;
+    /** Errors after which the operation runs again at once, with no shown wait: what refused it is already out of the way. */
+    retryAtOnce?: (error: unknown) => boolean;
+  } = {},
 ): Promise<T> {
   const probeMs = options.probeMs ?? 30_000;
   const retryFloorMs = options.retryFloorMs ?? 1_000;
   let lastAttempt = 0;
   let refused = false;
+  let retriedAtOnce = 0;
   // One shown wait per stretch of waiting, not one per probe: restarting it
   // would reset its "waiting since" time and flicker the status every probe.
   let waiting = false;
@@ -109,7 +117,9 @@ export async function runWithUsageLimitWait<T>(
       try {
         return await operation();
       } catch (error) {
-        if (controller.signal.aborted || !(options.shouldRetry ?? isUsageLimitError)(error)) throw error;
+        if (controller.signal.aborted) throw error;
+        if (options.retryAtOnce?.(error) && ++retriedAtOnce <= MAX_RETRIES_AT_ONCE) continue;
+        if (!(options.shouldRetry ?? isUsageLimitError)(error)) throw error;
         if (options.failInsteadOfWaiting) {
           // Another account or a credit key may still take it: try once more, then give up.
           const next = availability();
