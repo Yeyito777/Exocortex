@@ -117,6 +117,9 @@ export interface LadderPalette {
   bg: Rgb;
   /** Normal label colour (what cells settle toward before going back to the default). */
   fg: Rgb;
+  /** The light a step up carries, and the tint of a refused step (theme `ladderLight`, `ladderRefused`). */
+  light?: Rgb;
+  refused?: Rgb;
   level: TerminalColorLevel;
 }
 
@@ -268,7 +271,7 @@ function morphCells(anim: LadderAnimation, label: string, now: number, palette: 
     if (tau >= GLOW_FALL_MS) return { ch: cell.ch, rgb: rest };
     const glow = tau < 0 ? easeIn(1 + tau / GLOW_RISE_MS) : 1 - easeOut(tau / GLOW_FALL_MS);
     const base = tau < 0 ? wasRgb : mix(wasRgb, restRgb, tau / GLOW_FALL_MS);
-    return { ch: cell.ch, rgb: up ? mix(base, LIGHT, 0.65 * glow) : mix(base, palette.bg, 0.3 * glow) };
+    return { ch: cell.ch, rgb: up ? mix(base, palette.light ?? LIGHT, 0.65 * glow) : mix(base, palette.bg, 0.3 * glow) };
   };
 
   const row: LadderCell[] = Array.from({ length: width }, () => ({ ch: " ", rgb: null }));
@@ -294,7 +297,7 @@ function morphCells(anim: LadderAnimation, label: string, now: number, palette: 
     const tau = elapsed - frontAt(column);
     if (tau < 0) continue;
     const cell = to[plan.prefix + i];
-    put(column, cell.ch === " " || tau >= CELL_IN_MS ? cell : { ch: cell.ch, rgb: mix(up ? LIGHT : palette.bg, restRgb, easeOut(tau / CELL_IN_MS)) });
+    put(column, cell.ch === " " || tau >= CELL_IN_MS ? cell : { ch: cell.ch, rgb: mix(up ? (palette.light ?? LIGHT) : palette.bg, restRgb, easeOut(tau / CELL_IN_MS)) });
   }
   for (let i = 0; i < plan.suffix; i++) put(midEnd + i, passed(from[from.length - plan.suffix + i], midEnd + i));
   return row;
@@ -350,17 +353,17 @@ function meterCells(anim: LadderAnimation, now: number, palette: LadderPalette):
     const wasLit = from !== null && index <= from;
     let color: Rgb = lit ? palette.fg : unlit;
     // The segment gained lights up and cools; the one lost fades out.
-    if (lit && !wasLit) color = mix(LIGHT, palette.fg, change);
+    if (lit && !wasLit) color = mix(palette.light ?? LIGHT, palette.fg, change);
     if (!lit && wasLit) color = mix(palette.fg, unlit, change);
     if (waiting) {
       // Still the running rungs, but on their way out; the ones the switch adds or drops breathe.
       if (lit) color = mix(color, unlit, 0.5);
       const target = waiting.rung;
-      if (target !== null && !lit && index <= target) color = mix(unlit, LIGHT, 0.15 + 0.75 * breath);
+      if (target !== null && !lit && index <= target) color = mix(unlit, palette.light ?? LIGHT, 0.15 + 0.75 * breath);
       if (target !== null && lit && index > target) color = mix(dimmed, unlit, breath);
     } else if (cue && lit) {
       // Nowhere further to go: the meter swells once at the top, sags once at the bottom.
-      color = cue.dir > 0 ? mix(palette.fg, LIGHT, bump) : mix(palette.fg, unlit, 0.7 * bump);
+      color = cue.dir > 0 ? mix(palette.fg, palette.light ?? LIGHT, bump) : mix(palette.fg, unlit, 0.7 * bump);
     }
     return { ch: LADDER_METER_GLYPH, rgb: mix(mix(color, palette.bg, fade), palette.bg, 1 - appear) };
   });
@@ -372,7 +375,7 @@ function refusedTint(anim: LadderAnimation, cells: LadderCell[], now: number, pa
   if (cue?.kind !== "refused") return cells;
   const t = (now - cue.startAt) / CUE_MS;
   if (t >= 1) return cells;
-  return cells.map(cell => cell.ch === " " ? cell : { ch: cell.ch, rgb: mix(cell.rgb ?? palette.fg, REFUSED, (1 - t) * 0.85) });
+  return cells.map(cell => cell.ch === " " ? cell : { ch: cell.ch, rgb: mix(cell.rgb ?? palette.fg, palette.refused ?? REFUSED, (1 - t) * 0.85) });
 }
 
 /**

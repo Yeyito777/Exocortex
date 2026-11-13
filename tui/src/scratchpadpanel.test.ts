@@ -115,7 +115,7 @@ describe("scratchpad markdown subset", () => {
     expect(rows.join("\n")).not.toContain("**");
     expect(rows.join("\n")).not.toContain("[ ]");
     expect(panel.lines[3]).toContain(`${theme.warning}Wed 11:00`);
-    expect(panel.lines[5]).toContain(`${theme.dim}${theme.text}ECO Writing 6`);
+    expect(panel.lines[5]).toContain(`${theme.text}${theme.dim}ECO Writing 6`);
     expect(panel.lines[1]).toContain(theme.bold);
     expect(panel.lines[12]).toContain(`${theme.muted}Claude main`);
     expect(panel.lines.every(line => termWidth(stripAnsi(line)) === 50)).toBe(true);

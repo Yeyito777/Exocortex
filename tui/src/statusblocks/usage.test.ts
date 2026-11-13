@@ -74,7 +74,7 @@ describe("usage status block", () => {
     expect(stripAnsi(block!.rows[0])).toContain("5-Hour: [XXXXXXXXXXXXXXXXXXXX] not applicable");
     expect(stripAnsi(block!.rows[0])).not.toContain("resets in");
     expect(block!.rows[0]).toContain(`${theme.dim}${"X".repeat(20)}`);
-    expect(block!.rows[0]).toContain(`${theme.dim}${theme.text}not applicable`);
+    expect(block!.rows[0]).toContain(`${theme.text}${theme.dim}not applicable`);
     expect(stripAnsi(block!.rows[1])).toContain("Weekly: [");
     expect(stripAnsi(block!.rows[1])).toContain("42% resets in 2h:00m");
     expect(stripAnsi(block!.rows[0]).length).toBe(block!.width);

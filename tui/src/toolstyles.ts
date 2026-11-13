@@ -12,7 +12,7 @@
 import { parseMcpToolName, type ToolDisplayInfo, type ExternalToolStyle } from "./messages";
 import { splitTopLevelShellSegments } from "./bashsegments";
 import { isHeredocDelimiterLine, scanHeredocOperators } from "./bashheredocs";
-import { theme, hexToAnsi } from "./theme";
+import { theme, toolColor } from "./theme";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -370,7 +370,7 @@ function tryMatch(command: string, style: ExternalToolStyle): ResolvedToolDispla
   const hasCommandBoundary = boundary !== undefined && /[\s<>]/.test(boundary);
   if (command === cmd || (command.startsWith(cmd) && hasCommandBoundary)) {
     const detail = command.slice(cmd.length).trimStart();
-    return { label: style.label, detail, fg: hexToAnsi(style.color), cmd };
+    return { label: style.label, detail, fg: toolColor(style.color), cmd };
   }
   return null;
 }
@@ -436,5 +436,5 @@ export function resolveToolDisplay(
   const label = info?.label ?? parseMcpToolName(toolName)?.label ?? toolName;
   // A call with nothing to add is summarized by its label alone.
   const detail = summary === label ? "" : summary;
-  return { label, detail, fg: info ? hexToAnsi(info.color) : theme.tool };
+  return { label, detail, fg: info ? toolColor(info.color) : theme.tool };
 }

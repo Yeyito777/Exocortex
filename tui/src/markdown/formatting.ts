@@ -1,10 +1,7 @@
-import { hexToAnsiBg, theme } from "../theme";
+import { theme } from "../theme";
 import { inlineLinkAt, type LinkSpan } from "../links";
 
 export { hardBreak, sliceByWidth, termWidth, visibleLength } from "../textwidth";
-
-// Markdown-specific background not in the theme system
-const BG_CODE = hexToAnsiBg("#162030"); // subtle tint for inline code
 
 // --- Horizontal rule detection ---
 // Matches CommonMark horizontal rules: 3+ of -, *, or _ with optional
@@ -183,7 +180,7 @@ function renderStyledTokens(tokens: StyledToken[], bgRestore: string): string {
       if (active.italic && !desired.italic) text += theme.italicOff;
       if (desired.bold) text += theme.bold;
       if (desired.italic) text += theme.italic;
-      if (desired.code) text += BG_CODE;
+      if (desired.code) text += theme.inlineCodeBg;
     } else {
       if (active.bold && !desired.bold) text += theme.boldOff;
       if (active.italic && !desired.italic) text += theme.italicOff;
