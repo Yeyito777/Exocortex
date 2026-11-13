@@ -121,7 +121,7 @@ function renderWindowLine(label: string, window: UsageWindow | null, now: number
 
 function renderUnavailableWindowLine(label: string): { line: string; width: number } {
   const bar = `${theme.dim}${"X".repeat(BAR_WIDTH)}${theme.reset}`;
-  const line = `${theme.muted}  ${label}: ${theme.text}[${bar}${theme.text}] ${theme.dim}${theme.text}not applicable${theme.reset}`;
+  const line = `${theme.muted}  ${label}: ${theme.text}[${bar}${theme.text}] ${theme.text}${theme.dim}not applicable${theme.reset}`;
   return { line, width: unavailableWindowLineWidth(label) };
 }
 

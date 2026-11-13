@@ -1,7 +1,7 @@
-import { highlightLine, isLanguageSupported, FG_WHITE } from "./highlight";
+import { highlightLine, isLanguageSupported } from "./highlight";
 import { termWidth, hardBreak } from "./formatting";
 import type { WrapCopyLine } from "../textwrap";
-import { hexToAnsi } from "../theme";
+import { theme } from "../theme";
 
 export interface CodeBlockRenderResult {
   lines: string[];
@@ -14,8 +14,6 @@ export interface CodeBlockRenderResult {
 }
 
 // ANSI color codes (syntax-highlight-specific, not in theme)
-const FG_SYN_GUTTER = hexToAnsi("#374150"); // gutter char color
-const FG_SYN_LABEL = hexToAnsi("#505a69");  // dim label for language name
 
 // Gutter character constant
 export const CODE_GUTTER = "▎";
@@ -80,7 +78,7 @@ export function renderCodeBlockWrapped(
   const copy: WrapCopyLine[] = [];
   const hasLang = language && isLanguageSupported(language);
   const displayLang = language || "";
-  const gutterPrefix = FG_SYN_GUTTER + CODE_GUTTER + " ";
+  const gutterPrefix = theme.codeGutter + CODE_GUTTER + " ";
   const codeWidth = Math.max(1, maxWidth - 2);
 
   const push = (line: string, isContinuation: boolean, copyLine: WrapCopyLine) => {
@@ -92,7 +90,7 @@ export function renderCodeBlockWrapped(
 
   // Language label line (if language specified)
   if (displayLang) {
-    push(gutterPrefix + FG_SYN_LABEL + displayLang, false, { text: "", displayStart: 2, skip: true });
+    push(gutterPrefix + theme.codeLabel + displayLang, false, { text: "", displayStart: 2, skip: true });
   }
 
   // Code content lines
@@ -107,7 +105,7 @@ export function renderCodeBlockWrapped(
       const chunk = chunks[i];
       const rendered = hasLang
         ? gutterPrefix + highlightLine(chunk, language)
-        : gutterPrefix + FG_WHITE + chunk;
+        : gutterPrefix + theme.codeText + chunk;
       push(rendered, i > 0, { text: chunk, displayStart: 2 });
     }
   }
