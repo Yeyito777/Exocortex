@@ -11,11 +11,10 @@
  * - renderLineWithSearch: highlight one or more search-match ranges
  */
 
-import { hexToAnsi, theme } from "./theme";
+import { theme } from "./theme";
 import { stripAnsi } from "./historycursor";
 import { nextGraphemeEnd } from "./graphemes";
 
-const CURSOR_FG = hexToAnsi("#000000"); // black text on cursor
 const ANSI_OR_HYPERLINK = /^\x1b(?:\[[0-9;]*[A-Za-z]|\]8;[^;]*;[^\x1b]*\x1b\\)/;
 
 /**
@@ -31,7 +30,7 @@ const ANSI_OR_HYPERLINK = /^\x1b(?:\[[0-9;]*[A-Za-z]|\]8;[^;]*;[^\x1b]*\x1b\\)/;
 export function renderLineWithCursor(line: string, col: number): string {
   const plain = stripAnsi(line);
   if (plain.length === 0) {
-    return `${CURSOR_FG}${theme.cursorBg} ${theme.reset}`;
+    return `${theme.cursorFg}${theme.cursorBg} ${theme.reset}`;
   }
 
   const parts: string[] = [];
@@ -62,7 +61,7 @@ export function renderLineWithCursor(line: string, col: number): string {
     const cluster = line.slice(i, end);
     if (visIdx <= col && col < visIdx + cluster.length) {
       // Cursor: override fg/bg for the whole grapheme, then restore text styles after.
-      parts.push(`${CURSOR_FG}${theme.cursorBg}${cluster}${theme.reset}${activeEscapes.join("")}`);
+      parts.push(`${theme.cursorFg}${theme.cursorBg}${cluster}${theme.reset}${activeEscapes.join("")}`);
       cursorRendered = true;
     } else {
       parts.push(cluster);
@@ -72,7 +71,7 @@ export function renderLineWithCursor(line: string, col: number): string {
   }
 
   if (!cursorRendered) {
-    parts.push(`${CURSOR_FG}${theme.cursorBg} ${theme.reset}`);
+    parts.push(`${theme.cursorFg}${theme.cursorBg} ${theme.reset}`);
   }
 
   return parts.join("");
