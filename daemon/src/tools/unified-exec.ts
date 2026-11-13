@@ -4,6 +4,7 @@
  * from read/search access. */
 import type { ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
+import { jsonLine } from "./json-line";
 import { randomInt, randomUUID } from "crypto";
 import { open } from "fs/promises";
 import { resolve } from "path";
@@ -74,7 +75,7 @@ function stop(session: Session): boolean {
     if (!session.runner.stdin.writable || session.runner.stdin.destroyed) {
       return session.pid ? killProcessGroup(session.pid) : session.runner.kill("SIGTERM");
     }
-    session.runner.stdin.write(JSON.stringify({ type: "stop" }) + "\n");
+    session.runner.stdin.write(jsonLine({ type: "stop" }));
     return true;
   } catch {
     if (session.pid) return killProcessGroup(session.pid);
@@ -139,7 +140,7 @@ async function detach(session: Session, signal?: AbortSignal): Promise<void> {
   if (session.closed || session.backgrounded) return;
   const now = Date.now();
   session.recordPath = session.owner ? backgroundTaskRecordPath(session.taskId) : undefined;
-  session.runner.stdin.write(JSON.stringify({
+  session.runner.stdin.write(jsonLine({
     type: "background",
     ...(session.recordPath ? { recovery: {
       recordPath: session.recordPath, taskId: session.taskId, ownerConversationId: session.owner,
@@ -147,7 +148,7 @@ async function detach(session: Session, signal?: AbortSignal): Promise<void> {
       backgroundedAt: now, originDaemonPid: process.pid, outputPath: session.outputPath,
       cwd: session.cwd, timeoutAt: session.startedAt + HARD_TIMEOUT_MS,
     } } : {}),
-  }) + "\n");
+  }));
   await waitFor(session, session.detached, 10_000, signal);
   if (!session.closed && !session.backgrounded) {
     stop(session);
@@ -269,10 +270,10 @@ async function executeCommand(input: Record<string, unknown>, context?: ToolExec
     });
     // systemd-run does not forward its client's environment to the service.
     // Carry it over the private runner protocol, as the legacy Bash tool does.
-    runner.stdin.write(JSON.stringify({ type: "start", command, outputPath, windows, cwd, shell, env,
+    runner.stdin.write(jsonLine({ type: "start", command, outputPath, windows, cwd, shell, env,
       login: input.login === true, tty: input.tty === true, keepStdinOpen: true,
       terminateOnParentExit: true, timeoutMs: HARD_TIMEOUT_MS, captureLimitBytes: CAPTURE_BYTES,
-    }) + "\n");
+    }));
     await waitFor(active, active.ready, 10_000, signal);
     if (!active.pid && !active.closed) throw new Error("Shell runner startup timed out; termination requested.");
     const manual = deferred();
@@ -303,7 +304,7 @@ async function executeStdin(input: Record<string, unknown>, context?: ToolExecut
     session.busy = true;
     if (chars && session.closed) throw new Error("Session has already exited; input was not sent. Poll without chars for its final output.");
     const startedAt = Date.now();
-    if (chars) session.runner.stdin.write(JSON.stringify({ type: "input", chars }) + "\n");
+    if (chars) session.runner.stdin.write(jsonLine({ type: "input", chars }));
     // The command already runs detached: the background key or a steer only ends this wait.
     const manual = deferred();
     context?.registerBackgrounder?.({ toolName: "write_stdin", toolCallId: context.toolCallId, background: () => { manual.resolve(); return !candidate.closed; } });

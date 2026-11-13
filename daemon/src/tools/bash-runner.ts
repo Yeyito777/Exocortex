@@ -9,6 +9,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { closeSync, createWriteStream, openSync, readSync, renameSync, statSync, writeFileSync, type WriteStream } from "fs";
 import { createInterface } from "readline";
+import { jsonLine } from "./json-line";
 import {
   readProcessStartTime,
   writeBackgroundTaskRecord,
@@ -96,7 +97,7 @@ function send(event: RunnerEvent, final = false): void {
     if (final) process.exit(0);
     return;
   }
-  const payload = `${JSON.stringify(event)}\n`;
+  const payload = jsonLine(event);
   try {
     if (final) {
       process.stdout.write(payload, () => process.exit(0));
