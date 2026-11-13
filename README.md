@@ -310,11 +310,15 @@ brew install ffmpeg
 ```
 
 Voice input records the default input device (System Settings › Sound › Input).
-On a Mac with a built-in microphone it records that one alongside and uses it
-only when the default input delivered no signal at all, as a Bluetooth headset
-can right after another device was using it. Setting
+While that device is a Bluetooth headset (AirPods), a Mac with a built-in
+microphone records the built-in microphone instead: opening a headset's
+microphone pulls the headset over from the phone, drops its playback to call
+quality and loses the first half second. With any other default input the
+built-in microphone is recorded alongside and used only when the default input
+delivered no signal at all. With the lid closed there is no built-in microphone
+and the default input is recorded alone. Setting
 `EXOCORTEX_VOICE_AVFOUNDATION_DEVICE` (an FFmpeg AVFoundation input such as
-`none:1`) records that device alone.
+`none:1`) always records that device alone.
 
 Text and image clipboard integration uses macOS's built-in `pbcopy`, `pbpaste`,
 and `osascript` commands.

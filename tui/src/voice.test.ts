@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyVoicePlaceholder, builtInMicrophoneName, chooseDarwinRecorderCommand, chooseLinuxRecorderCommand, chooseRecorderCommand, getRenderedVoicePrompt, insertVoiceTranscript, isDigitallySilentWav, recorderErrorMessage, VoiceRecorder, voicePlaceholderText, type VoicePromptState } from "./voice";
+import { applyVoicePlaceholder, builtInMicrophoneName, chooseDarwinRecorderCommand, chooseLinuxRecorderCommand, chooseRecorderCommand, getRenderedVoicePrompt, insertVoiceTranscript, isDigitallySilentWav, recorderErrorMessage, VoiceRecorder, voicePlaceholderText, type BuiltInMicrophone, type VoicePromptState } from "./voice";
 
 describe("voice prompt helpers", () => {
   test("renders the requested spinner frames for recording and transcription", () => {
@@ -197,16 +197,25 @@ while true; do sleep 0.02; done
     const lines = (name: string) => existsSync(join(dir, name)) ? readFileSync(join(dir, name), "utf8").trim().split("\n").filter(Boolean) : [];
     const notes: string[] = [];
     const outputs: string[] = [];
-    const start = (backupMicrophone: string | null) => VoiceRecorder.start({
-      platform: "darwin",
-      hasCommand: command => command === "ffmpeg",
-      spawnRecorder: (_command, args) => {
-        outputs.push(args.at(-1)!);
-        return spawn(script, args, { stdio: ["ignore", "ignore", "pipe"] });
-      },
-      backupMicrophone,
-      note: message => notes.push(message),
-    });
+    const exits: Promise<void>[] = [];
+    const microphone: BuiltInMicrophone = { name: null, looking: false, failures: 0 };
+    /** Start a recording on a Mac with this built-in microphone and this default input transport. */
+    const start = (builtIn: string | null, transport: string | null = "usb ") => {
+      microphone.name = builtIn;
+      return VoiceRecorder.start({
+        platform: "darwin",
+        hasCommand: command => command === "ffmpeg",
+        spawnRecorder: (_command, args) => {
+          outputs.push(args.at(-1)!);
+          const child = spawn(script, args, { stdio: ["ignore", "ignore", "pipe"] });
+          exits.push(new Promise(resolve => child.once("close", () => resolve())));
+          return child;
+        },
+        builtInMicrophone: microphone,
+        defaultInputTransport: () => transport,
+        note: message => notes.push(message),
+      });
+    };
     /** Every started recorder has either written its file or failed. */
     const settled = async () => {
       const deadline = Date.now() + 5000;
@@ -215,7 +224,21 @@ while true; do sleep 0.02; done
         await new Promise(resolve => setTimeout(resolve, 5));
       }
     };
-    return { start, settled, notes, outputs, opened: () => lines("opened").sort() };
+    /** That many recorders have been started and each has written its file or failed. */
+    const started = async (count: number) => {
+      const deadline = Date.now() + 5000;
+      while (outputs.length < count) {
+        if (Date.now() > deadline) throw new Error(`only ${outputs.length} of ${count} recorders started`);
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      await settled();
+    };
+    /** Every recorder started so far is gone, and what its exit set off has run. */
+    const exited = async () => {
+      await Promise.all(exits);
+      await new Promise(resolve => setImmediate(resolve));
+    };
+    return { start, settled, started, exited, notes, outputs, microphone, opened: () => lines("opened").sort(), openedInOrder: () => lines("opened") };
   }
 
   test("uses the built-in microphone's recording when the default input recorded only zeros", async () => {
@@ -297,6 +320,108 @@ while true; do sleep 0.02; done
 
     expect(existsSync(mac.outputs[0]!)).toBe(false);
     expect(existsSync(mac.outputs[1]!)).toBe(false);
+  });
+
+  const BLUETOOTH_NOTE = "voice: the default input is a Bluetooth device; recording the built-in microphone instead";
+
+  test("records only the built-in microphone while the default input is a Bluetooth headset", async () => {
+    for (const transport of ["blue", "blea"]) {
+      const mac = fakeMac({ default: HEADSET, builtIn: BUILT_IN });
+      const recorder = mac.start("MacBook Pro Microphone", transport);
+      await mac.settled();
+      const clip = await recorder.stop();
+
+      // The headset's microphone is never opened, so it stays with the phone.
+      expect(mac.opened()).toEqual(["MacBook Pro Microphone"]);
+      expect(clip.bytes.equals(BUILT_IN)).toBe(true);
+      expect(mac.notes).toEqual([BLUETOOTH_NOTE]);
+      expect(existsSync(mac.outputs[0]!)).toBe(false);
+    }
+  });
+
+  test("records the default input as before when it is wired, USB, built-in or unknown", async () => {
+    for (const transport of ["bltn", "usb ", "virt", null]) {
+      const mac = fakeMac({ default: HEADSET, builtIn: BUILT_IN });
+      const recorder = mac.start("MacBook Pro Microphone", transport);
+      await mac.settled();
+      const clip = await recorder.stop();
+
+      expect(mac.opened()).toEqual(["MacBook Pro Microphone", "default"]);
+      expect(clip.bytes.equals(HEADSET)).toBe(true);
+      expect(mac.notes).toEqual([]);
+    }
+  });
+
+  test("records a Bluetooth default input on a Mac without a built-in microphone", async () => {
+    const mac = fakeMac({ default: HEADSET, builtIn: BUILT_IN });
+    const recorder = mac.start(null, "blue");
+    await mac.settled();
+    const clip = await recorder.stop();
+
+    expect(mac.opened()).toEqual(["default"]);
+    expect(clip.bytes.equals(HEADSET)).toBe(true);
+  });
+
+  test("a silent built-in microphone is reported as such while the default input is Bluetooth", async () => {
+    const mac = fakeMac({ default: HEADSET, builtIn: SILENCE });
+    const recorder = mac.start("MacBook Pro Microphone", "blue");
+    await mac.settled();
+
+    await expect(recorder.stop()).rejects.toThrow("the built-in microphone recorded only silence");
+    expect(mac.opened()).toEqual(["MacBook Pro Microphone"]);
+  });
+
+  test("falls back to the Bluetooth default input mid-hold when the built-in microphone cannot be opened", async () => {
+    const mac = fakeMac({ default: HEADSET });
+    const recorder = mac.start("MacBook Pro Microphone", "blue");
+    await mac.started(2);
+    const clip = await recorder.stop();
+
+    expect(mac.openedInOrder()).toEqual(["MacBook Pro Microphone", "default"]);
+    expect(clip.bytes.equals(HEADSET)).toBe(true);
+    expect(mac.notes).toEqual([
+      BLUETOOTH_NOTE,
+      "voice: the built-in microphone could not be recorded (Error opening input: Input/output error); recording the default input",
+    ]);
+    // Its name is looked up again before the next recording.
+    expect(mac.microphone).toEqual({ name: undefined, looking: false, failures: 1 });
+  });
+
+  test("leaves the built-in microphone alone after it failed to open twice in a row", async () => {
+    const mac = fakeMac({ default: HEADSET });
+    for (let failures = 1; failures <= 2; failures++) {
+      const recorder = mac.start("MacBook Pro Microphone", "blue");
+      await mac.started(failures * 2);
+      await recorder.stop();
+      expect(mac.microphone.failures).toBe(failures);
+    }
+    const recorder = mac.start("MacBook Pro Microphone", "blue");
+    await mac.started(5);
+    const clip = await recorder.stop();
+
+    expect(mac.openedInOrder().slice(4)).toEqual(["default"]);
+    expect(clip.bytes.equals(HEADSET)).toBe(true);
+  });
+
+  test("a built-in microphone that records again clears its earlier failure", async () => {
+    const mac = fakeMac({ default: HEADSET, builtIn: BUILT_IN });
+    mac.microphone.failures = 1;
+    const recorder = mac.start("MacBook Pro Microphone", "blue");
+    await mac.settled();
+    await recorder.stop();
+
+    expect(mac.microphone.failures).toBe(0);
+  });
+
+  test("aborting a Bluetooth-headset recording stops the built-in microphone without opening the headset", async () => {
+    const mac = fakeMac({ default: HEADSET, builtIn: BUILT_IN });
+    const recorder = mac.start("MacBook Pro Microphone", "blue");
+    await mac.settled();
+    recorder.abort();
+    await mac.exited();
+
+    expect(mac.opened()).toEqual(["MacBook Pro Microphone"]);
+    expect(existsSync(mac.outputs[0]!)).toBe(false);
   });
 
   test("finds the built-in microphone among the Mac's audio devices", () => {
