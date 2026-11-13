@@ -185,7 +185,7 @@ async function errorSummary(response: Response): Promise<{ type: string | null; 
   const text = await response.text().catch(() => "");
   try {
     const error = (JSON.parse(text) as { error?: { type?: unknown; message?: unknown } }).error;
-    return { type: typeof error?.type === "string" ? error.type : null, message: typeof error?.message === "string" ? error.message.slice(0, 200) : "" };
+    return { type: typeof error?.type === "string" ? error.type : null, message: typeof error?.message === "string" ? error.message.slice(0, 200).replace(/\.+$/, "") : "" };
   } catch {
     return { type: null, message: "" };
   }
