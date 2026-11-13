@@ -268,6 +268,8 @@ socket.on("close", () => process.exit(0));
         EXOCORTEX_CONFIG_DIR: configDir,
         EXOCORTEX_TEST: "1",
         EXOCORTEX_TEST_REMOTE_SOCKET: remoteSocketPath,
+        // One recorder per hold on every platform: no built-in microphone backup on macOS.
+        EXOCORTEX_VOICE_AVFOUNDATION_DEVICE: "none:default",
         NODE_ENV: "test",
         PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
       },
