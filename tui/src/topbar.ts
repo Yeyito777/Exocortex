@@ -66,8 +66,7 @@ const WHITE: Rgb = [255, 255, 255];
 export function topbarLadderPalette(): LadderPalette {
   return {
     bg: ansiColorToRgb(theme.topbarBg, 48) ?? [29, 155, 240],
-    fg: (theme.topbarFg && ansiColorToRgb(theme.topbarFg, 38)) || WHITE,
-    rest: theme.topbarFg || undefined,
+    fg: WHITE,
     level: terminalColorLevel,
   };
 }
@@ -100,7 +99,6 @@ export function renderTopbar(state: RenderState, width?: number, now = Date.now(
   const rightWidth = rightLabel ? termWidth(rightLabel) + 1 : 0;
   const padding = Math.max(0, w - termWidth(leftPlain) - rightWidth);
 
-  const bar = `${theme.topbarBg}${theme.topbarFg ?? ""}`;
   // SGR 22 ends dim (and bold) without resetting the bar's background.
   const markerStyled = marker ? `${theme.dim}${marker}\x1b[22m` : "";
   // Shift+Up/Down: the model ladder plays over the right of the bar. It only
@@ -110,10 +108,10 @@ export function renderTopbar(state: RenderState, width?: number, now = Date.now(
     const available = padding + rightWidth;
     const segment = renderLadderSegment(ladder, rightLabel, now, topbarLadderPalette(), available);
     if (segment) {
-      return `${bar}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(available - segment.width)}${segment.text}${theme.reset}`;
+      return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(available - segment.width)}${segment.text}${theme.reset}`;
     }
   }
   // Without the animation a waiting switch is simply dimmed.
   const rightStyled = queued && rightLabel ? `${theme.dim}${rightLabel}\x1b[22m` : rightLabel;
-  return `${bar}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(padding)}${rightStyled}${rightLabel ? " " : ""}${theme.reset}`;
+  return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(padding)}${rightStyled}${rightLabel ? " " : ""}${theme.reset}`;
 }

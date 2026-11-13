@@ -6,7 +6,6 @@
  */
 
 import type { Theme } from "../theme";
-import { darkCode } from "./codedark";
 
 const ESC = "\x1b[";
 
@@ -47,7 +46,6 @@ export const tonikawa: Theme = {
   sidebarBg:      `${ESC}48;2;23;19;26m`,      // #17131a
   sidebarSelBg:   `${ESC}48;2;48;35;49m`,      // #302331
   cursorBg:       `${ESC}48;2;228;127;172m`,   // #e47fac (matches accent)
-  cursorFg:      `${ESC}38;2;0;0;0m`,         // #000000
   historyLineBg:  `${ESC}48;2;33;26;33m`,      // #211a21 (matches userBg)
   selectionBg:    `${ESC}48;2;80;55;73m`,      // #503749
   searchBg:       `${ESC}48;2;216;181;111m`,   // #d8b56f
@@ -55,14 +53,11 @@ export const tonikawa: Theme = {
   notificationBg: `${ESC}48;2;169;67;113m`,    // #a94371
   notificationFg: `${ESC}38;2;255;247;251m`,   // #fff7fb
   appBg:          `${ESC}48;2;19;17;22m`,      // #131116
-  panelBg:       `${ESC}48;2;0;5;15m`,      // #00050f
   cursorColor:    "#e47fac",                   // matches accent / cursorBg
 
   // Border colors
   borderFocused:   `${ESC}38;2;228;127;172m`, // #e47fac (rose pink)
   borderUnfocused: `${ESC}38;2;101;91;99m`,   // #655b63
-
-  ...darkCode,
 
   // Style end
   boldOff: `${ESC}22m`,

@@ -6,7 +6,6 @@
  */
 
 import type { Theme } from "../theme";
-import { darkCode } from "./codedark";
 
 const ESC = "\x1b[";
 
@@ -47,7 +46,6 @@ export const cerberus: Theme = {
   sidebarBg:     `${ESC}48;2;26;26;26m`,     // #1a1a1a
   sidebarSelBg:  `${ESC}48;2;51;51;51m`,     // #333333
   cursorBg:      `${ESC}48;2;211;47;47m`,    // #d32f2f (red)
-  cursorFg:      `${ESC}38;2;0;0;0m`,         // #000000
   historyLineBg: `${ESC}48;2;37;37;37m`,     // #252525 (matches userBg)
   selectionBg:   `${ESC}48;2;74;74;74m`,     // #4a4a4a
   searchBg:      `${ESC}48;2;252;224;148m`,  // #fce094
@@ -55,14 +53,11 @@ export const cerberus: Theme = {
   notificationBg: `${ESC}48;2;183;28;28m`,   // #b71c1c
   notificationFg: `${ESC}38;2;255;255;255m`, // #ffffff
   appBg:         `${ESC}48;2;20;20;20m`,     // #141414
-  panelBg:       `${ESC}48;2;0;5;15m`,      // #00050f
   cursorColor:   "#d32f2f",                  // matches accent / cursorBg
 
   // Border colors
   borderFocused:   `${ESC}38;2;211;47;47m`,  // #d32f2f (red)
   borderUnfocused: `${ESC}38;2;85;85;85m`,   // #555555
-
-  ...darkCode,
 
   // Style end
   boldOff: `${ESC}22m`,

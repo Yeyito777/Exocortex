@@ -24,7 +24,6 @@ const ST = `${ESC}\\`;
 const PASTE_START = `${ESC}[200~`;
 const PASTE_END = `${ESC}[201~`;
 const MAX_OSC_FRAME_CHARS = 16 * 1024;
-const OSC_COLOR_REPLY = /^\x1b\]1[012];rgb:/;
 const MAX_CLIPBOARD_BYTES = 50 * 1024 * 1024;
 const MAX_PROTOCOL_CHUNK_BYTES = 4096;
 const MAX_MIME_LIST_BYTES = 64 * 1024;
@@ -438,8 +437,7 @@ export class TerminalControlBuffer {
 
         const sequence = this.buffer.slice(0, end);
         this.buffer = this.buffer.slice(end);
-        // Clipboard frames, and the terminal's answers about its own colours (OSC 10-12).
-        if (sequence.startsWith(OSC_5522_PREFIX) || OSC_COLOR_REPLY.test(sequence)) this.onControlSequence(sequence);
+        if (sequence.startsWith(OSC_5522_PREFIX)) this.onControlSequence(sequence);
         continue;
       }
 

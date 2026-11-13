@@ -31,7 +31,7 @@ import {
 } from "./activitypanel";
 import { focusedConversation, type RenderState } from "./state";
 import { sliceByWidth, termWidth } from "./textwidth";
-import { inkAnsi, theme } from "./theme";
+import { hexToAnsi, theme } from "./theme";
 
 export const SCRATCHPAD_TITLE = "Scratchpad";
 /** The collapsed card's cap, as for Tasks. */
@@ -172,7 +172,7 @@ interface LineStyle {
 
 function lineStyle(kind: ScratchpadLineKind): LineStyle {
   switch (kind) {
-    case "heading": return { glyph: "", glyphColor: "", text: `${theme.bold}${inkAnsi(HEADING_HEX)}`, urgent: `${theme.bold}${theme.warning}` };
+    case "heading": return { glyph: "", glyphColor: "", text: `${theme.bold}${hexToAnsi(HEADING_HEX)}`, urgent: `${theme.bold}${theme.warning}` };
     case "open": return { glyph: "○ ", glyphColor: theme.muted, text: theme.text, urgent: theme.warning };
     case "done": return { glyph: "✓ ", glyphColor: `${theme.dim}${theme.success}`, text: `${theme.dim}${theme.text}`, urgent: `${theme.dim}${theme.warning}` };
     case "bullet": return { glyph: "• ", glyphColor: theme.muted, text: theme.text, urgent: theme.warning };

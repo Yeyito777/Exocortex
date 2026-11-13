@@ -35,80 +35,10 @@ export const cursor_bar = `${ESC}6 q`;         // steady bar (vim insert / defau
 export const erase_to_eol = `${ESC}K`;         // erase to end of line (uses current bg)
 export const RESET = `${ESC}0m`;
 
-// ── Theme colours in the terminal ─────────────────────────────────
-
-/** The colours a theme asks of the terminal itself, as hex (`#rrggbb`). */
-export interface TerminalThemeColors {
-  cursorColor?: string;
-  /** Default foreground and background: uncoloured text, and the window padding. */
-  terminalFg?: string;
-  terminalBg?: string;
-}
-
-/** OSC numbers: 10 default foreground, 11 default background, 12 cursor. */
-type ColorCode = 10 | 11 | 12;
-
-const THEME_COLOR_CODES: ReadonlyArray<[ColorCode, keyof TerminalThemeColors]> = [
-  [12, "cursorColor"], [10, "terminalFg"], [11, "terminalBg"],
-];
-
-/**
- * Ask the terminal for its own default colours and cursor colour. Sent once,
- * before any theme changes them, so they can be put back by value: st on
- * macOS ignores the reset sequences (OSC 110-112).
- */
-export const query_terminal_colors = `\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\`;
-
-/** What the terminal answered, by OSC number. */
-const ownColors = new Map<ColorCode, string>();
-
-const COLOR_REPLY = /^\x1b\](1[012]);rgb:([0-9a-f]{2,4})\/([0-9a-f]{2,4})\/([0-9a-f]{2,4})(?:\x07|\x1b\\)$/i;
-
-/**
- * Take a terminal's answer to `query_terminal_colors`. True when `sequence`
- * was one. Only the first answer for each colour counts (later ones would be
- * a theme's), and not one equal to what `active` has set: that is a theme
- * left behind by a TUI that was killed.
- */
-export function handle_terminal_color_reply(sequence: string, active: TerminalThemeColors = {}): boolean {
-  const match = COLOR_REPLY.exec(sequence);
-  if (!match) return false;
-  const code = Number(match[1]) as ColorCode;
-  const hex = `#${match.slice(2, 5).map(channel => channel.slice(0, 2).toLowerCase()).join("")}`;
-  const key = THEME_COLOR_CODES.find(([candidate]) => candidate === code)![1];
-  if (!ownColors.has(code) && active[key]?.toLowerCase() !== hex) ownColors.set(code, hex);
-  return true;
-}
-
-/** Forget the terminal's answers (tests). */
-export function forget_terminal_colors(): void {
-  ownColors.clear();
-}
-
-const setColor = (code: ColorCode, hex: string) => `\x1b]${code};${hex}\x1b\\`;
-
-/** Put one colour back: by value where the terminal told us it, then the reset it may honour. */
-function restoreColor(code: ColorCode): string {
-  const own = ownColors.get(code);
-  return (own ? setColor(code, own) : "") + `\x1b]1${code}\x1b\\`;
-}
-
-/**
- * Give the terminal a theme's cursor colour and default colours (OSC 12, 10,
- * 11). `restoreOthers` also puts back the ones this theme leaves alone, for a
- * switch away from a theme that set them.
- */
-export function apply_theme_colors(colors: TerminalThemeColors, restoreOthers = false): string {
-  return THEME_COLOR_CODES.map(([code, key]) => {
-    const hex = colors[key];
-    return hex ? setColor(code, hex) : restoreOthers ? restoreColor(code) : "";
-  }).join("");
-}
-
-/** Give back what `apply_theme_colors` set. */
-export function reset_theme_colors(colors: TerminalThemeColors): string {
-  return THEME_COLOR_CODES.map(([code, key]) => colors[key] ? restoreColor(code) : "").join("");
-}
+/** OSC 12: set terminal cursor color (hex string like "#rrggbb"). */
+export const set_cursor_color = (hex: string) => `\x1b]12;${hex}\x1b\\`;
+/** OSC 112: reset terminal cursor color to default. */
+export const reset_cursor_color = `\x1b]112\x1b\\`;
 
 // ── Rendering primitives ──────────────────────────────────────────
 

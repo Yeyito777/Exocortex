@@ -19,7 +19,6 @@ import {
 import { LADDER_LATE_FRAME_MS, METER_FADE_MS, METER_HOLD_MS, MORPH_TOTAL_MS, WAIT_FRAME_MS } from "./modelladder-anim";
 import { createInitialState, type RenderState } from "./state";
 import { renderTopbar } from "./topbar";
-import { setTheme, theme } from "./theme";
 import { createPendingAI } from "./messages";
 
 beforeAll(() => setLadderAnimationsForTest(true));
@@ -350,26 +349,6 @@ describe("top bar animation", () => {
     for (let now = from; now <= to; now += step) frames.push(renderTopbar(state, WIDTH, now));
     return frames;
   }
-
-  test("on a theme with its own bar text colour, cells come back to it, never to the terminal's default", () => {
-    const original = { ...theme };
-    try {
-      setTheme("paper");
-      const state = ladderState("claude-opus-5-5", "xhigh");
-      pressModelLadder(state, 1, recorder(), 1_000, true);
-      const frames = framesUntil(state, 1_000, 1_000 + METER_HOLD_MS + METER_FADE_MS + 32);
-      const normal = normalBar(state);
-      expect(frames.some(frame => frame !== normal)).toBe(true);
-      expect(frames[frames.length - 1]).toBe(normal);
-      for (const frame of frames) {
-        expect(frame.startsWith(`${theme.topbarBg}${theme.topbarFg}`)).toBe(true);
-        // SGR 39 would be ink on the ink-coloured bar.
-        expect(frame).not.toContain("\x1b[39m");
-      }
-      // Mid-morph, cells that have settled are written in the bar's own colour.
-      expect(frames[8].slice(theme.topbarBg.length + theme.topbarFg!.length)).toContain(theme.topbarFg!);
-    } finally { Object.assign(theme, original); }
-  });
 
   test("plays, then ends on exactly the normal top bar", () => {
     const state = ladderState("claude-opus-5-5", "xhigh");
