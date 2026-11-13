@@ -10,6 +10,7 @@ import {
   fableFallbackNotice,
   flushAssignments,
   getCombinedUsage,
+  noteAccountAuthFailure,
   refreshClaudeAccountStatuses,
   routeClaudeTurn,
   setAssignmentsFileForTests,
@@ -84,6 +85,27 @@ describe("account pool", () => {
     expect(await routeClaudeTurn("conv-1", null)).toMatchObject({ account: "main", reason: "new" });
     expect(getCombinedUsage()?.capacity).toBeUndefined();
     expect(getCombinedUsage()?.fiveHour?.utilization).toBe(30);
+  });
+
+  test("a turn that fails authentication can move on when another account is signed in", async () => {
+    addClaudeAccount("pool-b", join(dir, "b"));
+    report("main", 30, 2 * H, 40, 48 * H);
+    report("pool-b", 10, 2 * H, 30, 20 * H);
+    await refreshClaudeAccountStatuses();
+    touchConversationAccount("conv-1", "pool-b");
+    // pool-b's login ended mid-work (Nov 13 2026): main can take the turn at once.
+    expect(noteAccountAuthFailure("pool-b", "this login reached its time limit")).toBe(true);
+    expect(await routeClaudeTurn("conv-1", null)).toMatchObject({ account: "main", movedFrom: "pool-b", reason: "account-unavailable" });
+    // main's fails too: no account is left to move to.
+    expect(noteAccountAuthFailure("main", "401")).toBe(false);
+  });
+
+  test("a turn that fails authentication has nowhere to move with one account, or with the other signed out", async () => {
+    expect(noteAccountAuthFailure("main", "401")).toBe(false);
+    addClaudeAccount("pool-b", join(dir, "b"));
+    signedIn["pool-b"] = false;
+    await refreshClaudeAccountStatuses();
+    expect(noteAccountAuthFailure("main", "401")).toBe(false);
   });
 
   test("new work goes to the soonest weekly reset; the conversation then stays while warm", async () => {

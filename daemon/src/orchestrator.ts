@@ -81,7 +81,7 @@ import { isUsageLimitError, runWithUsageLimitWait, UsageLimitedError, type Usage
 import { conversationAllowsApiCredits, conversationWaitsForUsageLimits, isAppConversation } from "./app-registry";
 import { claudeProxyFallbackInMs, claudeUsageAvailability } from "./providers/anthropic/availability";
 import { isProviderProxied, providerProxyConnect, providerProxyRoute } from "./provider-proxy/route";
-import { classifyNetworkFailureMessage } from "./providers/errors";
+import { classifyNetworkFailureMessage, ClaudeAccountFailoverError } from "./providers/errors";
 import { getModelInfo, cyberAccessProgramForSelection, refreshProviders } from "./providers/registry";
 import { isDaybreakModelId } from "@exocortex/shared/daybreak";
 
@@ -1001,6 +1001,8 @@ async function orchestrateAdmittedAssistantTurn(
       end: endProviderWait,
     }, {
       shouldRetry: error => provider === "anthropic" && isUsageLimitError(error),
+      // Its Claude account's login ended and another account can take the turn (anthropic/api.ts).
+      retryAtOnce: error => provider === "anthropic" && error instanceof ClaudeAccountFailoverError,
       // An app conversation may choose to fail rather than wait (docs/app-api.md).
       failInsteadOfWaiting: provider === "anthropic" && !conversationWaitsForUsageLimits(convId),
       // The remote already tries an alternative account. With an old/unknown

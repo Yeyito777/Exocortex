@@ -54,7 +54,11 @@ export async function runWithUsageLimitWait<T>(
   operation: () => Promise<T>,
   availability: () => UsageAvailability,
   hooks: { start(resetAt: number | null): void; end(): void },
-  options: { probeMs?: number; retryFloorMs?: number; shouldRetry?: (error: unknown) => boolean; failInsteadOfWaiting?: boolean } = {},
+  options: {
+    probeMs?: number; retryFloorMs?: number; shouldRetry?: (error: unknown) => boolean; failInsteadOfWaiting?: boolean;
+    /** Errors after which the operation runs again at once, with no shown wait: what refused it is already out of the way. */
+    retryAtOnce?: (error: unknown) => boolean;
+  } = {},
 ): Promise<T> {
   const probeMs = options.probeMs ?? 30_000;
   const retryFloorMs = options.retryFloorMs ?? 1_000;
@@ -109,7 +113,9 @@ export async function runWithUsageLimitWait<T>(
       try {
         return await operation();
       } catch (error) {
-        if (controller.signal.aborted || !(options.shouldRetry ?? isUsageLimitError)(error)) throw error;
+        if (controller.signal.aborted) throw error;
+        if (options.retryAtOnce?.(error)) continue;
+        if (!(options.shouldRetry ?? isUsageLimitError)(error)) throw error;
         if (options.failInsteadOfWaiting) {
           // Another account or a credit key may still take it: try once more, then give up.
           const next = availability();

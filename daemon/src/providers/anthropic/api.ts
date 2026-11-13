@@ -30,7 +30,7 @@ import type { ApiMessage, EffortLevel, ModelId } from "../../messages";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 import { requireSubscriptionAuth } from "./auth";
 import { claudeProcessOptions } from "./cli";
-import { AuthError } from "../errors";
+import { AuthError, ClaudeAccountFailoverError } from "../errors";
 import { getClaudeAccount, MAIN_ACCOUNT_ID, mainClaudeConfigDir } from "./accounts";
 import { CLAUDE_SESSION_ALIASES_FILE, claudeProjectDirName, claudeSessionAlias } from "./session-prune";
 import { dataDir } from "@exocortex/shared/paths";
@@ -393,7 +393,12 @@ export async function streamMessage(
       }
       throw error;
     }
-    if (error instanceof AuthError && !signal?.aborted) noteAccountAuthFailure(account, error.message);
+    if (error instanceof AuthError && !signal?.aborted) {
+      // Its login ended (Anthropic ends each about four weeks after sign-in): another signed-in
+      // account takes the turn at once instead of the turn ending in an error. Under /proxy the
+      // remote moves accounts itself.
+      if (noteAccountAuthFailure(account, error.message) && !proxied) throw new ClaudeAccountFailoverError(error.message);
+    }
     if (error instanceof ClaudeFableLimitError) {
       // Fable's allowance only: the account's other models go on, and the retry is routed by it.
       // Recorded here too, since not every refusal comes with a rate limit event that says so.

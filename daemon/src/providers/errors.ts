@@ -6,6 +6,19 @@ export class AuthError extends Error {
 }
 
 /**
+ * A Claude turn failed authentication on its account (its login ended) while
+ * another signed-in account can take it (anthropic/api.ts). The failed
+ * account is already out of routing, so the orchestrator sends the turn
+ * again and it runs on the other one.
+ */
+export class ClaudeAccountFailoverError extends AuthError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ClaudeAccountFailoverError";
+  }
+}
+
+/**
  * Provider returned a terminal request/content error. Retrying the same payload
  * will only repeat the failure, so transport retry loops must hard-fail it.
  */

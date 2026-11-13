@@ -3,6 +3,7 @@ import { create, getActiveJob, getSummary, isStreaming, remove } from "./convers
 import { load } from "./persistence";
 import { orchestrateSendMessage, setUsageLimitRetryFloorForTest, type OrchestrationCallbacks } from "./orchestrator";
 import type { streamMessage } from "./api";
+import { AuthError, ClaudeAccountFailoverError } from "./providers/errors";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
 
 const ids: string[] = [];
@@ -103,4 +104,38 @@ test("normal abort ends an all-limited turn cleanly", async () => {
   expect((await turn).aborted).toBe(true);
   expect(isStreaming(id)).toBe(false);
   expect(getSummary(id)?.providerWaiting).toBe(false);
+});
+
+test("a turn whose Claude account fails authentication runs again at once when another account can take it", async () => {
+  const id = conversation();
+  const events: any[] = [];
+  let calls = 0;
+  let completed = 0;
+  const result = await orchestrateSendMessage(server(events) as never, null, undefined, id, "wake", Date.now(), {
+    onHeaders() {}, onComplete() { completed++; },
+    streamMessageFn: (async () => {
+      if (++calls === 1) throw new ClaudeAccountFailoverError("Failed to authenticate: this login reached its time limit and cannot be renewed.");
+      return answer("Ran on the other account.");
+    }) as typeof streamMessage,
+    usageAvailability: () => ({ ready: true, resetAt: null }),
+  });
+  expect(result.ok).toBe(true);
+  expect(calls).toBe(2);
+  expect(completed).toBe(1);
+  expect(load(id)!.messages.filter(row => JSON.stringify(row.content).includes("Ran on the other account."))).toHaveLength(1);
+  expect(events.some(event => event.type === "error")).toBe(false);
+  // Not a usage limit: nothing says it waits for one.
+  expect(events.some(event => event.label?.startsWith("Waiting for usage limit"))).toBe(false);
+});
+
+test("an authentication failure with no other account to run on ends the turn", async () => {
+  const id = conversation();
+  let calls = 0;
+  const result = await orchestrateSendMessage(server([]) as never, null, undefined, id, "wake", Date.now(), {
+    onHeaders() {}, onComplete() {},
+    streamMessageFn: (async () => { calls++; throw new AuthError("Failed to authenticate: this login reached its time limit and cannot be renewed."); }) as typeof streamMessage,
+    usageAvailability: () => ({ ready: true, resetAt: null }),
+  });
+  expect(result.ok).toBe(false);
+  expect(calls).toBe(1);
 });
