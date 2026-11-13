@@ -117,11 +117,13 @@ export interface LadderPalette {
   bg: Rgb;
   /** Normal label colour (what cells settle toward before going back to the default). */
   fg: Rgb;
+  /** Escape for the bar's own text colour, where it is not the terminal's default foreground. */
+  rest?: string;
   level: TerminalColorLevel;
 }
 
 export interface LadderSegment {
-  /** Styled text; leaves the bar's background in place and ends on the default foreground. */
+  /** Styled text; leaves the bar's background in place and ends on the bar's text colour. */
   text: string;
   width: number;
 }
@@ -306,18 +308,18 @@ function fg(rgb: Rgb, level: TerminalColorLevel): string {
 
 const DEFAULT_FG = "\x1b[39m";
 
-function styledCells(cells: LadderCell[], level: TerminalColorLevel): string {
+function styledCells(cells: LadderCell[], level: TerminalColorLevel, rest: string = DEFAULT_FG): string {
   let out = "";
-  let current: string = DEFAULT_FG;
+  let current: string = rest;
   for (const cell of cells) {
-    const color = cell.rgb ? fg(cell.rgb, level) : DEFAULT_FG;
+    const color = cell.rgb ? fg(cell.rgb, level) : rest;
     if (color !== current) {
       out += color;
       current = color;
     }
     out += cell.ch;
   }
-  if (current !== DEFAULT_FG) out += DEFAULT_FG;
+  if (current !== rest) out += rest;
   return out;
 }
 
@@ -402,5 +404,5 @@ export function renderLadderSegment(
   let row: LadderCell[] = [...meter, ...labelRow];
   if (row.length > available) row = labelRow;
   if (row.length > available) return null;
-  return { text: styledCells(row, palette.level), width: row.length };
+  return { text: styledCells(row, palette.level, palette.rest), width: row.length };
 }

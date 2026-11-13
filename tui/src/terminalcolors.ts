@@ -158,6 +158,43 @@ export function hexToAnsiColor(kind: 38 | 48, hex: string, level: TerminalColorL
   return rgbToAnsi(kind, r, g, b, level);
 }
 
+type RgbTriple = readonly [number, number, number];
+
+function linearChannel(value: number): number {
+  const c = value / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+/** WCAG relative luminance of an sRGB colour, 0 (black) to 1 (white). */
+export function relativeLuminance([r, g, b]: RgbTriple): number {
+  return 0.2126 * linearChannel(r) + 0.7152 * linearChannel(g) + 0.0722 * linearChannel(b);
+}
+
+/** WCAG contrast ratio between two colours, 1 to 21. */
+export function contrastRatio(a: RgbTriple, b: RgbTriple): number {
+  const la = relativeLuminance(a);
+  const lb = relativeLuminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/**
+ * `color` scaled toward black, hue kept, until it reaches `ratio` contrast
+ * against a light `background`. A colour that already does is returned as is.
+ */
+export function darkenToContrast(color: RgbTriple, background: RgbTriple, ratio: number): [number, number, number] {
+  if (contrastRatio(color, background) >= ratio) return [color[0], color[1], color[2]];
+  let low = 0;
+  let high = 1;
+  for (let i = 0; i < 12; i++) {
+    const mid = (low + high) / 2;
+    const scaled: RgbTriple = [color[0] * mid, color[1] * mid, color[2] * mid];
+    if (contrastRatio(scaled, background) >= ratio) low = mid;
+    else high = mid;
+  }
+  // Rounded down: rounding up could land just under the ratio.
+  return [Math.floor(color[0] * low), Math.floor(color[1] * low), Math.floor(color[2] * low)];
+}
+
 const TRUECOLOR_SGR_RE = /\x1b\[(38|48);2;(\d{1,3});(\d{1,3});(\d{1,3})m/g;
 const SGR_RE = /\x1b\[([0-9;]*)m/g;
 

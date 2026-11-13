@@ -6,6 +6,7 @@
  */
 
 import type { Theme } from "../theme";
+import { darkCode } from "./codedark";
 
 const ESC = "\x1b[";
 
@@ -46,6 +47,7 @@ export const whale: Theme = {
   sidebarBg:     `${ESC}48;2;3;8;20m`,        // #030814
   sidebarSelBg:  `${ESC}48;2;15;25;60m`,      // #0f193c
   cursorBg:      `${ESC}48;2;72;202;228m`,    // #48cae4 (matches vimNormal)
+  cursorFg:      `${ESC}38;2;0;0;0m`,         // #000000
   historyLineBg: `${ESC}48;2;9;13;53m`,     // #090d35 (matches userBg)
   selectionBg:   `${ESC}48;2;79;82;88m`,    // #4f5258
   searchBg:      `${ESC}48;2;252;224;148m`, // #fce094
@@ -53,11 +55,14 @@ export const whale: Theme = {
   notificationBg: `${ESC}41m`,              // red
   notificationFg: `${ESC}38;2;255;255;255m`, // #ffffff
   appBg:         `${ESC}48;2;0;5;15m`,      // #00050f
+  panelBg:       `${ESC}48;2;0;5;15m`,      // #00050f
   cursorColor:   "#48cae4",                 // matches vimNormal / cursorBg
 
   // Border colors
   borderFocused:   `${ESC}38;2;28;148;229m`,  // #1c94e5
   borderUnfocused: `${ESC}38;2;85;85;85m`,    // #555555
+
+  ...darkCode,
 
   // Style end
   boldOff: `${ESC}22m`,

@@ -3,34 +3,28 @@
 // Designed for visual scanning in a TUI — not a full parser.
 // Ported from Mnemo project (https://github.com/yeyito/Mnemo)
 
-import { hexToAnsi } from "../theme";
-
-// --- ANSI Color Constants (Exocortex Whale Theme) ---
-export const FG_WHITE = hexToAnsi("#ffffff");
-const FG_SYN_KEYWORD = hexToAnsi("#c792ea");  // soft purple
-const FG_SYN_STRING = hexToAnsi("#c3e88d");   // warm green
-const FG_SYN_COMMENT = hexToAnsi("#5f6978");  // muted gray
-const FG_SYN_NUMBER = hexToAnsi("#f78c6c");   // warm orange
-const FG_SYN_TYPE = hexToAnsi("#89ddff");     // soft cyan
-const FG_SYN_FUNCTION = hexToAnsi("#82aaff"); // soft blue
-const FG_SYN_OPERATOR = hexToAnsi("#89ddff"); // cyan
-const FG_SYN_PUNCT = hexToAnsi("#b4b4b4");    // light gray
+import { theme, type Theme } from "../theme";
 
 export type TokenType =
   | "keyword" | "string" | "comment" | "number"
   | "type" | "function" | "operator" | "punct" | "default";
 
-const TOKEN_COLORS: Record<TokenType, string> = {
-  keyword: FG_SYN_KEYWORD,
-  string: FG_SYN_STRING,
-  comment: FG_SYN_COMMENT,
-  number: FG_SYN_NUMBER,
-  type: FG_SYN_TYPE,
-  function: FG_SYN_FUNCTION,
-  operator: FG_SYN_OPERATOR,
-  punct: FG_SYN_PUNCT,
-  default: FG_WHITE,
+/** Each token's colour is the active theme's: read it when painting, never at import. */
+const TOKEN_KEYS: Record<TokenType, keyof Theme> = {
+  keyword: "synKeyword",
+  string: "synString",
+  comment: "synComment",
+  number: "synNumber",
+  type: "synType",
+  function: "synFunction",
+  operator: "synOperator",
+  punct: "synPunct",
+  default: "codeText",
 };
+
+function tokenColor(type: TokenType): string {
+  return theme[TOKEN_KEYS[type]] as string;
+}
 
 interface TokenRule {
   pattern: RegExp;
@@ -457,11 +451,11 @@ const LANGUAGE_MAP: Record<string, TokenRule[]> = {
 /**
  * Highlight a single line of source code.
  * Returns the line with ANSI color escapes applied.
- * If the language is not recognized, returns the line with FG_WHITE.
+ * If the language is not recognized, returns the line in the plain code colour.
  */
 export function highlightLine(line: string, language: string): string {
   const rules = LANGUAGE_MAP[language.toLowerCase()];
-  if (!rules) return FG_WHITE + line;
+  if (!rules) return theme.codeText + line;
 
   const scanner = scannerFor(rules);
   return scanner && !LINE_TERMINATOR.test(line) ? tokenizeWithScanner(line, rules, scanner) : tokenize(line, rules);
@@ -520,26 +514,26 @@ function tokenizeWithScanner(line: string, rules: TokenRule[], { regex, groups }
     // An empty match would never advance tokenize either; treat it as text.
     if (!m || m[0].length === 0) {
       if (m) {
-        result += FG_WHITE + line.slice(pos, m.index + 1);
+        result += theme.codeText + line.slice(pos, m.index + 1);
         pos = m.index + 1;
         continue;
       }
       break;
     }
-    if (m.index > pos) result += FG_WHITE + line.slice(pos, m.index);
+    if (m.index > pos) result += theme.codeText + line.slice(pos, m.index);
     let rule = 0;
     while (rule < groups.length - 1 && m[groups[rule]!] === undefined) rule++;
-    result += TOKEN_COLORS[rules[rule]!.type] + m[0];
+    result += tokenColor(rules[rule]!.type) + m[0];
     pos = m.index + m[0].length;
   }
-  if (pos < line.length) result += FG_WHITE + line.slice(pos);
+  if (pos < line.length) result += theme.codeText + line.slice(pos);
   return result;
 }
 
 /** highlightLine by trying every rule at every character: the reference the one-pass scanner must equal. */
 export function highlightLineByRules(line: string, language: string): string {
   const rules = LANGUAGE_MAP[language.toLowerCase()];
-  return rules ? tokenize(line, rules) : FG_WHITE + line;
+  return rules ? tokenize(line, rules) : theme.codeText + line;
 }
 
 /** Languages highlightLine knows (aliases included). */
@@ -559,7 +553,7 @@ export function isLanguageSupported(language: string): boolean {
  *
  * Works by scanning left-to-right: at each position, try each rule in
  * order.  First match wins — emit colored text, advance past the match.
- * Unmatched characters are emitted with FG_WHITE.
+ * Unmatched characters are emitted in the plain code colour.
  *
  * Uses sticky (`y`) regexes matched against the full line so that `\b`
  * word-boundary assertions see the real surrounding characters.  Without
@@ -582,11 +576,11 @@ function tokenize(line: string, rules: TokenRule[]): string {
       if (m && m.index === pos) {
         // Flush any pending default text
         if (pendingDefault) {
-          result += FG_WHITE + pendingDefault;
+          result += theme.codeText + pendingDefault;
           pendingDefault = "";
         }
 
-        result += TOKEN_COLORS[rule.type] + m[0];
+        result += tokenColor(rule.type) + m[0];
         pos += m[0].length;
         matched = true;
         break;
@@ -601,7 +595,7 @@ function tokenize(line: string, rules: TokenRule[]): string {
 
   // Flush remaining default text
   if (pendingDefault) {
-    result += FG_WHITE + pendingDefault;
+    result += theme.codeText + pendingDefault;
   }
 
   return result;

@@ -12,6 +12,7 @@
  */
 
 import { readExocortexConfig } from "@exocortex/shared/config";
+import { resolveFaint } from "./lightfaint";
 
 export const ESC = "\x1b[";
 export const clearLine = `${ESC}2K`;
@@ -332,8 +333,9 @@ export function releaseFrames(): void {
 }
 
 function writeFrame(payload: string): void {
-  if (heldFrames) heldFrames.push(payload);
-  else process.stdout.write(payload);
+  const text = resolveFaint(payload);
+  if (heldFrames) heldFrames.push(text);
+  else process.stdout.write(text);
 }
 
 /** Flush only the rows/cursor state that changed since the previous frame. */
