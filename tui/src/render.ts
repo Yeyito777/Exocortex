@@ -1818,7 +1818,9 @@ export function render(state: RenderState): boolean {
       // metadata (and any other rows below it) consumes viewport space too.
       // Omitting that footer lets task-panel reflow clip the first response
       // chunk even when the measured text height still fits exactly.
-      if (taskPanelFlowHeight <= 0 || historyWidth === chatW) {
+      // Re-wrapping beside the panel only adds rows, so more rows than the
+      // viewport overflow it as they are: a long reply is never re-wrapped whole.
+      if (taskPanelFlowHeight <= 0 || historyWidth === chatW || totalLines - responseStart > messageAreaHeight) {
         return totalLines - responseStart;
       }
       return composeViewportFrom(
