@@ -4,6 +4,8 @@
 # Builds macos/launcher into "Exocortex Daemon.app", signs it with a stable
 # identity, and points the com.exocortex.daemon LaunchAgent at it so TCC
 # privacy consents belong to the app instead of Homebrew's ad-hoc signed bash.
+# The agent also gets ProcessType Interactive: the daemon and all it starts
+# run at an app's priority instead of launchd's throttled job classes.
 # Then checks the app's Full Disk Access and, if missing, opens System
 # Settings for the one-time grant (full-disk-access.sh). Idempotent; bun is
 # resolved when the daemon starts, so Homebrew upgrades need no rebuild.
@@ -210,8 +212,8 @@ if ((UPDATE_PLIST == 1)); then
   fi
   case "$result" in
     created) echo "  ✓ Wrote $PLIST" ;;
-    updated) echo "  ✓ Pointed $PLIST at the launcher (backup in $backup_dir)" ;;
-    *) echo "  • $PLIST already runs the launcher" ;;
+    updated) echo "  ✓ Updated $PLIST: launcher program, app priority (backup in $backup_dir)" ;;
+    *) echo "  • $PLIST already runs the launcher at app priority" ;;
   esac
 fi
 

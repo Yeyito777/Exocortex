@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "f
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  DAEMON_PROCESS_TYPE,
   installDaemonLaunchAgent,
   LAUNCHER_BUNDLE_ID,
   renderDaemonLaunchAgent,
@@ -53,17 +54,29 @@ function programArguments(xml: string): string[] {
 }
 
 describe("rewriteDaemonLaunchAgent", () => {
-  test("replaces only the program and keeps every other key", () => {
+  test("replaces only the program and process type and keeps every other key", () => {
     const next = rewriteDaemonLaunchAgent(EXISTING, TARGET);
     expect(programArguments(next)).toEqual([EXE, "--repo", REPO]);
-    expect(next).toContain(`\t<key>AssociatedBundleIdentifiers</key>\n\t<string>${LAUNCHER_BUNDLE_ID}</string>\n</dict>`);
+    expect(next).toContain(`\t<key>ProcessType</key>\n\t<string>Interactive</string>\n\t<key>AssociatedBundleIdentifiers</key>\n\t<string>${LAUNCHER_BUNDLE_ID}</string>\n</dict>`);
     // Everything except the ProgramArguments value is untouched.
     const strip = (xml: string) => xml
       .replace(/\t<key>ProgramArguments<\/key>\n\t<array>[\s\S]*?<\/array>/, "")
+      .replace(/\t<key>ProcessType<\/key>\n\t<string>[^<]*<\/string>\n/, "")
       .replace(/\t<key>AssociatedBundleIdentifiers<\/key>\n\t<string>[^<]*<\/string>\n/, "");
     expect(strip(next)).toBe(strip(EXISTING));
     expect(next).toContain("<string>nested keys are not top-level</string>");
     expect(next).toContain("\t\t<string>--repo</string>\n");
+  });
+
+  test("lifts a background or standard agent to the app's priority, in place", () => {
+    for (const type of ["Background", "Standard", "Adaptive"]) {
+      const throttled = EXISTING.replace("\t<key>RunAtLoad</key>", `\t<key>ProcessType</key>\n\t<string>${type}</string>\n\t<key>RunAtLoad</key>`);
+      const next = rewriteDaemonLaunchAgent(throttled, TARGET);
+      expect(next).toContain("\t<key>ProcessType</key>\n\t<string>Interactive</string>\n\t<key>RunAtLoad</key>");
+      expect(next.match(/<key>ProcessType<\/key>/g)).toHaveLength(1);
+      expect(next).not.toContain(`<string>${type}</string>`);
+    }
+    expect(DAEMON_PROCESS_TYPE).toBe("Interactive");
   });
 
   test("is idempotent", () => {
@@ -102,6 +115,7 @@ describe("renderDaemonLaunchAgent", () => {
     const xml = renderDaemonLaunchAgent({ ...TARGET, home: "/Users/me", bunDir: "/opt/homebrew/bin" });
     expect(programArguments(xml)).toEqual([EXE, "--repo", REPO]);
     expect(xml).toContain("<key>Label</key>\n\t<string>com.exocortex.daemon</string>");
+    expect(xml).toContain("<key>ProcessType</key>\n\t<string>Interactive</string>");
     expect(xml).toContain(`<key>WorkingDirectory</key>\n\t<string>${REPO}/daemon</string>`);
     expect(xml).toContain("<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>");
     expect(xml).toContain(`<string>${REPO}/config/runtime/launchd.out.log</string>`);
@@ -116,6 +130,7 @@ describe("renderPlainDaemonLaunchAgent", () => {
     const xml = renderPlainDaemonLaunchAgent({ repoDir: REPO, home: "/Users/me", bunDir: "/Users/me/.bun/bin" });
     expect(programArguments(xml)).toEqual(["/bin/bash", `${REPO}/scripts/setup/run-daemon.sh`]);
     expect(xml).not.toContain("AssociatedBundleIdentifiers");
+    expect(xml).toContain("<key>ProcessType</key>\n\t<string>Interactive</string>");
     expect(xml).toContain(`<key>WorkingDirectory</key>\n\t<string>${REPO}/daemon</string>`);
     expect(xml).toContain("<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>");
     // The launcher can take it over later.
