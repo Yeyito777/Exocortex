@@ -239,6 +239,14 @@ export function applyChatConversationScroll(
     }
   }
 
+  // A top anchor is for a response taller than the viewport. One that fits
+  // again (its equations typeset into fewer rows, the card beside it gone, a
+  // wider pane) follows the bottom; held, the rows past its end stay blank.
+  if (placedResponse && placementMode === "anchored"
+    && measureResponseHeight(placedResponse.start, placedResponse.end) <= viewportHeight) {
+    placementMode = "following";
+  }
+
   if (placedResponse && placementMode) {
     state.scrollOffset = placementMode === "anchored"
       ? getScrollOffsetForViewStart(totalLines, viewportHeight, placedResponse.start)

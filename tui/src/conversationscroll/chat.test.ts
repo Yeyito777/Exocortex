@@ -7,9 +7,11 @@ function assistantDocument(options: {
   totalLines: number;
   responseStart: number;
   responseEnd: number;
+  /** The response block, to lay the same one out again at another size. */
+  response?: object;
 }): { anchors: RenderLineAnchor[]; bounds: MessageBound[] } {
   const thinking = { type: "thinking" };
-  const response = { type: "text" };
+  const response = options.response ?? { type: "text" };
   const anchors = Array.from({ length: options.totalLines }, (_, row): RenderLineAnchor => ({
     owner: row >= options.responseStart && row < options.responseEnd ? response : thinking,
     segment: "assistant_block",
@@ -76,6 +78,34 @@ describe("conversation open placement", () => {
 
     expect(state.scrollOffset).toBe(1);
     expect(update.topAnchorRow).toBe(40);
+  });
+
+  test("lets go of the first row once the opened response fits the viewport", () => {
+    const state = createInitialState();
+    state.convId = "unread";
+    state.conversationScroll.pendingRestore = {
+      convId: "unread",
+      mode: "unread-response",
+      waitForInitialBackfill: false,
+    };
+    const response = { type: "text" };
+    const opened = assistantDocument({ totalLines: 50, responseStart: 30, responseEnd: 45, response });
+    expect(applyChatConversationScroll(state, opened.anchors, opened.bounds, 50, 10, 0).topAnchorRow).toBe(30);
+    expect(state.scrollOffset).toBe(10);
+
+    // Still taller than the viewport: its first row stays at the top.
+    const shorter = assistantDocument({ totalLines: 44, responseStart: 30, responseEnd: 40, response });
+    expect(applyChatConversationScroll(state, shorter.anchors, shorter.bounds, 44, 10, 10).topAnchorRow).toBe(30);
+    expect(state.scrollOffset).toBe(4);
+
+    // It fits: the viewport ends at its last row instead of past it.
+    const fits = assistantDocument({ totalLines: 38, responseStart: 30, responseEnd: 36, response });
+    expect(applyChatConversationScroll(state, fits.anchors, fits.bounds, 38, 10, 4).topAnchorRow).toBeNull();
+    expect(state.scrollOffset).toBe(0);
+
+    // Taller again: back to its first row.
+    expect(applyChatConversationScroll(state, opened.anchors, opened.bounds, 50, 10, 0).topAnchorRow).toBe(30);
+    expect(state.scrollOffset).toBe(10);
   });
 
   test("restores a remembered percentage after backfill", () => {
