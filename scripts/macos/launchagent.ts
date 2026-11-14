@@ -3,9 +3,9 @@
  * signed launcher (macos/launcher) instead of bin/exocortexd.
  *
  * An existing plist is edited in place: only the top-level ProgramArguments,
- * Program and AssociatedBundleIdentifiers keys change, so logs, environment,
- * KeepAlive and anything else hand-tuned are preserved. Without one, a fresh
- * plist mirroring the Linux systemd unit is written.
+ * Program, ProcessType and AssociatedBundleIdentifiers keys change, so logs,
+ * environment, KeepAlive and anything else hand-tuned are preserved. Without
+ * one, a fresh plist mirroring the Linux systemd unit is written.
  *
  * `--mode plain` is the installer's fallback without Xcode's command-line
  * tools (no clang to build the launcher): /bin/bash runs run-daemon.sh, as
@@ -22,6 +22,15 @@ import { basename, dirname, join } from "path";
 
 export const DAEMON_LABEL = "com.exocortex.daemon";
 export const LAUNCHER_BUNDLE_ID = "dev.yeyito.exocortex.daemon";
+/**
+ * launchd's resource class for the daemon, inherited by everything it starts
+ * (model CLIs, tools, shell commands, GUI apps under test). Interactive is the
+ * only one without limits, the same as an app. Measured on an M-series
+ * MacBook (macOS 15): Background runs at priority 4 on the efficiency cores
+ * (about 7x less CPU) with timers ~90 ms late; Standard, which is also what a
+ * missing key means, runs at priority 20 with timers 13 to 75 ms late.
+ */
+export const DAEMON_PROCESS_TYPE = "Interactive";
 
 export interface LauncherTarget {
   /** Absolute path of the launcher executable inside the .app bundle. */
@@ -87,6 +96,8 @@ function renderAgent(options: AgentEnvironment, programArguments: string[], bund
     `\t<key>ProgramArguments</key>`,
     `\t${stringArray(programArguments, "\t", "\t")}`,
     ...(bundleId ? [`\t<key>AssociatedBundleIdentifiers</key>`, `\t${s(bundleId)}`] : []),
+    `\t<key>ProcessType</key>`,
+    `\t${s(DAEMON_PROCESS_TYPE)}`,
     `\t<key>WorkingDirectory</key>`,
     `\t${s(join(options.repoDir, "daemon"))}`,
     `\t<key>EnvironmentVariables</key>`,
@@ -190,8 +201,9 @@ function removeWithLeadingSpace(xml: string, start: number, end: number): string
 }
 
 /**
- * Point an existing LaunchAgent at the launcher. Edits only top-level
- * ProgramArguments, Program and AssociatedBundleIdentifiers.
+ * Point an existing LaunchAgent at the launcher and give it the daemon's
+ * process type. Edits only top-level ProgramArguments, Program, ProcessType
+ * and AssociatedBundleIdentifiers.
  */
 export function rewriteDaemonLaunchAgent(xml: string, target: LauncherTarget): string {
   const initial = topLevel(xml);
@@ -200,6 +212,7 @@ export function rewriteDaemonLaunchAgent(xml: string, target: LauncherTarget): s
   const step = indent || "\t";
   const values: Record<string, string> = {
     ProgramArguments: stringArray(launcherProgramArguments(target), indent, step),
+    ProcessType: `<string>${DAEMON_PROCESS_TYPE}</string>`,
     AssociatedBundleIdentifiers: `<string>${escapeXml(LAUNCHER_BUNDLE_ID)}</string>`,
   };
 

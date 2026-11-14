@@ -405,6 +405,15 @@ Homebrew/Bun upgrades. It resolves Bun each time it starts, forwards
 stop/restart signals, and exits with the daemon's status, so `exocortexd` and
 launchd's restart behaviour are unchanged.
 
+**Priority.** The LaunchAgent sets `ProcessType` to `Interactive`, so the
+daemon and everything it starts (model CLIs, tools, shell commands, apps under
+test) run like an app: normal priority, all cores, timers on time. launchd's
+other classes are inherited by every child and throttle them. `Background`
+means priority 4 on the efficiency cores with timers about 90 ms late, and
+`Standard`, the default without the key, priority 20 with timers 13 to 75 ms
+late. `build-launcher.sh` and `install.sh` set the key on an existing
+LaunchAgent too; it applies from the next reload.
+
 **One-time Full Disk Access.** macOS asks separately for each protected place
 (Desktop, Documents, Downloads, other apps' data, removable and network
 volumes), so allowing prompts one at a time keeps producing new ones. Full Disk
@@ -428,7 +437,8 @@ The daemon's model-requested restarts run this way.
 
 **Rebuild** after pulling launcher changes, or to re-sign with a new
 certificate, by re-running `scripts/macos/build-launcher.sh --reload`. It is
-idempotent and keeps your LaunchAgent's other settings (a backup of the previous
+idempotent and keeps your LaunchAgent's other settings, apart from the program
+and `ProcessType` (a backup of the previous
 plist goes to `config/runtime/launchd/backups/`). Homebrew or Bun upgrades need
 no rebuild. Without an Apple Development or Developer ID certificate it stops:
 an ad-hoc signed app loses its grants on every rebuild. Pass `--adhoc` to sign

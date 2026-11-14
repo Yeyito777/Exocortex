@@ -44,7 +44,8 @@ const ORG = "3b095dd6-0000-4000-8000-000000000001";
 const OTHER_ORG = "aaaaaaaa-0000-4000-8000-000000000002";
 const MINTED = "2026-11-13T16:24:00.000Z";
 const TOKEN: ClaudeAccountToken = { secret: "CLAUDE_SETUP_TOKEN_MAX2", mintedAt: MINTED, email: "max2@example.com", orgId: ORG, orgName: "Max Two", subscriptionType: "max" };
-const RESET = 1794625200;
+// Ahead of now: a limit whose reset has passed is no longer a limit.
+const RESET = Math.floor(Date.now() / 1000) + 3 * 86_400;
 
 let dir: string;
 let mainDir: string;
