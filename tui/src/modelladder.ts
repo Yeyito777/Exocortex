@@ -343,14 +343,8 @@ export function syncModelLadder(state: RenderState, now = Date.now(), animate = 
   if (!animate) return;
   const runningRung = state.provider === "anthropic" ? ladderRungOf(state.model, state.effort) : null;
   if (!shown || shown.convId !== state.convId) {
-    // Another conversation is open: show its waiting switch as it stands.
+    // Another conversation is open: show its waiting switch as it stands, at rest.
     if (ls.anim && ls.anim.convId !== state.convId) ls.anim = null;
-    if (queued && !ls.anim?.waiting) {
-      const anim = startAnimation(state, ls, [label], now);
-      anim.rung = runningRung;
-      anim.waiting = { rung: selectionRung(queued), dir: waitingDirection(state, queued, 1), since: now };
-      ls.anim = anim;
-    }
     return;
   }
   // Only the waiting switch animates here; other label changes (/effort, a
