@@ -299,6 +299,33 @@ describe("mid-turn: the switch waits for the turn to end", () => {
     expect(settle.at(-1)).toBe(normal);
   });
 
+  test("a waiting switch breathes for a moment, then rests dimmed: the bar stops redrawing for the rest of the turn", () => {
+    const state = streamingState("claude-fable-5-2", "high");
+    expect(pressModelLadder(state, -1, recorder(), 1_000, true)).toBe("queued");
+    handleEvent({ type: "conversation_updated", summary: summary(state, { streaming: true, pendingModel: { provider: "anthropic", model: "claude-opus-5-5", effort: "xhigh" } }) }, state, null as never);
+    expect(renderTopbar(state, 90, 1_100)).toContain("━");
+    // Long after the press (a turn can run for an hour): nothing left to animate.
+    const later = 1_000 + 60_000;
+    expect(modelLadderFrameDelay(state, later)).toBeNull();
+    const frames = Array.from({ length: 40 }, (_, i) => renderTopbar(state, 90, later + i * WAIT_FRAME_MS));
+    expect(new Set(frames).size).toBe(1);
+    const rest = stripAnsi(frames[0]!).trimEnd();
+    expect(rest).not.toContain("━");
+    expect(rest.endsWith("Anthropic/Opus-5.5 — xhigh")).toBe(true);
+    // Still marked as waiting: not the normal label colour.
+    expect(frames[0]).not.toBe(renderTopbar({ ...state, modelLadder: null, pendingAI: null, sidebar: { ...state.sidebar, conversations: [summary(state, { model: "claude-opus-5-5", effort: "xhigh" })] }, model: "claude-opus-5-5", effort: "xhigh" } as RenderState, 90, later));
+  });
+
+  test("opening a conversation whose switch waits shows it at rest, without starting the meter", () => {
+    const state = streamingState("claude-fable-5-2", "high");
+    state.sidebar.conversations = [summary(state, { streaming: true, pendingModel: { provider: "anthropic", model: "claude-opus-5-5", effort: "high" } })];
+    const first = renderTopbar(state, 90, 1_000);
+    expect(stripAnsi(first)).not.toContain("━");
+    expect(stripAnsi(first).trimEnd().endsWith("Anthropic/Opus-5.5 — high")).toBe(true);
+    expect(modelLadderFrameDelay(state, 1_000)).toBeNull();
+    expect(renderTopbar(state, 90, 1_900)).toBe(first);
+  });
+
   test("a daemon refusal shows a refusal cue and the real selection", () => {
     const state = ladderState("claude-opus-5-5", "high");
     pressModelLadder(state, 1, recorder(), Date.now(), true);

@@ -21,8 +21,9 @@
  * null and the top bar renders exactly as it does without the ladder.
  *
  * A model switch asked for mid-turn waits for the turn to end. Meanwhile the
- * label rests dimmed on the model it will switch to and the meter stays up:
- * the running rungs dimmed, the ones the switch adds or removes breathing,
+ * label rests dimmed on the model it will switch to. For two breaths after
+ * the step the meter stays up, the running rungs dimmed and the ones the switch
+ * adds or removes breathing; then it fades and the dimmed label stays still
  * until the switch lands and the label brightens back to normal.
  *
  * Frames are a function of wall-clock time, so late timers drop frames rather
@@ -105,6 +106,12 @@ export const LADDER_FRAME_MS = 16;
 /** The waiting rungs breathe this slowly, drawn at this frame interval. */
 export const WAIT_BREATH_MS = 1800;
 export const WAIT_FRAME_MS = 90;
+/**
+ * A waiting switch keeps the meter up this long after the step (two breaths),
+ * then it fades and the dimmed label alone says the switch waits: a turn can
+ * run for an hour, and a meter breathing all that time reads as flicker.
+ */
+export const WAIT_HOLD_MS = 2 * WAIT_BREATH_MS;
 /** A frame this late means timers cannot drive the animation: show the result. */
 export const LADDER_LATE_FRAME_MS = 150;
 
@@ -149,6 +156,11 @@ export function labelCells(label: string, rgb: Rgb | null = null): LadderCell[] 
   return Array.from(label, ch => ({ ch, rgb: ch === " " ? null : rgb }));
 }
 
+/** A waiting switch's label once the meter has gone: the colour it rests at during the animation. */
+export function waitingLabelText(label: string, palette: LadderPalette): string {
+  return styledCells(labelCells(label, waitingRgb(palette)), palette.level);
+}
+
 /** Right-align cells in a slot of `width` (blanks on the left; cut from the left if too wide). */
 function alignRight(cells: LadderCell[], width: number): LadderCell[] {
   if (cells.length >= width) return cells.slice(cells.length - width);
@@ -164,24 +176,27 @@ function cueDone(anim: LadderAnimation, now: number): boolean {
   return !anim.cue || now - anim.cue.startAt >= CUE_MS;
 }
 
+function meterFadeAt(anim: LadderAnimation): number {
+  return anim.lastPressAt + (anim.waiting ? WAIT_HOLD_MS : METER_HOLD_MS);
+}
+
 function meterEndsAt(anim: LadderAnimation): number {
-  return anim.lastPressAt + METER_HOLD_MS + METER_FADE_MS;
+  return meterFadeAt(anim) + METER_FADE_MS;
 }
 
 /** Nothing left to draw: the top bar is back to normal. */
 export function ladderAnimationDone(anim: LadderAnimation, now: number): boolean {
-  return !anim.waiting && morphDone(anim, now) && cueDone(anim, now) && now >= meterEndsAt(anim);
+  return morphDone(anim, now) && cueDone(anim, now) && now >= meterEndsAt(anim);
 }
 
 /** Milliseconds until the next frame is due, or null once the animation has played out. */
 export function ladderNextFrameDelay(anim: LadderAnimation, now: number): number | null {
   if (ladderAnimationDone(anim, now)) return null;
   const moving = !morphDone(anim, now) || !cueDone(anim, now) || now - anim.rungAt < RUNG_FLARE_MS;
-  if (anim.waiting) return moving ? LADDER_FRAME_MS : WAIT_FRAME_MS;
-  const meterFadeAt = anim.lastPressAt + METER_HOLD_MS;
-  if (moving || now >= meterFadeAt) return Math.max(1, Math.min(LADDER_FRAME_MS, meterEndsAt(anim) - now));
-  // The meter just sits there until it starts fading.
-  return Math.max(1, meterFadeAt - now);
+  const fadeAt = meterFadeAt(anim);
+  if (moving || now >= fadeAt) return Math.max(1, Math.min(LADDER_FRAME_MS, meterEndsAt(anim) - now));
+  // Waiting rungs breathe until the meter fades; otherwise it just sits there.
+  return Math.max(1, Math.min(anim.waiting ? WAIT_FRAME_MS : Infinity, fadeAt - now));
 }
 
 /** The label cells as they look at `now` (used to start a new morph from mid-flight). */
@@ -334,8 +349,8 @@ function meterChange(anim: LadderAnimation): { rung: number | null; from: number
 }
 
 function meterCells(anim: LadderAnimation, now: number, palette: LadderPalette): LadderCell[] {
-  const fadeStart = anim.lastPressAt + METER_HOLD_MS;
-  const fade = anim.waiting || now <= fadeStart ? 0 : (now - fadeStart) / METER_FADE_MS;
+  const fadeStart = meterFadeAt(anim);
+  const fade = now <= fadeStart ? 0 : (now - fadeStart) / METER_FADE_MS;
   const appear = easeOut((now - (anim.since ?? now)) / METER_IN_MS);
   const unlit = mix(palette.bg, [0, 0, 0], 0.34);
   const dimmed = mix(palette.fg, unlit, 0.5);

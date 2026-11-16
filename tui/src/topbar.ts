@@ -12,9 +12,9 @@ import { theme } from "./theme";
 import { activeProviderProxy } from "./provider-proxies";
 import { ansiColorToRgb } from "./terminalcolors";
 import { terminalColorLevel } from "./theme";
-import { renderLadderSegment, type LadderPalette, type Rgb } from "./modelladder-anim";
+import { renderLadderSegment, waitingLabelText, type LadderPalette, type Rgb } from "./modelladder-anim";
 import type { EffortLevel, ModelId, ProviderId } from "./messages";
-import { ladderLabel, queuedModel, syncModelLadder } from "./modelladder";
+import { ladderAnimationsAvailable, ladderLabel, queuedModel, syncModelLadder } from "./modelladder";
 
 /** Max visible length for a conversation preview used as label. */
 const PREVIEW_MAX = 30;
@@ -111,7 +111,9 @@ export function renderTopbar(state: RenderState, width?: number, now = Date.now(
       return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(available - segment.width)}${segment.text}${theme.reset}`;
     }
   }
-  // Without the animation a waiting switch is simply dimmed.
-  const rightStyled = queued && rightLabel ? `${theme.dim}${rightLabel}\x1b[22m` : rightLabel;
+  // At rest a waiting switch is dimmed: the animation's resting colour, or SGR dim without it.
+  const rightStyled = !queued || !rightLabel ? rightLabel
+    : ladderAnimationsAvailable() ? waitingLabelText(rightLabel, topbarLadderPalette())
+    : `${theme.dim}${rightLabel}\x1b[22m`;
   return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(padding)}${rightStyled}${rightLabel ? " " : ""}${theme.reset}`;
 }
