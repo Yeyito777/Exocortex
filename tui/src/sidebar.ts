@@ -236,8 +236,6 @@ export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarK
         return openRenameSelectedFolderPrompt(sidebar);
       case "x":
         return unwrapSelectedFolder(sidebar);
-      case "M":
-        return toggleSelectedMute(sidebar);
       case ".":
         return moveSelectionToDone(sidebar);
     }

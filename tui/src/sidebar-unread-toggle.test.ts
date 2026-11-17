@@ -42,32 +42,32 @@ function sidebarState(selected: string) {
 
 const summaryOf = (state: ReturnType<typeof sidebarState>, id: string) => state.sidebar.conversations.find(conv => conv.id === id)!;
 
-describe("m in the sidebar", () => {
+describe("Shift+M in the sidebar", () => {
   test("marks the conversation unread through the daemon, leaves its star, and t then finds it", () => {
     const state = sidebarState("starred");
 
-    expect(handleFocusedKey({ type: "char", char: "m" }, state)).toEqual({ type: "set_conversation_unread", convId: "starred", unread: true });
+    expect(handleFocusedKey({ type: "char", char: "M" }, state)).toEqual({ type: "set_conversation_unread", convId: "starred", unread: true });
     expect(summaryOf(state, "starred")).toMatchObject({ unread: true, marked: true });
 
     expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({ type: "load_conversation", convId: "starred" });
 
     // Already unread: m marks it read.
     state.sidebar.selectedItem = { type: "conversation", id: "starred" };
-    expect(handleFocusedKey({ type: "char", char: "m" }, state)).toEqual({ type: "set_conversation_unread", convId: "starred", unread: false });
+    expect(handleFocusedKey({ type: "char", char: "M" }, state)).toEqual({ type: "set_conversation_unread", convId: "starred", unread: false });
     expect(summaryOf(state, "starred")).toMatchObject({ unread: false, marked: true });
   });
 
   test("does nothing on a muted conversation, which cannot show unread", () => {
     const state = sidebarState("muted");
 
-    expect(handleFocusedKey({ type: "char", char: "m" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "M" }, state)).toEqual({ type: "handled" });
     expect(summaryOf(state, "muted").unread).toBe(false);
   });
 
   test("the open conversation keeps an unread mark the user gave it, until it is opened again", () => {
     const state = sidebarState("open");
 
-    expect(handleFocusedKey({ type: "char", char: "m" }, state)).toEqual({ type: "set_conversation_unread", convId: "open", unread: true });
+    expect(handleFocusedKey({ type: "char", char: "M" }, state)).toEqual({ type: "set_conversation_unread", convId: "open", unread: true });
     handleConversationUpdated({ type: "conversation_updated", summary: conversation("open", 1, { unread: true }) }, state);
     expect(summaryOf(state, "open").unread).toBe(true);
     handleConversationsList({ type: "conversations_list", conversations: [conversation("open", 1, { unread: true })] }, state);
@@ -78,5 +78,22 @@ describe("m in the sidebar", () => {
     expect(summaryOf(state, "open").unread).toBe(false);
     handleConversationUpdated({ type: "conversation_updated", summary: conversation("open", 1, { unread: true }) }, state);
     expect(summaryOf(state, "open").unread).toBe(false);
+  });
+});
+
+describe("m in the sidebar", () => {
+  test("stars the selected conversation, and m again unstars it", () => {
+    const state = sidebarState("open");
+    expect(handleFocusedKey({ type: "char", char: "m" }, state)).toEqual({ type: "mark_conversation", convId: "open", marked: true });
+    expect(summaryOf(state, "open").marked).toBe(true);
+    expect(summaryOf(state, "open").unread).toBe(false);
+    expect(handleFocusedKey({ type: "char", char: "m" }, state)).toEqual({ type: "mark_conversation", convId: "open", marked: false });
+    expect(summaryOf(state, "open").marked).toBe(false);
+  });
+
+  test("unstars an already starred conversation without touching unread", () => {
+    const state = sidebarState("starred");
+    expect(handleFocusedKey({ type: "char", char: "m" }, state)).toEqual({ type: "mark_conversation", convId: "starred", marked: false });
+    expect(summaryOf(state, "starred").unread).toBe(false);
   });
 });
