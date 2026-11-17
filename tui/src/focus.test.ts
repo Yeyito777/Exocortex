@@ -2231,7 +2231,7 @@ describe("sidebar visible jumps", () => {
     return state;
   }
 
-  test("Shift+M toggles mute on the selected conversation", () => {
+  test("Shift+M marks the selected conversation unread without moving the view", () => {
     const state = setupSidebarJumpState();
     state.sidebar.scrollOffset = 1;
     state.sidebar.selectedIndex = 0;
@@ -2239,12 +2239,13 @@ describe("sidebar visible jumps", () => {
     state.sidebar.selectedItem = { type: "conversation", id: "conv-1" };
 
     expect(handleFocusedKey({ type: "char", char: "M" }, state)).toEqual({
-      type: "mute_conversation",
+      type: "set_conversation_unread",
       convId: "conv-1",
-      muted: true,
+      unread: true,
     });
     expect(state.sidebar.selectedId).toBe("conv-1");
-    expect(state.sidebar.conversations[0]?.notificationsMuted).toBe(true);
+    expect(state.sidebar.conversations[0]?.unread).toBe(true);
+    expect(state.sidebar.conversations[0]?.notificationsMuted).not.toBe(true);
     expect(state.sidebar.scrollOffset).toBe(1);
   });
 });

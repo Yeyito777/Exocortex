@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ConversationSummary, FolderSummary } from "./messages";
-import { createSidebarState, handleSidebarKey } from "./sidebar";
+import { createSidebarState, handleSidebarMenuAction } from "./sidebar";
 
 function conversation(id: string, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
@@ -36,20 +36,20 @@ function folder(id: string, overrides: Partial<FolderSummary> = {}): FolderSumma
 }
 
 describe("sidebar muting", () => {
-  test("Shift+M optimistically toggles an individual conversation", () => {
+  test("the menu's Mute optimistically toggles an individual conversation", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.conversations = [conversation("selected", { unread: true })];
     sidebar.selectedItem = { type: "conversation", id: "selected" };
     sidebar.selectedId = "selected";
 
-    expect(handleSidebarKey({ type: "char", char: "M" }, sidebar)).toEqual({
+    expect(handleSidebarMenuAction("toggle_mute", sidebar.selectedItem!, sidebar)).toEqual({
       type: "mute_conversation",
       convId: "selected",
       muted: true,
     });
     expect(sidebar.conversations[0]).toMatchObject({ muted: true, notificationsMuted: true, unread: false });
 
-    expect(handleSidebarKey({ type: "char", char: "M" }, sidebar)).toEqual({
+    expect(handleSidebarMenuAction("toggle_mute", sidebar.selectedItem!, sidebar)).toEqual({
       type: "mute_conversation",
       convId: "selected",
       muted: false,
@@ -57,7 +57,7 @@ describe("sidebar muting", () => {
     expect(sidebar.conversations[0]).toMatchObject({ muted: false, notificationsMuted: false, unread: false });
   });
 
-  test("Shift+M on a folder recomputes inherited mute state for all descendants", () => {
+  test("Mute on a folder recomputes inherited mute state for all descendants", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.folders = [folder("parent"), folder("child", { parentId: "parent" })];
     sidebar.conversations = [
@@ -68,7 +68,7 @@ describe("sidebar muting", () => {
     sidebar.selectedItem = { type: "folder", id: "parent" };
     sidebar.selectedId = null;
 
-    expect(handleSidebarKey({ type: "char", char: "M" }, sidebar)).toEqual({
+    expect(handleSidebarMenuAction("toggle_mute", sidebar.selectedItem!, sidebar)).toEqual({
       type: "mute_folder",
       folderId: "parent",
       muted: true,
@@ -90,14 +90,14 @@ describe("sidebar muting", () => {
     sidebar.selectedItem = { type: "conversation", id: "selected" };
     sidebar.selectedId = "selected";
 
-    expect(handleSidebarKey({ type: "char", char: "M" }, sidebar)).toEqual({
+    expect(handleSidebarMenuAction("toggle_mute", sidebar.selectedItem!, sidebar)).toEqual({
       type: "mute_conversation",
       convId: "selected",
       muted: true,
     });
     expect(sidebar.conversations[0]).toMatchObject({ muted: true, notificationsMuted: true });
 
-    expect(handleSidebarKey({ type: "char", char: "M" }, sidebar)).toEqual({
+    expect(handleSidebarMenuAction("toggle_mute", sidebar.selectedItem!, sidebar)).toEqual({
       type: "mute_conversation",
       convId: "selected",
       muted: false,

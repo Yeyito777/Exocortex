@@ -88,15 +88,13 @@ describe("sidebar conversation actions", () => {
     expect(state.sidebar.conversations.find(conv => conv.id === "conv-a")?.pinned).toBe(true);
   });
 
-  test("Mute toggles the conversation's mute exactly like the mute key, and reads Unmute once muted", () => {
+  test("Mute toggles the conversation's mute, and reads Unmute once muted", () => {
     const viaMenu = sidebarState();
     handleFocusedKey({ type: "char", char: ";" }, viaMenu);
     for (let step = 0; step < 3; step++) handleFocusedKey({ type: "char", char: "j" }, viaMenu);
     expect(viaMenu.sidebar.actionMenu?.selection).toBe("toggle_mute");
     const muted = handleFocusedKey({ type: "enter" }, viaMenu);
 
-    const viaKey = sidebarState();
-    expect(handleFocusedKey({ type: "char", char: "M" }, viaKey)).toEqual(muted);
     expect(muted).toEqual({ type: "mute_conversation", convId: "conv-a", muted: true });
     expect(viaMenu.sidebar.conversations[0]?.muted).toBe(true);
     expect(viaMenu.sidebar.actionMenu).toBeNull();
