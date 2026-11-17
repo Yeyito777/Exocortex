@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -29,6 +29,8 @@ const MAIN_ORG = "11111111-1111-4111-8111-111111111111";
 const MAX2_ORG = "22222222-2222-4222-8222-222222222222";
 const MIN = 60_000;
 const H = 60 * MIN;
+/** A fixed clock for this file: the grant expiries below are real dates, and on the real clock they lapse (max2's on 2026-11-18). */
+const PICK_NOW = Date.parse("2026-11-04T12:00:00Z");
 
 /** A Console `prepaid/credits` reply with these grants (dollars left, ISO expiry). */
 function reply(grants: Array<[left: number, granted: number, expires: string]>) {
@@ -75,6 +77,7 @@ async function sync(at: number): Promise<void> {
 }
 
 beforeEach(async () => {
+  setSystemTime(new Date(PICK_NOW));
   dir = mkdtempSync(join(tmpdir(), "exo-credit-pick-"));
   storeNames = [MAIN_KEY, MAX2_KEY];
   setApiCreditSecretsForTests({ names: async () => storeNames, value: async () => null, helperCommand: name => `printenv ${name}` }, join(dir, "credit-state.json"));
@@ -86,6 +89,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  setSystemTime();
   writeExocortexConfig({});
   setCreditSyncForTests(null);
   setApiCreditSecretsForTests(null);
@@ -95,7 +99,7 @@ afterEach(() => {
 
 describe("which API-credit key a turn takes", () => {
   test("the one whose credit expires soonest, used up grants left out", async () => {
-    const now = Date.now();
+    const now = PICK_NOW;
     await sync(now);
     const pick = pickApiCreditKey(null, now)!;
     expect(pick).toMatchObject({ key: { id: MAX2_KEY }, reason: "expiry", movedFrom: null });
@@ -108,7 +112,7 @@ describe("which API-credit key a turn takes", () => {
   });
 
   test("a nearly empty key only when every key is", async () => {
-    const now = Date.now();
+    const now = PICK_NOW;
     replies[MAX2_ORG] = reply([[1.5, 200, "2026-11-18T00:00:00Z"]]);
     await sync(now);
     const pick = pickApiCreditKey(null, now)!;
@@ -125,7 +129,7 @@ describe("which API-credit key a turn takes", () => {
   });
 
   test("a conversation stays on its key while its cache there is warm, and is placed afresh once it is cold", async () => {
-    const now = Date.now();
+    const now = PICK_NOW;
     await sync(now);
     const warm = pickApiCreditKey({ key: MAIN_KEY, lastUsedAt: now - 2 * MIN }, now)!;
     expect(warm).toMatchObject({ key: { id: MAIN_KEY }, reason: "warm", movedFrom: null });
@@ -143,7 +147,7 @@ describe("which API-credit key a turn takes", () => {
   });
 
   test("a key that refuses (out of credits, rejected, rate-limited) gives way, warm or not", async () => {
-    const now = Date.now();
+    const now = PICK_NOW;
     await sync(now);
     const [main, max2] = apiCreditConfig().keys;
     expect(noteApiCreditFailure(max2, new Error("Claude Code: API Error: 429 rate_limit_error"), now)).toBe("throttled");
@@ -159,7 +163,7 @@ describe("which API-credit key a turn takes", () => {
   });
 
   test("config order without recent Console figures for every key, or with strategy \"order\"", async () => {
-    const now = Date.now();
+    const now = PICK_NOW;
     // Never synced: nothing known about either key's grants.
     expect(pickApiCreditKey(null, now)).toMatchObject({ key: { id: MAIN_KEY }, reason: "order" });
     expect(pickApiCreditKey(null, now)!.detail).toBe(`config order, no recent Console balance for "main", "max2"`);
