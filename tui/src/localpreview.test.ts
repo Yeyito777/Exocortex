@@ -48,3 +48,14 @@ test("without any renderer it rejects so the daemon is asked", async () => {
   await expect(renderLocalPreview(screenshot.toString("base64"), "image/png", { format: "png", width: 10, height: 10 }, { exec, platform: "linux" }))
     .rejects.toThrow("no local image renderer");
 });
+
+test("a quantized thumbnail of a grey image stays opaque", async () => {
+  // ImageMagick's `-type PaletteAlpha` wrote greyscale images almost fully transparent (Nov 18).
+  const grey = spawnSync("magick", ["-seed", "1", "-size", "400x300", "plasma:white-black", "-colorspace", "gray", "-colorspace", "sRGB", "PNG24:-"]).stdout as Buffer;
+  const preview = await renderLocalPreview(grey.toString("base64"), "image/png", { format: "png", width: 200, height: 200, purpose: "thumbnail" }, { quantize: true });
+  const rgba = spawnSync("magick", ["png:-", "-depth", "8", "rgba:-"], { input: Buffer.from(preview.base64, "base64") }).stdout as Buffer;
+  let alphaMin = 255;
+  for (let i = 3; i < rgba.length; i += 4) alphaMin = Math.min(alphaMin, rgba[i]);
+  expect(rgba.length).toBe(preview.width * preview.height * 4);
+  expect(alphaMin).toBe(255);
+});

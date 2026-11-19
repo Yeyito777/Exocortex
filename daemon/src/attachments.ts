@@ -252,7 +252,8 @@ let previewCacheBytes = 0;
 let previewDiskWrites = 0;
 
 function previewKey(id: string, request: ImagePreviewRequest): string {
-  return `${id}-${request.format}-${request.width}x${request.height}${request.purpose === "thumbnail" ? "-thumb" : ""}`;
+  // "-thumb2": thumbnails cached before were transparent for grey images (PaletteAlpha).
+  return `${id}-${request.format}-${request.width}x${request.height}${request.purpose === "thumbnail" ? "-thumb2" : ""}`;
 }
 
 /**
@@ -385,8 +386,9 @@ export async function renderImagePreview(
       const data = await runMagick([
         magickInput(source.mediaType), "-auto-orient",
         "-resize", `${request.width}x${request.height}>`,
-        // PaletteAlpha: an indexed PNG even when quantizing leaves it many colours, keeping partial alpha.
-        ...(thumbnail ? ["-colors", "256", "-type", "PaletteAlpha"] : []),
+        // 256 colours at 8 bits make the encoder pick an indexed PNG (partial alpha kept).
+        // Never `-type PaletteAlpha`: it writes greyscale images almost fully transparent.
+        ...(thumbnail ? ["-colors", "256", "-depth", "8"] : []),
         "-strip", "png:-",
       ], source.bytes);
       const out = sniffImage(data);

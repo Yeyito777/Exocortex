@@ -173,6 +173,35 @@ describe("previews", () => {
     expect(alphas.size).toBeGreaterThan(4);
   });
 
+  test("a grey image's thumbnail stays opaque and keeps its pixels", async () => {
+    // A diagram drawn in greys (Nov 18: a supply/subsidy chart) showed as an
+    // empty box: `-type PaletteAlpha` made ImageMagick write greyscale images
+    // almost fully transparent. Seeds 1 and 3 hit it; so does 16-bit grey.
+    attachmentsInternalsForTest.clearPreviewCache();
+    magick(["-seed", "1", "-size", "400x300", "plasma:white-black", "-colorspace", "gray", "-colorspace", "sRGB", "PNG24:" + join(dir, "grey1.png")]);
+    magick(["-seed", "3", "-size", "400x300", "plasma:white-black", "-colorspace", "gray", "-colorspace", "sRGB", "PNG24:" + join(dir, "grey3.png")]);
+    magick(["-size", "400x300", "gradient:gray20-gray90", "-depth", "16", "PNG48:" + join(dir, "grey16.png")]);
+    const pixels = (png: Buffer, size: string) => Bun.spawnSync(["magick", "png:-", "-resize", `${size}!`, "-depth", "8", "rgba:-"], { stdin: png, timeout: 10_000 }).stdout;
+    for (const name of ["grey1.png", "grey3.png", "grey16.png"]) {
+      const ref = await storeImageFile(join(dir, name));
+      const stored = findStoredImage(ref.id)!;
+      const bytes = readFileSync(stored.path);
+      const thumbnail = await renderImagePreview(ref.id, { bytes, mediaType: stored.mediaType }, { format: "png", width: 200, height: 200, purpose: "thumbnail" });
+      const size = `${thumbnail.width}x${thumbnail.height}`;
+      const got = pixels(thumbnail.data, size);
+      const want = pixels(bytes, size);
+      expect(got.length).toBe(want.length);
+      let alphaMin = 255;
+      let worst = 0;
+      for (let i = 0; i < got.length; i += 4) {
+        alphaMin = Math.min(alphaMin, got[i + 3]);
+        worst = Math.max(worst, Math.abs(got[i] - want[i]));
+      }
+      expect({ name, alphaMin }).toEqual({ name, alphaMin: 255 });
+      expect(worst).toBeLessThan(40);
+    }
+  });
+
   test("a rendered preview survives a restart on disk and is served without the image", async () => {
     attachmentsInternalsForTest.clearPreviewCache();
     const ref = await storeImageFile(join(dir, "busy.png"));

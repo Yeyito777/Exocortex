@@ -76,14 +76,15 @@ function isMissing(error: unknown): boolean {
  */
 const QUANTIZE_THUMBNAILS = Boolean(process.env.SSH_TTY || process.env.SSH_CONNECTION);
 
-async function renderWithMagick(bytes: Buffer, mediaType: ImageMediaType, request: LocalPreviewRequest, exec: Run): Promise<LocalPreview> {
+async function renderWithMagick(bytes: Buffer, mediaType: ImageMediaType, request: LocalPreviewRequest, exec: Run, quantize: boolean): Promise<LocalPreview> {
   // libjpeg can decode at 1/2–1/8 scale; ask for no less than twice the box.
   const decodeHint = mediaType === "image/jpeg" ? ["-define", `jpeg:size=${request.width * 2}x${request.height * 2}`] : [];
   const input = [...decodeHint, `${MAGICK_FORMATS[mediaType]}:-[0]`];
   if (request.format === "png") {
     const data = await exec("magick", [
       ...input, "-auto-orient", "-resize", `${request.width}x${request.height}>`,
-      ...(request.purpose === "thumbnail" && QUANTIZE_THUMBNAILS ? ["-colors", "256", "-type", "PaletteAlpha"] : []),
+      // As the daemon: never `-type PaletteAlpha`, which makes greyscale images transparent.
+      ...(request.purpose === "thumbnail" && quantize ? ["-colors", "256", "-depth", "8"] : []),
       "-strip", "png:-",
     ], bytes);
     const out = sniffImage(data);
@@ -123,13 +124,13 @@ export async function renderLocalPreview(
   base64: string,
   mediaType: ImageMediaType,
   request: LocalPreviewRequest,
-  options: { exec?: Run; platform?: NodeJS.Platform } = {},
+  options: { exec?: Run; platform?: NodeJS.Platform; quantize?: boolean } = {},
 ): Promise<LocalPreview> {
   const exec = options.exec ?? run;
   const bytes = Buffer.from(base64, "base64");
   if (!missing.has("magick")) {
     try {
-      return await renderWithMagick(bytes, mediaType, request, exec);
+      return await renderWithMagick(bytes, mediaType, request, exec, options.quantize ?? QUANTIZE_THUMBNAILS);
     } catch (error) {
       if (!isMissing(error)) throw error;
       missing.add("magick");
