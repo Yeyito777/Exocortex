@@ -318,7 +318,8 @@ function fetcherFor(source: InlineImageSource, daemonFetch: ImagePreviewFetcher)
 }
 
 function previewKey(request: ImagePreviewRequest): string {
-  return `${request.imageId}:${request.format}:${request.width}x${request.height}${request.purpose ? `:${request.purpose}` : ""}`;
+  // ":thumbnail2": thumbnails the /ssh disk cache kept before were transparent for grey images.
+  return `${request.imageId}:${request.format}:${request.width}x${request.height}${request.purpose ? `:${request.purpose}2` : ""}`;
 }
 
 function entryChars(entry: PreviewEntry): number {
