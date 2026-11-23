@@ -20,7 +20,7 @@ import { handleFocusedKey } from "./focus";
 import { createInitialState } from "./state";
 import { theme } from "./theme";
 import { TerminalScreen } from "./testhelpers/terminalscreen";
-import type { AccountsSnapshot, ClaudeAccountInfo } from "./protocol";
+import type { AccountsSnapshot, ClaudeAccountInfo, GeminiAccountInfo } from "./protocol";
 import type { ConversationSummary } from "./messages";
 
 const NOW = Date.now();
@@ -789,4 +789,68 @@ test("an account's long-lived token shows only once it needs the owner", () => {
   expect(tokenNote({ expiresAt: NOW - DAY }, NOW)).toBe("token past its year");
   expect(tokenNote(null, NOW)).toBeNull();
   expect(tokenNote(undefined, NOW)).toBeNull();
+});
+
+function gemini(extra: Partial<GeminiAccountInfo> = {}): GeminiAccountInfo {
+  return {
+    email: "gem@example.com",
+    plan: "Google AI Pro",
+    signedIn: true,
+    usageReadAt: NOW,
+    shared: { fiveHour: { utilization: 25, resetsAt: NOW + 3 * H }, weekly: { utilization: 9, resetsAt: NOW + 120 * H } },
+    argon: { fiveHour: null, weekly: { utilization: 40, resetsAt: NOW + 100 * H } },
+    ...extra,
+  };
+}
+
+test("a Gemini section: the Google account and plan with the shared limits, and Argon's own weekly limit", () => {
+  const { state } = openScreen(snapshot({ gemini: gemini() }, [claude("main"), claude("max2")]));
+  const rows = screenText(state);
+  const text = rows.join("\n");
+  expect(text).toMatch(/│ {2}Gemini +│/);
+  expect(text).toMatch(/● gem@example\.com {2}Google AI Pro +━{6,14} +25% {2}3h +━{6,14} {3}9% {2}5d/);
+  // Argon has no five-hour limit: crossed out like a Claude account without one.
+  expect(text).toMatch(/● Argon +X{6,14} +n\/a +━{6,14} +40% {2}4d4h/);
+  // Gemini comes after Claude, in the same columns.
+  expect(rows.findIndex(row => row.includes("Gemini"))).toBeGreaterThan(rows.findIndex(row => row.includes("● max2")));
+  const weeklyEnd = (name: string) => rows.find(row => row.includes(`● ${name}`))!.lastIndexOf("━");
+  expect(weeklyEnd("gem@example.com")).toBe(weeklyEnd("main"));
+  expect(weeklyEnd("Argon")).toBe(weeklyEnd("main"));
+  const payload = renderAccountsScreen(state, state.accountsScreen!, 40, 150, NOW).payload;
+  expect(payload).toContain(`${theme.success}● ${theme.bold}${theme.accent}gem@example.com`);
+});
+
+test("Gemini states: a spent limit, a first read still on its way, signed out, an older daemon", () => {
+  const spent = gemini({ shared: { fiveHour: { utilization: 100, resetsAt: NOW + 2 * H }, weekly: { utilization: 30, resetsAt: NOW + 50 * H } } });
+  let state = openScreen(snapshot({ gemini: spent }, [claude("main"), claude("max2")])).state;
+  let text = screenText(state).join("\n");
+  expect(text).toMatch(/● gem@example\.com {2}Google AI Pro · limited +━+ +100% {2}2h/);
+  expect(renderAccountsScreen(state, state.accountsScreen!, 40, 150, NOW).payload).toContain(`${theme.warning}● `);
+  // A spent window past its reset has started over.
+  const later = renderAccountsScreen(state, state.accountsScreen!, 40, 150, NOW + 3 * H).payload;
+  expect(later).not.toContain("limited");
+
+  state = openScreen(snapshot({ gemini: gemini({ usageReadAt: null, shared: null, argon: null }) }, [claude("main"), claude("max2")])).state;
+  text = screenText(state).join("\n");
+  expect(text).toMatch(/● gem@example\.com {2}Google AI Pro +checking… +│/);
+  expect(text).not.toContain("Argon");
+
+  state = openScreen(snapshot({ gemini: gemini({ signedIn: false, email: null, plan: null, shared: null, argon: null }) }, [claude("main"), claude("max2")])).state;
+  text = screenText(state).join("\n");
+  expect(text).toMatch(/● Google account +signed out +│/);
+  expect(text).toContain("sign in Gemini: exocortexd login gemini");
+
+  state = openScreen(snapshot({}, [claude("main"), claude("max2")])).state;
+  expect(screenText(state).join("\n")).not.toContain("Gemini");
+});
+
+test("Gemini alone below a /proxy Claude takes the column labels; hidden sensitive info censors its email", () => {
+  const snap = snapshot({ gemini: gemini() });
+  snap.claude.proxied = true;
+  const { state } = openScreen(snap);
+  state.hideSensitiveInfo = true;
+  const text = screenText(state).join("\n");
+  expect(text).toMatch(/Gemini +5-Hour +Weekly/);
+  expect(text).not.toContain("gem@example.com");
+  expect(text).toContain("g**@example.com");
 });

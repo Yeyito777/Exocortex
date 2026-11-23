@@ -113,6 +113,11 @@ export function noteGeminiSignInWorking(): void {
   checkedOk = true;
 }
 
+/** The last check found the CLI signed out (unknown before the first check counts as signed in). */
+export function geminiSignedOut(): boolean {
+  return checkedAt > 0 && !checkedOk;
+}
+
 export function invalidateGeminiSignIn(): void {
   checkedAt = 0;
 }

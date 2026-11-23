@@ -406,6 +406,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     broadcastUsageUpdate(server, provider, usage);
+    // Gemini's limits show on the Accounts screen too (Claude's push through the account events).
+    if (provider === "gemini") accountsWatch.changed();
   };
   // An API key's spend changes with every response, image and transcription:
   // push it as each one is counted, and again when the local day rolls over
@@ -434,6 +436,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const accountsWatch = createAccountsWatch({
     send: (client, event) => { server.sendTo(client, event); },
     onClaudeUsage: (usage) => broadcastUsage("anthropic", usage),
+    onGeminiUsage: (usage) => broadcastUsage("gemini", usage),
   });
   /** The status bar's resources block: this machine's CPU, RAM, GPU and VRAM, for machine-resources clients (dropped at the first sample after they disconnect). */
   const machineResources = createMachineResourcesWatch({ send: (client, event) => { server.sendTo(client, event); } });

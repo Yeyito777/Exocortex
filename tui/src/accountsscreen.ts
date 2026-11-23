@@ -1,5 +1,5 @@
 /**
- * Accounts screen: every Claude and OpenAI account as one row of a small
+ * Accounts screen: every Claude, OpenAI and Gemini account as one row of a small
  * table on a card drawn over the chat, opened with /accounts or `g a` in
  * normal mode. A row is a state dot, the account, and its 5-hour and weekly
  * usage with the time to each reset; a short word replaces the bars when the
@@ -28,10 +28,13 @@
  * once too, also over /ssh. Esc or q closes; j/k scroll a card cut short by a
  * small terminal. While Claude goes through /proxy, the Claude rows are the
  * remote's accounts (its pool routes this machine's turns too) and the note
- * says so, or that the link is down.
+ * says so, or that the link is down. Gemini's section is the daemon's own
+ * Antigravity CLI sign-in (never /proxy's) with its plan: a row with the
+ * limits Neon, Hydrogen and Flash share (the usage bars'), and an Argon row
+ * for Argon's own; a limit the CLI does not list is crossed out.
  */
 
-import type { AccountCredits, AccountsEvent, AccountsSnapshot, Event, ClaudeAccountInfo, ClaudeAccountsInfo, ClaudeWebSessionProblem } from "./protocol";
+import type { AccountCredits, AccountsEvent, AccountsSnapshot, Event, ClaudeAccountInfo, ClaudeAccountsInfo, ClaudeWebSessionProblem, GeminiAccountInfo, GeminiQuotaWindows } from "./protocol";
 import type { ApiKeyCredit, UsageData, UsageResetCredits, UsageWindow } from "./messages";
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
@@ -310,6 +313,8 @@ export function tokenNote(token: ClaudeAccountInfo["token"], now: number): strin
 interface TableRow {
   dot: string;
   name: Segment;
+  /** Muted words right after the name (Gemini's plan). */
+  plan?: Segment;
   /** Short words after the name: "new work", "limited" ("limited 2h" when there are no usage columns). */
   tag?: Segment;
   /** 5-hour and weekly cells, then the Fable allowance's when the account reports one; an unknown window is left blank. */
@@ -410,6 +415,44 @@ function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>): Segment[]
   return [[theme.muted, `accounts on ${remote.alias} (/proxy)`]];
 }
 
+/** Where the Antigravity CLI signs in (docs/gemini.md). */
+const GEMINI_LOGIN_COMMAND = "exocortexd login gemini";
+
+/** Spent and not reset yet. */
+function windowSpent(window: UsageWindow | null, now: number): boolean {
+  return !!window && window.utilization >= 100 && (window.resetsAt === null || window.resetsAt > now);
+}
+
+/** A limit group's 5-hour and weekly cells; one the CLI does not list is crossed out. */
+function geminiCells(group: GeminiQuotaWindows | null, now: number): UsageCell[] {
+  const cell = (window: UsageWindow | null): UsageCell => usageCell(window, now) ?? { pct: 0, reset: "", notApplicable: true };
+  return [cell(group?.fiveHour ?? null), cell(group?.weekly ?? null)];
+}
+
+function geminiLimitRow(name: Segment, group: GeminiQuotaWindows | null, now: number, plan?: Segment): TableRow {
+  const limited = windowSpent(group?.fiveHour ?? null, now) || windowSpent(group?.weekly ?? null, now);
+  return {
+    dot: limited ? theme.warning : theme.success,
+    name,
+    ...(plan ? { plan } : {}),
+    ...(limited ? { tag: [theme.warning, "limited"] as Segment } : {}),
+    windows: geminiCells(group, now),
+  };
+}
+
+/** Gemini's rows: the account with the shared limits, then Argon's own. */
+function geminiRows(info: GeminiAccountInfo, hideSensitive: boolean, now: number): TableRow[] {
+  const email = maybeCensorEmail(info.email, hideSensitive);
+  const name: Segment = [info.signedIn ? theme.bold + theme.accent : theme.text, email ?? "Google account"];
+  const plan: Segment | undefined = info.plan ? [theme.muted, info.plan] : undefined;
+  if (!info.signedIn) return [{ dot: theme.error, name, ...(plan ? { plan } : {}), note: [[theme.error, "signed out"]] }];
+  if (info.usageReadAt === null && !info.shared && !info.argon) return [{ dot: theme.muted, name, ...(plan ? { plan } : {}), note: [[theme.muted, "checking…"]] }];
+  return [
+    geminiLimitRow(name, info.shared, now, plan),
+    ...(info.argon ? [geminiLimitRow([theme.text, "Argon"], info.argon, now)] : []),
+  ];
+}
+
 /** Everything the screen shows, top to bottom (no chrome). */
 export function accountsScreenLines(state: RenderState, screen: AccountsScreenState, now = Date.now()): ScreenLine[] {
   if (!screen.snapshot) return [{ kind: "text", segments: [[theme.muted, "Loading accounts…"]] }];
@@ -434,9 +477,12 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
     if (claude.remote) notes.unshift(proxyNote(claude.remote));
   }
 
+  /** Some heading above already carries the usage columns' labels. */
+  let labelled = claudeTable;
   if (openai.accounts.length > 0) {
     if (lines.length > 0) lines.push({ kind: "blank" });
-    const heading = { kind: "heading" as const, label: "OpenAI", columns: !claudeTable, credits: false };
+    const heading = { kind: "heading" as const, label: "OpenAI", columns: !labelled, credits: false };
+    labelled = true;
     lines.push(heading);
     if (openai.proxied) lines.push({ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] });
     const usage = state.usageByProvider.openai ?? null;
@@ -453,6 +499,14 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
       });
       if (account.current && creditCell(openAICredits(usage?.apiKey?.credit), now)) heading.credits = true;
     }
+  }
+
+  const gemini = screen.snapshot.gemini;
+  if (gemini) {
+    if (lines.length > 0) lines.push({ kind: "blank" });
+    lines.push({ kind: "heading", label: "Gemini", columns: !labelled });
+    for (const row of geminiRows(gemini, state.hideSensitiveInfo, now)) lines.push({ kind: "row", row });
+    if (!gemini.signedIn) notes.push([[theme.muted, "sign in Gemini: "], [theme.command, GEMINI_LOGIN_COMMAND]]);
   }
 
   if (notes.length > 0) {
@@ -522,6 +576,11 @@ function creditWidth(cell: CreditCell): number {
     + (cell.signInNeeded ? termWidth(SIGN_IN_NOTE) : 0);
 }
 
+/** The name column's text in a row: the name, its plan and its tags. */
+function nameWidth(row: TableRow): number {
+  return termWidth(row.name[1]) + (row.plan ? 2 + termWidth(row.plan[1]) : 0) + (row.tag ? (row.plan ? 3 : 2) + termWidth(row.tag[1]) : 0);
+}
+
 /** Column widths for these lines, with bars as wide as `maxWidth` allows (up to MAX_BAR_WIDTH). */
 function layoutColumns(lines: ScreenLine[], maxWidth: number): Columns {
   let name = 0;
@@ -533,7 +592,7 @@ function layoutColumns(lines: ScreenLine[], maxWidth: number): Columns {
     if (line.kind === "heading") name = Math.max(name, termWidth(line.label) - DOT_WIDTH);
     if (line.kind !== "row") continue;
     const { row } = line;
-    name = Math.max(name, termWidth(row.name[1]) + (row.tag ? 2 + termWidth(row.tag[1]) : 0));
+    name = Math.max(name, nameWidth(row));
     for (const cell of row.windows ?? []) if (cell) reset = Math.max(reset, cell.reset.length);
     // The Fable column shows only for an allowance some account has.
     if (row.windows?.slice(BASE_USAGE_COLUMNS).some(cell => cell && !cell.notApplicable)) usage = COLUMN_LABELS.length;
@@ -605,12 +664,12 @@ function lineSegments(line: ScreenLine, columns: Columns): Segment[] {
     }
     case "row": {
       const { row } = line;
-      const nameWidth = termWidth(row.name[1]) + (row.tag ? 2 + termWidth(row.tag[1]) : 0);
       const segments: Segment[] = [
         [row.dot, "● "],
         row.name, [theme.boldOff, ""],
-        ...(row.tag ? [[theme.text, "  "], row.tag] as Segment[] : []),
-        [theme.text, " ".repeat(Math.max(0, columns.name - nameWidth))],
+        ...(row.plan ? [[theme.text, "  "], row.plan] as Segment[] : []),
+        ...(row.tag ? [[theme.muted, row.plan ? " · " : "  "], row.tag] as Segment[] : []),
+        [theme.text, " ".repeat(Math.max(0, columns.name - nameWidth(row)))],
         gap,
       ];
       if (row.note) return [...segments, ...row.note];

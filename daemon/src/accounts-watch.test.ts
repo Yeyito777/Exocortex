@@ -3,7 +3,7 @@ import { createAccountsWatch } from "./accounts-watch";
 import { proxiedConversationName } from "./provider-proxy/route";
 import { emitClaudeAccountsChanged } from "./providers/anthropic/account-events";
 import { DEFAULT_ROUTING_POLICY } from "./providers/anthropic/routing";
-import type { AccountsEvent, ClaudeAccountInfo, ClaudeAccountsInfo, Event, OpenAIAccountInfo } from "./protocol";
+import type { AccountsEvent, ClaudeAccountInfo, ClaudeAccountsInfo, Event, GeminiAccountInfo, OpenAIAccountInfo } from "./protocol";
 import type { ConnectedClient } from "./server";
 import { LineSplitter } from "./line-splitter";
 
@@ -19,10 +19,12 @@ function fakeClient(): ConnectedClient {
   return { id: "c1", socket: { destroyed: false }, subscriptions: new Set(), lines: new LineSplitter(), capabilities: new Set() } as unknown as ConnectedClient;
 }
 
-function setup(claudeIds: string[], openai: OpenAIAccountInfo[] = []) {
+function setup(claudeIds: string[], openai: OpenAIAccountInfo[] = [], initialGemini: GeminiAccountInfo | null = null) {
   const sent: Array<{ client: ConnectedClient; event: Event }> = [];
   let accounts = claudeIds.map(id => account(id));
   let refreshes = 0;
+  let gemini = initialGemini;
+  let geminiRefreshes = 0;
   const convIds: Array<string | null> = [];
   const watch = createAccountsWatch({
     send: (client, event) => { sent.push({ client, event }); },
@@ -33,10 +35,14 @@ function setup(claudeIds: string[], openai: OpenAIAccountInfo[] = []) {
     openaiAccounts: () => openai,
     refreshClaude: async () => { refreshes += 1; return null; },
     isProxied: () => false,
+    geminiInfo: () => gemini,
+    refreshGemini: async () => { geminiRefreshes += 1; },
   });
   return {
     watch, sent, convIds,
     refreshes: () => refreshes,
+    geminiRefreshes: () => geminiRefreshes,
+    setGemini: (next: GeminiAccountInfo | null) => { gemini = next; },
     setAccounts: (next: ClaudeAccountInfo[]) => { accounts = next; },
     snapshots: () => sent.map(entry => entry.event).filter((event): event is AccountsEvent => event.type === "accounts"),
   };
@@ -61,6 +67,34 @@ test("accounts answers with a structured snapshot, enabled only with several acc
   expect(openai.snapshots()[0].snapshot).toMatchObject({ enabled: true, openai: { proxied: false, accounts: [{ index: 1 }, { index: 2 }] } });
   // An OpenAI pool alone is watched without checking the one Claude account.
   expect(openai.watch.watcherCount()).toBe(1);
+  expect(openai.refreshes()).toBe(0);
+});
+
+test("the snapshot carries the Gemini sign-in and plan limits; watching re-reads them and pushes the change", async () => {
+  const limits = (pct: number): GeminiAccountInfo => ({
+    email: "g@example.com", plan: "Google AI Pro", signedIn: true, usageReadAt: Date.now(),
+    shared: { fiveHour: { utilization: pct, resetsAt: Date.now() + 3_600_000 }, weekly: { utilization: 4, resetsAt: Date.now() + 86_400_000 } },
+    argon: { fiveHour: null, weekly: { utilization: 0, resetsAt: null } },
+  });
+  const none = setup(["main", "max2"]);
+  none.watch.handle(fakeClient(), { type: "accounts", reqId: "r0" });
+  expect(none.snapshots()[0].snapshot.gemini).toBeNull();
+
+  const t = setup(["main", "max2"], [], limits(10));
+  t.watch.handle(fakeClient(), { type: "accounts", reqId: "r1", watch: true });
+  expect(t.snapshots()[0].snapshot.gemini).toMatchObject({ email: "g@example.com", plan: "Google AI Pro", shared: { fiveHour: { utilization: 10 } }, argon: { weekly: { utilization: 0 } } });
+  expect(t.geminiRefreshes()).toBe(1);
+  t.setGemini(limits(30));
+  for (let i = 0; i < 200 && t.snapshots().length < 2; i++) await Bun.sleep(5);
+  expect(t.snapshots().at(-1)!.snapshot.gemini!.shared!.fiveHour!.utilization).toBe(30);
+
+  // An OpenAI pool with Gemini: Gemini is still kept fresh, the one Claude account is not checked.
+  const openai = setup(["main"], [
+    { index: 1, email: "a@example.com", displayName: null, plan: "pro", current: true },
+    { index: 2, email: "b@example.com", displayName: null, plan: "plus", current: false },
+  ], limits(10));
+  openai.watch.handle(fakeClient(), { type: "accounts", watch: true });
+  expect(openai.geminiRefreshes()).toBe(1);
   expect(openai.refreshes()).toBe(0);
 });
 
@@ -123,6 +157,7 @@ test("under /proxy the screen shows the remote's pool, refreshed through the rem
     refreshProxiedClaude: async () => { remoteRefreshes += 1; return null; },
     isProxied: () => false,
     proxiedClaude: () => shared,
+    geminiInfo: () => null,
   });
   const snapshots = () => sent.filter((event): event is AccountsEvent => event.type === "accounts").map(event => event.snapshot);
 

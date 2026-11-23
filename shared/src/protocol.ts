@@ -3,6 +3,7 @@ import type { ConversationDefaults } from "./config";
 import type { ActiveTaskInfo } from "./messages";
 import type { GenerationThroughput } from "./messages";
 import type { MessageBilling } from "./messages";
+import type { UsageWindow } from "./messages";
 /**
  * @exocortex/shared — IPC protocol.
  *
@@ -1503,6 +1504,32 @@ export interface AccountsSnapshot {
   claude: ClaudeAccountsInfo;
   /** OpenAI's account pool (`/account` switches the current one); `proxied`: /proxy uses the remote's login. */
   openai: { proxied: boolean; accounts: OpenAIAccountInfo[] };
+  /** The gemini provider's sign-in and plan limits; null when it is not set up (absent from older daemons). */
+  gemini?: GeminiAccountInfo | null;
+}
+
+/** A Google AI plan limit group's windows, as the Antigravity CLI's `/usage` screen shows them; null where it lists none. */
+export interface GeminiQuotaWindows {
+  fiveHour: UsageWindow | null;
+  weekly: UsageWindow | null;
+}
+
+/**
+ * The gemini provider's Google sign-in (the Antigravity CLI's) and its plan's
+ * limits, from the same `/usage` read as the usage bars (never /proxy: the
+ * CLI's login stays on its machine).
+ */
+export interface GeminiAccountInfo {
+  email: string | null;
+  /** As the CLI reports it, e.g. "Google AI Pro". */
+  plan: string | null;
+  signedIn: boolean;
+  /** When `/usage` was last read; null before the first read. */
+  usageReadAt: number | null;
+  /** The limits Neon, Hydrogen and Flash share (the usage bars'); null when the screen did not list them. */
+  shared: GeminiQuotaWindows | null;
+  /** Argon's own limits. */
+  argon: GeminiQuotaWindows | null;
 }
 
 export interface ConsumeUsageResetCommand {

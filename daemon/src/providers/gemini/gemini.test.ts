@@ -11,7 +11,7 @@ import { agyModelLevel, FALLBACK_GEMINI_MODELS, parseAgyModels } from "./models"
 import { buildGeminiPromptContent, planGeminiPrompt, resetSessionHeadsForTest, setSessionHead } from "./prompt";
 import { closeAllGeminiProcesses, fingerprintOf, geminiToolDenial, openGeminiProcess, translateAcpError } from "./session";
 import { createGeminiStreamState } from "./stream";
-import { geminiUsageAvailability, parseUsageScreen, setGeminiQuotaForTest } from "./usage";
+import { geminiQuotaLimits, geminiUsageAvailability, parseUsageScreen, setGeminiQuotaForTest } from "./usage";
 
 const FAKE_AGY = join(import.meta.dir, "test-fixtures", "fake-agy.ts");
 let dir: string;
@@ -109,6 +109,16 @@ describe("usage", () => {
     expect(geminiUsageAvailability("gemini-4-neon", now)).toEqual({ ready: false, resetAt: now + 125 * 60_000 });
     expect(geminiUsageAvailability("gemini-4-argon", now).ready).toBe(true);
     expect(geminiUsageAvailability("gemini-4-neon", now + 126 * 60_000).ready).toBe(true);
+  });
+
+  test("the Accounts screen gets the shared limits the usage bars show, and Argon's own", () => {
+    const now = 1_000_000;
+    const report = parseUsageScreen(screen, now)!;
+    expect(geminiQuotaLimits(report)).toEqual({
+      shared: { fiveHour: { utilization: 100, resetsAt: now + 125 * 60_000 }, weekly: { utilization: 2.58, resetsAt: now + (167 * 60 + 41) * 60_000 } },
+      argon: { fiveHour: null, weekly: { utilization: 0, resetsAt: null } },
+    });
+    expect(geminiQuotaLimits({ account: null, groups: [{ name: "CLAUDE AND GPT MODELS", weekly: null, fiveHour: null }] })).toEqual({ shared: null, argon: null });
   });
 });
 

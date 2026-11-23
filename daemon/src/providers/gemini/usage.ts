@@ -9,6 +9,7 @@
  */
 
 import type { UsageData, UsageWindow } from "@exocortex/shared/messages";
+import type { GeminiQuotaWindows } from "@exocortex/shared/protocol";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +34,8 @@ const SCREEN_TIMEOUT_MS = 25_000;
 let lastUsage: UsageData | null = null;
 let lastReport: GeminiQuotaReport | null = null;
 let lastReadAt = 0;
+/** When lastReport was read. */
+let lastReportAt = 0;
 let inflight: Promise<GeminiQuotaReport | null> | null = null;
 
 // eslint-disable-next-line no-control-regex
@@ -80,10 +83,22 @@ export function parseUsageScreen(raw: string, now = Date.now()): GeminiQuotaRepo
   return report.groups.length > 0 ? report : null;
 }
 
+function sharedGroup(report: GeminiQuotaReport): GeminiQuotaGroup | null {
+  return report.groups.find(group => /^GEMINI MODELS$/i.test(group.name))
+    ?? report.groups.find(group => /GEMINI/i.test(group.name) && !/ARGON/i.test(group.name))
+    ?? null;
+}
+
 /** The shared Gemini group (Neon, Hydrogen, Flash) is what the usage bars show. */
 export function usageFromReport(report: GeminiQuotaReport): UsageData {
-  const gemini = report.groups.find(group => /^GEMINI MODELS$/i.test(group.name)) ?? report.groups.find(group => /GEMINI/i.test(group.name)) ?? null;
+  const gemini = sharedGroup(report);
   return { fiveHour: gemini?.fiveHour ?? null, sevenDay: gemini?.weekly ?? null };
+}
+
+/** The Accounts screen's limits: the shared group (the usage bars') and Argon's own. */
+export function geminiQuotaLimits(report: GeminiQuotaReport): { shared: GeminiQuotaWindows | null; argon: GeminiQuotaWindows | null } {
+  const windows = (group: GeminiQuotaGroup | null | undefined): GeminiQuotaWindows | null => group ? { fiveHour: group.fiveHour, weekly: group.weekly } : null;
+  return { shared: windows(sharedGroup(report)), argon: windows(report.groups.find(group => /ARGON/i.test(group.name))) };
 }
 
 /** Open the CLI in a pseudo-terminal, ask for `/usage`, and return the screen text. */
@@ -143,6 +158,7 @@ export async function readGeminiQuota(force = false): Promise<GeminiQuotaReport 
       lastReadAt = Date.now();
       if (report) {
         lastReport = report;
+        lastReportAt = lastReadAt;
         lastUsage = usageFromReport(report);
       } else {
         log("warn", "gemini usage: the CLI's /usage screen could not be read");
@@ -161,6 +177,11 @@ export async function readGeminiQuota(force = false): Promise<GeminiQuotaReport 
 
 export function lastGeminiQuota(): GeminiQuotaReport | null {
   return lastReport;
+}
+
+/** When `/usage` was last read successfully; 0 before. */
+export function lastGeminiQuotaReadAt(): number {
+  return lastReport ? lastReportAt : 0;
 }
 
 export function getLastUsage(): UsageData | null {
@@ -185,6 +206,7 @@ export function clearUsage(): void {
   lastUsage = null;
   lastReport = null;
   lastReadAt = 0;
+  lastReportAt = 0;
 }
 
 /**
@@ -207,5 +229,5 @@ export function geminiUsageAvailability(model: string | null, now = Date.now()):
 export function setGeminiQuotaForTest(report: GeminiQuotaReport | null): void {
   lastReport = report;
   lastUsage = report ? usageFromReport(report) : null;
-  lastReadAt = report ? Date.now() : 0;
+  lastReadAt = lastReportAt = report ? Date.now() : 0;
 }

@@ -64,7 +64,9 @@ models (Neon, Hydrogen, Flash) share a **five-hour** and a **weekly** limit
 (the five-hour one refills until the weekly one is spent); Argon has a smaller
 weekly limit of its own on Pro. Exocortex reads that screen by opening the CLI
 in a pseudo-terminal at most every three minutes, after turns, and shows the
-shared Gemini windows as the usage bars. A turn the plan refuses waits for the
+shared Gemini windows as the usage bars. The Accounts screen (`/accounts`)
+shows the same read: the signed-in Google account and plan with the shared
+limits, and a row for Argon's own. A turn the plan refuses waits for the
 reset, like a Claude turn at a limit.
 
 ## How a turn runs
