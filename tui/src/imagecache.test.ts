@@ -88,6 +88,9 @@ describe("image previews on disk", () => {
     kittyThumbnail(remote, { urgent: true });
     await until(() => kittyThumbnail(remote).phase === "ready");
     expect(restarted.requests).toHaveLength(1);
+    // The fetched preview is kept again in the background: wait for it, or it lands after the checks below.
+    await restarted.disk.flush();
+    expect(readdirSync(dir)).toEqual([name!]);
     // Truncated, or another key's file under this name: also not served.
     const disk = new ImagePreviewDisk(dir);
     writeFileSync(join(dir, name!), data.subarray(0, 40));
