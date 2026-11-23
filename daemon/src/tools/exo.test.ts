@@ -59,7 +59,7 @@ describe("minimal native exo", () => {
     expect(exo.systemHint).toContain("subagent always creates a new conversation");
     expect(exo.summarize!({ message: { conversation: "c1", text: "status update" } }).detail).toBe("message: c1: status update");
     expect(exo.summarize!({ status: "c1" }).detail).toBe("status: c1");
-    expect(Object.keys(properties.args.properties)).toEqual(["detach", "model", "effort"]);
+    expect(Object.keys(properties.args.properties)).toEqual(["detach", "model", "effort", "folder", "title"]);
     expect(properties.args.properties.model.description).toContain("claude-opus-5-5");
     expect(properties.args.properties.effort.enum).toContain("xhigh");
     expect(exo.systemHint).toContain("Do the user's task yourself by default");
@@ -194,6 +194,58 @@ describe("minimal native exo", () => {
     ]) expect((await h.runtime.execute(input, p.id)).isError).toBe(true);
     expect(h.runTurn).not.toHaveBeenCalled();
     expect(getConversationActivityCounts(p.id).subagentCount).toBe(0);
+  });
+  describe("sidebar placement", () => {
+    const folderIds = new Set<string>();
+    afterEach(() => {
+      for (const id of folderIds) conversations.deleteFolder(id, "unwrap", false);
+      folderIds.clear();
+    });
+    const folderOf = (id: string) => conversations.listSidebarState().conversations.find(c => c.id === id)?.folderId ?? null;
+    const pathOf = (folderId: string | null) => {
+      const folders = conversations.listFolders();
+      const names: string[] = [];
+      for (let f = folders.find(x => x.id === folderId); f; f = folders.find(x => x.id === f!.parentId)) { names.unshift(f.name); folderIds.add(f.id); }
+      return names.join("/") || "/";
+    };
+
+    test("default is the subagents folder; args.folder files the child at top level or under a path, creating it once", async () => {
+      const h = harness();
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      expect(pathOf(folderOf(child.id))).toBe("subagents");
+      folderIds.delete(folderOf(child.id)!);
+      const top = await spawn(h.runtime, p.id, { folder: "/" });
+      expect(folderOf(top.id)).toBeNull();
+      // Still a notifying child of its parent with a Tasks entry.
+      expect(top.subagentPolicy).toMatchObject({ parentConversationId: p.id, depth: 1 });
+      expect(h.beginParentNotification).toHaveBeenCalledTimes(2);
+      const nested = await spawn(h.runtime, p.id, { folder: "Exo Place Test/Deep" });
+      expect(pathOf(folderOf(nested.id))).toBe("Exo Place Test/Deep");
+      const again = await spawn(h.runtime, p.id, { folder: "/exo place test/deep/", detach: true });
+      expect(folderOf(again.id)).toBe(folderOf(nested.id));
+      expect(again.subagentPolicy).toMatchObject({ parentConversationId: p.id, detached: true });
+      expect(h.beginParentNotification).toHaveBeenCalledTimes(3);
+    });
+
+    test("args.title names the conversation; the Tasks entry still shows the prompt", async () => {
+      const h = harness({ runTurn: mock(() => new Promise<typeof outcome>(() => {})) });
+      const p = parent();
+      const child = await spawn(h.runtime, p.id, { folder: "/", title: "  AnyCraft   forest " });
+      expect(child.title).toBe("AnyCraft forest");
+      expect(listActiveConversationTasks(p.id)).toMatchObject([{ id: child.id, title: "Inspect the specified file" }]);
+    });
+
+    test("rejects bad folder paths and titles before creating anything", async () => {
+      const h = harness();
+      const p = parent();
+      const before = conversations.listFolders().length;
+      for (const args of [{ folder: "" }, { folder: "a/../b" }, { folder: "a//b" }, { folder: 5 }, { title: " " }, { title: 5 }]) {
+        expect((await h.runtime.execute({ subagent: "do it", args }, p.id)).isError).toBe(true);
+      }
+      expect(conversations.listFolders().length).toBe(before);
+      expect(h.runTurn).not.toHaveBeenCalled();
+    });
   });
   test("a subagent's Tasks entry shows its prompt, not the six-word conversation title", async () => {
     let release!: () => void;

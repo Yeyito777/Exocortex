@@ -49,6 +49,32 @@ function result(value: unknown, isError = false): ToolResult {
   return { output: JSON.stringify(value, null, 2), isError };
 }
 
+/** `args.folder` as folder names from the root: "/" is the top level; omitted, the muted subagents folder. */
+function parseSubagentFolder(folder: string | undefined): string[] {
+  if (folder === undefined) return [SUBAGENTS_FOLDER_NAME];
+  const trimmed = folder.trim();
+  if (trimmed === "/") return [];
+  const names = trimmed.replace(/^\/+|\/+$/g, "").split("/").map(name => name.trim());
+  if (!trimmed || names.some(name => !name || name === "." || name === "..")) {
+    throw new Error(`Invalid folder ${JSON.stringify(folder)}: use "/" for the top level or a path such as "projects/anycraft".`);
+  }
+  return names;
+}
+
+/** Each folder of the path, matched case-insensitively and created when missing, root first. */
+function ensureFolderPath(names: string[]): string[] {
+  const ids: string[] = [];
+  for (const name of names) {
+    const parentId = ids.at(-1);
+    const folder = parentId === undefined
+      ? convStore.ensureTopLevelFolder(name, { mutedOnCreate: name === SUBAGENTS_FOLDER_NAME })
+      : convStore.ensureChildFolder(parentId, name);
+    if (!folder) throw new Error(`Failed to create the ${names.slice(0, ids.length + 1).join("/")} folder`);
+    ids.push(folder.id);
+  }
+  return ids;
+}
+
 interface SubagentModel { provider: ProviderId; model: string; effort: EffortLevel; fastMode: boolean }
 
 /**
@@ -292,7 +318,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         const childBudget = depthLimit - childDepth;
         const prompt = (input.subagent as string).trim();
         if (!prompt) throw new Error("subagent requires a non-empty prompt.");
-        const args = (input.args ?? {}) as { detach?: boolean; model?: string; effort?: EffortLevel };
+        const args = (input.args ?? {}) as { detach?: boolean; model?: string; effort?: EffortLevel; folder?: string; title?: string };
+        const folderPath = parseSubagentFolder(args.folder);
+        const chosenTitle = args.title === undefined ? undefined : args.title.replace(/\s+/g, " ").trim().slice(0, 80);
+        if (chosenTitle === "") throw new Error("title must not be empty.");
         const { provider, model, effort, fastMode } = resolveSubagentModel(parent.provider, args.model, args.effort);
         if (!(deps.hasCredentials ?? hasConfiguredCredentials)(provider)) throw new Error(`Not authenticated for provider ${provider}`);
         const blocked = deps.cannotStart?.(provider);
@@ -303,13 +332,12 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         if (getActiveSubagentCount() >= MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL) {
           throw new Error(`Already at the ${MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL}-subagent daemon limit.`);
         }
-        const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME, { mutedOnCreate: true });
-        if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
+        const folderIds = ensureFolderPath(folderPath);
         const convId = convStore.generateId();
-        const title = prompt.replace(/\s+/g, " ").split(" ").slice(0, 6).join(" ").slice(0, 60);
+        const title = chosenTitle ?? prompt.replace(/\s+/g, " ").split(" ").slice(0, 6).join(" ").slice(0, 60);
         // The six-word title names the conversation; the parent's Tasks entry shows more of the prompt.
         const taskLabel = subagentTaskLabel(prompt);
-        const child = convStore.create(convId, provider, model, title, effort, fastMode, folder.id);
+        const child = convStore.create(convId, provider, model, title, effort, fastMode, folderIds.at(-1) ?? null);
         child.subagentMaxDepth = childBudget;
         convStore.setSubagentPolicy(convId, {
           parentConversationId: parentId,
@@ -321,8 +349,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           taskLabel,
         });
         broadcastConversationUpdated(server, convId);
-        // The row itself arrived with conversation_updated; the folder may be new.
-        broadcastFolderUpserts(server, new Set([folder.id]));
+        // The row itself arrived with conversation_updated; the folders may be new.
+        if (folderIds.length > 0) broadcastFolderUpserts(server, new Set(folderIds));
         const startedAt = Date.now();
         const notify = args.detach !== true;
         if (notify) deps.beginParentNotification?.({ convId: parentId }, convId, prompt, startedAt, childBudget, true);

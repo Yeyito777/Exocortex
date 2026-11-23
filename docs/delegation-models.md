@@ -13,8 +13,8 @@ in `agentTurnOptions`) and their MCP server instructions forbid it: all subagent
 work, including search and exploration fan-out, goes through `exo`.
 
 The native `exo` accepts only `{subagent: prompt, args?: {detach?: boolean,
-model?: string, effort?: EffortLevel}}`, `{abort: conversation_id}` or
-`{restart: reason}`. `model` is one of:
+model?: string, effort?: EffortLevel, folder?: string, title?: string}}`,
+`{abort: conversation_id}` or `{restart: reason}`. `model` is one of:
 
 - `sol fast`: the latest Sol in fast mode;
 - `astra`: the latest Astra, without fast mode;
@@ -35,7 +35,16 @@ depth. Children get the standard provider tools and all external hints.
 the child's `provider`, `model` and `effort`, plus `fast_mode: true` for Sol
 fast.
 
-A child's conversation is titled with its prompt's first six words. Its entry
+A child is filed in the muted top-level `subagents` folder unless `folder`
+names another sidebar path: `"/"` for the top level, like a regular
+conversation, or a path such as `"projects/anycraft"`, whose folders are matched
+case-insensitively and created when missing (and whose folder instructions then
+apply to the child, as to any conversation there). Placement changes nothing
+else: the child keeps its parent link, depth, notifications (unless `detach`)
+and Tasks entry.
+
+A child's conversation is titled with `title` when given (whitespace collapsed,
+at most 80 characters), otherwise with its prompt's first six words. Its entry
 in the parent's Tasks panel (and the phone's Activity list) instead shows the
 prompt itself: whitespace collapsed and clipped to 200 characters, stored as
 the subagent policy's `taskLabel` so follow-up turns and restart recovery keep

@@ -309,7 +309,10 @@ The native `exo` tool starts a subagent, messages or reports the status of an
 existing conversation, aborts one, or restarts the daemon. A message to a
 streaming conversation is an automated entry on the durable queue (as
 `queue_message` makes); one to an idle conversation starts its turn at once and
-notifies the caller when it ends, like a subagent turn.
+notifies the caller when it ends, like a subagent turn. A new subagent is
+filed under `subagents/` unless `args.folder` names another sidebar path (`"/"`
+for the top level; missing folders are created) and is titled `args.title` when
+given; see [delegation-models.md](delegation-models.md).
 
 Every prompt that is not the owner's keyboard is stored with
 `metadata.automation` (kind and `sourceId`), which clients render as automated
