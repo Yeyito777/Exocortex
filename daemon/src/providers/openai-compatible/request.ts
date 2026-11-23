@@ -1,5 +1,6 @@
 import type { ApiContentBlock, ApiMessage, EffortLevel, ModelId } from "../../messages";
 import { isValidImagePayload } from "../../image-validation";
+import { pairToolCalls } from "../handoff";
 import type { StreamOptions } from "../types";
 
 export type OpenAICompatibleMessage =
@@ -149,10 +150,12 @@ function assistantToolCallsFromBlocks(blocks: ApiContentBlock[]): OpenAICompatib
 }
 
 export function buildOpenAICompatibleMessages(
-  messages: ApiMessage[],
+  history: ApiMessage[],
   system: string | undefined,
   profile: OpenAICompatibleRequestProfile,
 ): OpenAICompatibleMessage[] {
+  // Another model's history can leave a call unanswered (../handoff.ts).
+  const messages = pairToolCalls(history);
   const out: OpenAICompatibleMessage[] = [];
   if (system?.trim()) out.push({ role: "system", content: system });
 

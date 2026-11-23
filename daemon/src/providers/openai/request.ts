@@ -14,6 +14,7 @@ import { OPENAI_RESPONSES_LITE_WS_METADATA_KEY } from "./constants";
 import { buildCodexClientMetadata } from "./identity";
 import type { OpenAIReasoningItem } from "./types";
 import { isValidImagePayload } from "../../image-validation";
+import { pairToolCalls } from "../handoff";
 import { openAIToolCallItem } from "./tool-wire";
 import { DAYBREAK_MODEL_ID, DAYBREAK_RETIRED_MODEL, isDaybreakModelId, isDaybreakSolModel, openAIWireModel } from "@exocortex/shared/daybreak";
 
@@ -163,7 +164,9 @@ function extractToolResultImages(content: string | unknown[]): Array<{ mediaType
     .filter((image) => isValidImagePayload(image.mediaType, image.base64));
 }
 
-export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
+export function buildOpenAIInput(history: ApiMessage[]): OpenAIInputItem[] {
+  // Another model's history can leave a call unanswered (../handoff.ts).
+  const messages = pairToolCalls(history, history.some(message => (message.providerData?.openai?.compactionItems?.length ?? 0) > 0));
   const input: OpenAIInputItem[] = [];
   const imageLimiter = createImageReplayLimiter(messages);
   const customCallIds = new Set(messages.flatMap(message => typeof message.content === "string" ? [] : message.content

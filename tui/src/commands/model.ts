@@ -29,6 +29,26 @@ export function modelCommandArgs(state: RenderState): Record<string, CompletionI
 }
 
 /** Apply a validated selection without clearing the surrounding prompt. */
+/**
+ * The provider and model a bare `/model <name>` means: an exact model id, or
+ * a name that is one part of model ids (`neon`, `opus`, `sol`), first listed
+ * wins. Null when no provider has it; a list when several do.
+ */
+export function findModelAcrossProviders(state: RenderState, name: string): { provider: ProviderId; model: ModelId } | null | ProviderId[] {
+  const wanted = name.toLowerCase();
+  const providers = availableProviders(state);
+  for (const provider of providers) {
+    const exact = providerModels(state, provider).find(model => model.toLowerCase() === wanted);
+    if (exact) return { provider, model: exact };
+  }
+  const matches = providers.flatMap(provider => {
+    const model = providerModels(state, provider).find(id => id.toLowerCase().split(/[-/]/).includes(wanted));
+    return model ? [{ provider, model }] : [];
+  });
+  if (matches.length === 1) return matches[0];
+  return matches.length > 1 ? matches.map(match => match.provider) : null;
+}
+
 export function applyModelSelectionWithNotice(state: RenderState, provider: ProviderId, model: ModelId): void {
   const selection = applyProviderModelSelection(state, provider, model);
   const effortSuffix = selection.effortChanged ? ` (effort ${state.effort})` : "";
@@ -60,9 +80,25 @@ export const MODEL_COMMAND: SlashCommand = {
       return { type: "handled" };
     }
 
-    const provider = parts[1] as ProviderId;
+    let provider = parts[1] as ProviderId;
+    if (!providers.includes(provider) && parts.length === 2) {
+      // `/model neon`: the provider follows from the model.
+      const slash = parts[1].indexOf("/");
+      const found = slash > 0 && providers.includes(parts[1].slice(0, slash) as ProviderId)
+        ? { provider: parts[1].slice(0, slash) as ProviderId, model: parts[1].slice(slash + 1) }
+        : findModelAcrossProviders(state, parts[1]);
+      if (Array.isArray(found)) {
+        pushSystemMessage(state, `${parts[1]} is a model of ${found.join(", ")}: use /model <provider> ${parts[1]}`);
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      if (found) {
+        provider = found.provider;
+        parts.splice(1, 1, found.provider, found.model);
+      }
+    }
     if (!providers.includes(provider)) {
-      pushSystemMessage(state, `Unknown provider: ${parts[1]}. Available: ${providers.join(", ")}`);
+      pushSystemMessage(state, `Unknown provider or model: ${parts[1]}. Providers: ${providers.join(", ")}`);
       clearPrompt(state);
       return { type: "handled" };
     }

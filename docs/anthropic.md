@@ -42,7 +42,8 @@ conversations:
   last committed round, and editing or trimming history in Exocortex stays
   consistent. History Claude Code never saw (other providers' turns, an
   aborted partial, an Exocortex compaction checkpoint) is sent as a
-  transcript.
+  transcript, images included, also into a process that is still running
+  ([model-switching.md](model-switching.md)).
 - Tool rounds are stored as normal `tool_use`/`tool_result` messages, so a
   conversation can switch to another provider afterwards.
 - **Session files.** A fork is a full copy of the transcript up to its resume

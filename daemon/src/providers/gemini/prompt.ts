@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
 import type { ApiContentBlock, ApiMessage } from "../../messages";
 import { renderMessageContent, renderTranscript, trailingUserMessages } from "../anthropic/prompt";
+import { handoffTranscript } from "../handoff";
 import { log } from "../../log";
 import type { GeminiAssistantProviderData } from "./types";
 
@@ -115,19 +116,18 @@ const INTERRUPTED_TURN_PROMPT = "Your previous turn was interrupted before it fi
 
 /**
  * The prompt for the session: trailing plain user messages natively (images
- * included), anything earlier the session has not seen as a transcript.
+ * included), anything earlier the session has not seen as a transcript with
+ * its newest images (../handoff.ts).
  */
 export function buildGeminiPromptContent(pending: ApiMessage[]): AcpContentBlock[] {
   const tail = trailingUserMessages(pending);
   const history = pending.slice(0, pending.length - tail.length);
   const parts: AcpContentBlock[][] = [];
-  const transcript = renderTranscript(history);
-  if (transcript) {
-    parts.push([{
-      type: "text",
-      text: "<conversation_history>\nEarlier messages in this conversation that you have not seen in this session:\n\n"
-        + `${transcript}\n</conversation_history>`,
-    }]);
+  const transcript = handoffTranscript(history);
+  if (transcript.length > 0) {
+    parts.push(transcript.map((part): AcpContentBlock => part.type === "text"
+      ? { type: "text", text: part.text }
+      : { type: "image", mimeType: part.mediaType, data: part.data }));
   }
   for (const message of tail) parts.push(toAcp(message.content));
   if (tail.length === 0) parts.push([{ type: "text", text: INTERRUPTED_TURN_PROMPT }]);

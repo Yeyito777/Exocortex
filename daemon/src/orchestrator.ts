@@ -20,6 +20,7 @@ import { appendGenerationRate, createGenerationThroughput } from "@exocortex/sha
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import { getMaxContext, supportsImageInputs } from "./providers/registry";
+import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
@@ -43,6 +44,8 @@ import {
   compactContextMessages,
   estimateContextTokens,
   isActiveContextCompatible,
+  needsPortableCheckpoint,
+  portableCheckpoint,
   shouldAutoCompact,
   type CompactionReason,
 } from "./context-compaction";
@@ -1379,6 +1382,52 @@ async function orchestrateAdmittedAssistantTurn(
     }
   }
 
+  /**
+   * `/model` moved the conversation off the OpenAI account whose native
+   * checkpoint holds its earlier history: have that account's model rewrite
+   * it as plaintext the new model can read (docs/model-switching.md).
+   */
+  async function makeCheckpointPortable(active: ActiveContext): Promise<void> {
+    const sourceScope = getCurrentOpenAIAccountScope() ?? undefined;
+    if (!sourceScope || sourceScope !== active.accountScope) {
+      throw new Error(
+        `This conversation's earlier history is an OpenAI checkpoint that only the OpenAI account that wrote it can read, and that account is not signed in. `
+        + `Sign in to it, or switch back to ${formatModelDisplayName(active.model)}.`,
+      );
+    }
+    convStore.pauseActivity(convId);
+    compacting = true;
+    setContextCompactionStatus(true);
+    try {
+      log("info", `orchestrator: rewriting ${convId}'s OpenAI checkpoint (${active.model}) as plaintext for ${liveConv.provider}/${liveConv.model}`);
+      const portable = await portableCheckpoint(active, {
+        signal: ac.signal,
+        effort: "medium",
+        promptCacheKey: convId,
+        tracking: { source: "context_compaction", conversationId: convId },
+        contextLimit: getMaxContext(active.provider, active.model),
+        accountScope: sourceScope,
+        reason: "provider_switch",
+        onHeaders: ext.onHeaders,
+        streamMessageFn: ext.streamMessageFn,
+        withProviderWaits: (provider, request) => runWithProviderWaits(provider, request),
+      });
+      if (!isValidActiveContextCached(portable, liveConv.messages)) {
+        throw new Error("Refusing to install an invalid portable checkpoint");
+      }
+      liveConv.activeContext = portable;
+      apiMessages = buildConversationApiContext(liveConv, accountScope).messages;
+      agentState.contextMessages = [...apiMessages];
+      pushProviderNotice(`${formatModelDisplayName(active.model)}'s compacted history was summarised for ${formatModelDisplayName(liveConv.model)}.`);
+      persistCompletedTurnPrefix();
+      log("info", `orchestrator: ${convId} now replays a plaintext checkpoint (${portable.messages.length} messages)`);
+    } finally {
+      compacting = false;
+      setContextCompactionStatus(false);
+      convStore.resumeActivity(convId);
+    }
+  }
+
   async function syncActiveContext(messages: ApiMessage[]): Promise<void> {
     const previous = liveConv.activeContext;
     // activeContext is the immutable output of the latest compaction, not a
@@ -1901,6 +1950,11 @@ async function orchestrateAdmittedAssistantTurn(
   startStreamingSnapshotHeartbeat();
 
   try {
+    if (contextPreparationError && liveConv.activeContext
+        && needsPortableCheckpoint(liveConv.activeContext, liveConv.provider, liveConv.model, accountScope)) {
+      await makeCheckpointPortable(liveConv.activeContext);
+      contextPreparationError = undefined;
+    }
     if (contextPreparationError) throw contextPreparationError;
     const requestOverheadTokens = Math.ceil((systemPrompt.length + JSON.stringify(toolDefs).length) / 4);
     // Claude Code keeps the conversation in its own session and compacts that

@@ -780,6 +780,20 @@ describe("/compact", () => {
 });
 
 describe("/model", () => {
+  test("a bare model name finds its provider", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+    state.convId = "conv-switch";
+
+    expect(tryCommand("/model deepseek-v4-pro", state)).toEqual({ type: "model_changed", provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(tryCommand("/model openai/gpt-5.4", state)).toEqual({ type: "model_changed", provider: "openai", model: "gpt-5.4" });
+    expect(tryCommand("/model v4", state)).toEqual({ type: "model_changed", provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(tryCommand("/model nonsense", state)).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toStartWith("Unknown provider or model: nonsense");
+  });
+
   test("keeps the context figure within one provider; another provider's is unknown", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);

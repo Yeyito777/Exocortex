@@ -830,3 +830,52 @@ export async function compactContextMessages(
   }
   return plaintextCompaction(messages, options);
 }
+
+/**
+ * Whether `active` must be rewritten before `provider`/`model` can replay it:
+ * an OpenAI-native checkpoint is opaque to every other provider and account
+ * (docs/model-switching.md).
+ */
+export function needsPortableCheckpoint(
+  active: ActiveContext,
+  provider: ProviderId,
+  model: ModelId,
+  accountScope?: string,
+): boolean {
+  return active.kind === "openai_native" && !isActiveContextCompatible(active, provider, model, accountScope);
+}
+
+/**
+ * The same checkpoint as plaintext, for a `/model` switch away from the
+ * OpenAI account that wrote it. Only that account can read the opaque
+ * compaction item, so its model (`active.model`, on `options.accountScope`)
+ * summarises the checkpoint; the transcript boundary, window and the replay
+ * suffix the checkpoint already carries stay as they are, so the canonical
+ * tail after it still applies.
+ */
+export async function portableCheckpoint(
+  active: ActiveContext,
+  options: Omit<ContextCompactionOptions, "provider" | "model">,
+): Promise<ActiveContext> {
+  if (active.kind !== "openai_native") return active;
+  // Messages after the fixed compaction boundary are a verbatim suffix of the
+  // checkpoint (legacy checkpoints advanced past it): keep them as they are.
+  const suffixCount = active.compactionHistoryCount === undefined ? 0 : active.transcriptHistoryCount - active.compactionHistoryCount;
+  const core = active.messages.slice(0, active.messages.length - suffixCount);
+  const suffix = active.messages.slice(active.messages.length - suffixCount);
+  const result = await plaintextCompaction(structuredClone(core), {
+    ...options,
+    provider: active.provider,
+    model: active.model,
+  });
+  const { accountScope: _scope, ...rest } = active;
+  return {
+    ...rest,
+    kind: "plaintext",
+    messages: [...result.messages, ...structuredClone(suffix)].map(message => {
+      // Plaintext checkpoints carry no provider-scoped replay data.
+      const { providerData: _data, ...plain } = message;
+      return plain;
+    }),
+  };
+}

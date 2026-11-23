@@ -1026,3 +1026,37 @@ describe("Claude Code processes outliving the daemon", () => {
     expect(session.isClosed).toBe(true);
   });
 });
+
+describe("a running process after `/model` away and back", () => {
+  const gpt = { startedAt: 1, endedAt: 2, model: "gpt-6-sol", tokens: 0 } as never;
+  const claude = { startedAt: 1, endedAt: 2, model: "claude-opus-5-5", tokens: 0 } as never;
+
+  test("gets the other model's turns as a transcript ahead of the new message", () => {
+    const { session } = open();
+    const pending: ApiMessage[] = [
+      { role: "user", content: "read the note" },
+      { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "bash", input: { command: "cat note" } }], metadata: gpt },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "NOTE-42" }] },
+      { role: "assistant", content: [{ type: "text", text: "It says NOTE-42." }], metadata: gpt },
+      { role: "user", content: "what did it say?" },
+    ];
+    const input = session.planInput(pending);
+    expect(input.kind).toBe("prompt");
+    if (input.kind !== "prompt") return;
+    expect(input.messages).toEqual([pending[4]]);
+    const text = (input.content as Array<{ type: string; text?: string }>).flatMap(block => block.type === "text" ? [block.text ?? ""] : []).join("");
+    expect(text).toStartWith("<conversation_history>");
+    expect(text).toContain("[tool result call_1]\nNOTE-42");
+    expect(text).toEndWith("what did it say?");
+  });
+
+  test("its own interrupted turn is not sent again", () => {
+    const { session } = open();
+    const pending: ApiMessage[] = [
+      { role: "assistant", content: [{ type: "text", text: "partial" }], metadata: claude },
+      { role: "user", content: "go on" },
+    ];
+    const input = session.planInput(pending);
+    expect(input.kind === "prompt" && input.content).toEqual([{ type: "text", text: "go on" }]);
+  });
+});

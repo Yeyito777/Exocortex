@@ -102,7 +102,8 @@ reset, like a Claude turn at a limit.
   mark is still its session's newest continues that session (in the running
   process, or loaded into a new one after a daemon restart) and sends only
   what came after; an edit or rewind, a new workspace, or history from another
-  provider starts a new session with the earlier history as a transcript.
+  provider starts a new session with the earlier history as a transcript
+  ([model-switching.md](model-switching.md)).
   `/trim` leaves the session's copy alone; `/compact` starts a fresh session
   from Exocortex's checkpoint.
 - **Steering** a running turn interrupts it (the CLI takes no input mid-turn)

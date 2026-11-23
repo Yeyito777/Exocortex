@@ -34,7 +34,8 @@ import { log } from "../../log";
 import type { ApiMessage } from "../../messages";
 import type { QueuedInput, QueuedInputSource, StreamResult } from "../types";
 import type { HostToolBinding } from "./host-tools";
-import { buildLiveSessionContent, buildQueuedInputContent, trailingUserMessages } from "./prompt";
+import { buildClaudeUserContent, buildLiveSessionContent, buildQueuedInputContent, trailingUserMessages } from "./prompt";
+import { hasOtherProviderTurns } from "../handoff";
 import type { ClaudeRelay } from "./relay-client";
 import { MAIN_ACCOUNT_ID } from "./accounts";
 import { ApiCreditUsageMeter, type ApiCreditKey } from "./api-credits";
@@ -657,6 +658,12 @@ export class ClaudeCodeSession {
   planInput(pending: ApiMessage[]): LiveTurnInput {
     const tail = trailingUserMessages(pending);
     const fresh = tail.filter(message => !this.delivered.has(deliveryKey(message)));
+    // Another model ran turns since this process's last point (`/model` away
+    // and back): it has not seen them, so they go ahead of the new messages.
+    const history = pending.slice(0, pending.length - tail.length);
+    if (hasOtherProviderTurns(history, "anthropic")) {
+      return { kind: "prompt", content: buildClaudeUserContent([...history, ...fresh]), messages: fresh };
+    }
     if (fresh.length > 0) return { kind: "prompt", content: buildLiveSessionContent(fresh), messages: fresh };
     if (this.wakeId !== null || this.held) return { kind: "wake" };
     if (tail.length === 0) return { kind: "prompt", content: buildLiveSessionContent([]), messages: [] };

@@ -23,6 +23,7 @@ selects another daemon without moving client-side UI operations to that host.
 - [/proxy: another machine's provider login](provider-proxy.md)
 - [Several Claude accounts](claude-accounts.md)
 - [Gemini (Antigravity CLI)](gemini.md): Gemini on a Google AI Pro/Ultra plan
+- [Switching models across providers](model-switching.md): what `/model` carries between Claude, GPT, Gemini and the API providers
 - [Goals](goals.md)
 - [Scratchpad](scratchpad.md): `scratchpad.md` in a conversation's workspace,
   shown below the Tasks panel

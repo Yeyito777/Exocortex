@@ -13,6 +13,7 @@
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { buildUserContent, type ApiContentBlock, type ApiMessage } from "../../messages";
 import type { QueuedInput } from "../types";
+import { handoffTranscript, type HandoffPart } from "../handoff";
 import type { AnthropicAssistantProviderData } from "./types";
 
 type ResumeData = AnthropicAssistantProviderData["anthropic"];
@@ -139,23 +140,24 @@ export function buildQueuedInputContent(input: QueuedInput): SdkContent {
 
 const INTERRUPTED_TURN_PROMPT = "Your previous turn was interrupted before it finished, and anything it still had running (tool calls, background tasks) was stopped. Continue where you left off.";
 
+function toSdkParts(parts: HandoffPart[]): SdkContent {
+  return parts.map(part => part.type === "text"
+    ? { type: "text" as const, text: part.text }
+    : { type: "image" as const, source: { type: "base64" as const, media_type: part.mediaType as "image/png", data: part.data } });
+}
+
 /**
  * Build the user turn to send to Claude Code. Trailing plain user messages are
- * sent natively (images included); anything earlier is a transcript preamble.
+ * sent natively (images included); anything earlier is a transcript preamble,
+ * with its newest images as images (../handoff.ts).
  */
 export function buildClaudeUserContent(pending: ApiMessage[]): SdkContent {
   const tail = trailingUserMessages(pending);
   const history = pending.slice(0, pending.length - tail.length);
 
   const parts: SdkContent[] = [];
-  const transcript = renderTranscript(history);
-  if (transcript) {
-    parts.push([{
-      type: "text",
-      text: "<conversation_history>\nEarlier messages in this conversation that you have not seen in this session:\n\n"
-        + `${transcript}\n</conversation_history>`,
-    }]);
-  }
+  const transcript = handoffTranscript(history);
+  if (transcript.length > 0) parts.push(toSdkParts(transcript));
   for (const message of tail) parts.push(toSdkContent(message.content));
   // No new user input: this replays a turn that ended early (a daemon restart,
   // an interrupt, an error). Say so, or the model has nothing to answer.
