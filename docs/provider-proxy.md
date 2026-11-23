@@ -5,7 +5,7 @@ Exocortex daemon on another machine, which adds its own login. Everything else
 stays local: conversations are stored here, tools run here, files are read and
 written here. Typical use: a laptop borrows a desktop's Claude or ChatGPT
 subscription without logging in on the laptop. Supported providers: `openai`
-and `anthropic`.
+and `anthropic` (not `gemini`: see [Gemini](gemini.md#not-supported)).
 
 Compare `/ssh`, which moves the whole TUI to the other daemon.
 

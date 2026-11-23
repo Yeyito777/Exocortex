@@ -5,7 +5,8 @@
  */
 
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext, ToolParallelSafety, ToolResourceClass } from "./types";
-import type { ToolDisplayInfo } from "@exocortex/shared/messages";
+import { runsOwnAgentLoop, type ToolDisplayInfo } from "@exocortex/shared/messages";
+import { getAntigravityToolDisplayInfo } from "./antigravity";
 import type { ApiToolCall } from "../api";
 import type { ToolExecResult } from "../agent";
 import { bash, executeBashBackgroundable } from "./bash";
@@ -151,6 +152,7 @@ export function getToolDisplayInfo(): ToolDisplayInfo[] {
       color: t.display.color,
     })),
     ...getClaudeCodeToolDisplayInfo(),
+    ...getAntigravityToolDisplayInfo(),
   ];
 }
 
@@ -411,7 +413,7 @@ async function executeScheduledTools(
   const results: ToolExecResult[] = [];
   // Claude Code (anthropic) runs its own agent loop and calls Exocortex tools
   // over MCP, so its turn cannot be suspended and resumed by replay.
-  const canDeferToolResult = calls.length === 1 && toolContext?.provider !== "anthropic";
+  const canDeferToolResult = calls.length === 1 && !runsOwnAgentLoop(toolContext?.provider);
   const scheduledAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
   const execute = async (call: ApiToolCall): Promise<ToolExecResult> => {
     const startedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;

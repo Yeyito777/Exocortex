@@ -62,12 +62,12 @@ export function inferModelProvider(model: string | undefined): ProviderId | unde
 export function parseRequestedModel(providerValue: unknown, modelValue: unknown): { provider?: ProviderId; model?: ModelId } {
   const parseProvider = (value: unknown): ProviderId | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
-    if (value === "openai" || value === "anthropic" || value === "deepseek" || value === "opencode" || value === "openrouter") return value;
+    if (value === "openai" || value === "anthropic" || value === "gemini" || value === "deepseek" || value === "opencode" || value === "openrouter") return value;
     throw new Error(`Unknown provider: ${String(value)}`);
   };
   let provider = parseProvider(providerValue);
   let model = typeof modelValue === "string" && modelValue.trim() ? modelValue.trim() : undefined;
-  if (model && /^(openai|anthropic|deepseek|opencode|openrouter)\//i.test(model)) {
+  if (model && /^(openai|anthropic|gemini|deepseek|opencode|openrouter)\//i.test(model)) {
     const slash = model.indexOf("/");
     const specProvider = parseProvider(model.slice(0, slash).toLowerCase());
     if (provider && provider !== specProvider) throw new Error(`Provider ${provider} conflicts with model spec provider ${specProvider}`);

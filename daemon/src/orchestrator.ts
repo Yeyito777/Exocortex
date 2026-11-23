@@ -10,6 +10,8 @@ import { fastModeServiceTier } from "@exocortex/shared/messages";
 
 import { log } from "./log";
 import { planClaudePrompt } from "./providers/anthropic/prompt";
+import { planGeminiPrompt } from "./providers/gemini/prompt";
+import { geminiUsageAvailability } from "./providers/gemini/usage";
 import { isDeepStrictEqual } from "node:util";
 import { prepareArchiveHashes } from "./conversation-loader";
 import { archiveWindow, inheritArchiveHashProof, storedMessageCount } from "./conversation-window";
@@ -996,15 +998,16 @@ async function orchestrateAdmittedAssistantTurn(
       },
     }, { label: convId }), () => provider === "anthropic"
       ? (ext.usageAvailability?.() ?? (ext.streamMessageFn ? { ready: true, resetAt: null } : claudeUsageAvailability(Date.now(), { apiCredits: conversationAllowsApiCredits(convId) })))
+      : provider === "gemini" && !ext.streamMessageFn ? geminiUsageAvailability(conv.model)
       : { ready: true, resetAt: null }, {
       start: (resetAt) => showProviderWait("Waiting for usage limit" + (resetAt == null ? "…" : ` · resets ${new Date(resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`), { reason: "usage_limit", resetAt }),
       end: endProviderWait,
     }, {
-      shouldRetry: error => provider === "anthropic" && isUsageLimitError(error),
+      shouldRetry: error => (provider === "anthropic" || provider === "gemini") && isUsageLimitError(error),
       // Its Claude account's login ended and another account can take the turn (anthropic/api.ts).
       retryAtOnce: error => provider === "anthropic" && error instanceof ClaudeAccountFailoverError,
       // An app conversation may choose to fail rather than wait (docs/app-api.md).
-      failInsteadOfWaiting: provider === "anthropic" && !conversationWaitsForUsageLimits(convId),
+      failInsteadOfWaiting: (provider === "anthropic" || provider === "gemini") && !conversationWaitsForUsageLimits(convId),
       // The remote already tries an alternative account. With an old/unknown
       // pool snapshot, do not hammer its refused request once per second.
       retryFloorMs: usageLimitRetryFloorForTest ?? (isProviderProxied("anthropic") ? 30_000 : 1_000),
@@ -1702,7 +1705,7 @@ async function orchestrateAdmittedAssistantTurn(
       const sizes = preTokens != null
         ? ` (${preTokens.toLocaleString("en-US")}${postTokens != null ? ` → ${postTokens.toLocaleString("en-US")}` : ""} tokens)`
         : "";
-      const text = `${conv.provider === "anthropic" ? "Claude Code" : "The provider"} ${trigger === "manual" ? "compacted" : "automatically compacted"} its context${sizes}.`;
+      const text = `${conv.provider === "anthropic" ? "Claude Code" : conv.provider === "gemini" ? "The Antigravity CLI" : "The provider"} ${trigger === "manual" ? "compacted" : "automatically compacted"} its context${sizes}.`;
       log("info", `orchestrator: provider compaction for ${convId}: ${text}`);
       pushProviderNotice(text);
       if (postTokens != null) {
@@ -1905,8 +1908,9 @@ async function orchestrateAdmittedAssistantTurn(
     // prompt-too-long. Exocortex compacts only what this turn sends it as one
     // prompt: history its session has not seen (another provider's turns, a
     // rewind, a new workspace), which Claude Code cannot compact.
-    const claudeCodePrompt = conv.provider === "anthropic" && !manualCompaction
-      ? planClaudePrompt(apiMessages, workingDirectory).pending
+    const claudeCodePrompt = manualCompaction ? null
+      : conv.provider === "anthropic" ? planClaudePrompt(apiMessages, workingDirectory).pending
+      : conv.provider === "gemini" ? planGeminiPrompt(apiMessages, workingDirectory).pending
       : null;
     let projectedTokens = estimateContextTokens(claudeCodePrompt ?? apiMessages, conv.provider) + requestOverheadTokens;
     if (!claudeCodePrompt

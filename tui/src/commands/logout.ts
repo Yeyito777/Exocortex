@@ -12,6 +12,7 @@ function logoutDescription(provider: ProviderId): string {
     case "opencode": return "Public access requires no login";
     case "openrouter": return "Remove your OpenRouter API key";
     case "anthropic": return "Disconnect Anthropic (keeps the claude CLI signed in)";
+    case "gemini": return "Disconnect Gemini (keeps the agy CLI signed in)";
   }
 }
 

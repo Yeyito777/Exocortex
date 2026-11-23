@@ -1,3 +1,4 @@
+import { runsOwnAgentLoop } from "@exocortex/shared/messages";
 import type { Tool, ToolResult } from "./types";
 import {
   adoptChronoSchedule,
@@ -55,12 +56,12 @@ function abortableSleep(durationMs: number, signal?: AbortSignal): Promise<void>
 }
 
 function inlineChronoLimitMs(context: Parameters<Tool["execute"]>[1]): number {
-  return context?.provider === "anthropic" ? CLAUDE_CODE_INLINE_CHRONO_MAX_MS : LONG_CHRONO_SLEEP_THRESHOLD_MS;
+  return runsOwnAgentLoop(context?.provider) ? CLAUDE_CODE_INLINE_CHRONO_MAX_MS : LONG_CHRONO_SLEEP_THRESHOLD_MS;
 }
 
 function undeferrableLongChronoError(kind: "sleep" | "wait", context: Parameters<Tool["execute"]>[1]): string {
-  if (context?.provider === "anthropic") {
-    return `Chrono ${kind}s longer than ${formatElapsedDuration(CLAUDE_CODE_INLINE_CHRONO_MAX_MS)} cannot run inside a Claude Code turn. Schedule a chrono wake with a message and end your turn.`;
+  if (runsOwnAgentLoop(context?.provider)) {
+    return `Chrono ${kind}s longer than ${formatElapsedDuration(CLAUDE_CODE_INLINE_CHRONO_MAX_MS)} cannot run inside a ${context?.provider === "gemini" ? "Gemini" : "Claude Code"} turn. Schedule a chrono wake with a message and end your turn.`;
   }
   return `Chrono ${kind}s longer than five minutes must be the only tool call in a model provider round so the turn can be suspended safely. Call chrono ${kind} again by itself.`;
 }
@@ -466,7 +467,7 @@ const WAKE_PROPERTIES = {
 
 // {{longWaits}}: Claude Code runs long sleeps and waits inside the call; other providers suspend the turn.
 const TEXT = toolTextSource("chrono", provider => ({
-  longWaits: provider === "anthropic"
+  longWaits: runsOwnAgentLoop(provider)
     ? "Sleeps and waits of any practical length run inside the call."
     : "Sleeps and waits with limits longer than five minutes suspend the provider turn and resume it by replay on completion, timeout, or a user message.",
 }));

@@ -46,6 +46,8 @@ export interface DoctorReport {
   exocortex: { repoDir: string; version: string | null; commit: string | null; branch: string | null; dependencies: boolean };
   bun: { path: string; version: string };
   claudeCode: { found: boolean; path: string | null; version: string | null; loggedIn: boolean | null; email: string | null };
+  /** The Antigravity CLI (`agy`) the gemini provider runs; absent from reports of older daemons. */
+  antigravity?: { found: boolean; path: string | null; version: string | null; signedIn: boolean | null };
   daemon: {
     socket: string;
     running: boolean;
@@ -141,6 +143,14 @@ export function findClaudeBinary(env: NodeJS.ProcessEnv = process.env, home = ho
     if (existsSync(candidate)) return candidate;
   }
   return null;
+}
+
+/** The Antigravity CLI (`agy`): its installer's ~/.local/bin first, then PATH. */
+export function findAgyBinary(env: NodeJS.ProcessEnv = process.env, home = homedir()): string | null {
+  if (env.EXOCORTEX_AGY_BIN) return existsSync(env.EXOCORTEX_AGY_BIN) ? env.EXOCORTEX_AGY_BIN : null;
+  const local = join(home, ".local", "bin", "agy");
+  if (existsSync(local)) return local;
+  return Bun.which("agy", { PATH: env.PATH ?? "" });
 }
 
 /**
@@ -276,6 +286,12 @@ export async function collectDoctorReport(): Promise<DoctorReport> {
   const claudeVersion = claudePath ? run([claudePath, "--version"]).stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? null : null;
   const claudeLogin = claudePath ? readClaudeLogin() : { loggedIn: null, email: null };
 
+  const agyPath = findAgyBinary();
+  const agyVersion = agyPath ? run([agyPath, "--version"]).stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? null : null;
+  // `agy models` fails without a Google sign-in; the CLI keeps the login itself.
+  const agyModels = agyPath ? run([agyPath, "models"], 15_000) : null;
+  const agySignedIn = agyModels ? agyModels.ok && /^gemini-/m.test(agyModels.stdout) : null;
+
   const socket = clientSocketPath();
   const [probe, providers] = await Promise.all([probeDaemon(socket), dependencies ? providerLogins() : Promise.resolve(null)]);
   const service = serviceState();
@@ -291,6 +307,7 @@ export async function collectDoctorReport(): Promise<DoctorReport> {
     exocortex: { repoDir, version: packageVersion(repoDir), commit: commit.ok ? commit.stdout : null, branch: branch.ok ? branch.stdout : null, dependencies },
     bun: { path: process.execPath, version: Bun.version },
     claudeCode: { found: !!claudePath, path: claudePath, version: claudeVersion, loggedIn: claudeLogin.loggedIn, email: claudeLogin.email },
+    antigravity: { found: !!agyPath, path: agyPath, version: agyVersion, signedIn: agySignedIn },
     // The PID file is this checkout's; it says nothing about an EXOCORTEX_SOCKET elsewhere.
     daemon: { socket, running: probe.running, responsive: probe.responsive, pid: socket === socketPath() ? readPid() : null, service },
     providers,
@@ -331,6 +348,9 @@ export function diagnose(report: DoctorReport): DoctorProblem[] {
   } else if (!report.claudeCode.loggedIn && signedIn.length > 0) {
     // With nothing signed in, no-provider-login above already says this.
     add("claude-code-logged-out", "warning", "Claude Code is not signed in.", "exocortexd login anthropic");
+  }
+  if (report.antigravity?.found && report.antigravity.signedIn === false) {
+    add("antigravity-logged-out", "warning", "The Antigravity CLI is not signed in to Google; Gemini models are unavailable.", "exocortexd login gemini   (in a terminal)");
   }
   if (!report.commands.exocortexd) {
     add("exocortexd-not-on-path", "warning", "`exocortexd` is not on PATH.", "Rerun the installer, then open a new shell");
@@ -390,6 +410,14 @@ export function formatDoctorReport(report: DoctorReport, color = false): string 
     lines.push(`  ${claudeCode.loggedIn ? good : warn} Claude Code ${claudeCode.version ?? "?"}, ${login}  ${claudeCode.path}`);
   } else {
     lines.push(`  ${warn} Claude Code not installed`);
+  }
+
+  const agy = report.antigravity;
+  if (agy?.found) {
+    const login = agy.signedIn ? "signed in" : agy.signedIn === false ? "not signed in" : "sign-in unknown";
+    lines.push(`  ${agy.signedIn ? good : warn} Antigravity CLI ${agy.version ?? "?"} (Gemini), ${login}  ${agy.path}`);
+  } else if (agy) {
+    lines.push(`  ${info} Antigravity CLI not installed (Gemini models: curl -fsSL https://antigravity.google/cli/install.sh | bash)`);
   }
 
   const service = daemon.service.installed

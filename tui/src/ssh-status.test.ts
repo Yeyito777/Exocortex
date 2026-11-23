@@ -199,7 +199,7 @@ describe("SSH status events", () => {
         }],
       }],
       tools: [],
-      authByProvider: { openai: true, anthropic: false, deepseek: false, opencode: false, openrouter: false },
+      authByProvider: { openai: true, anthropic: false, gemini: false, deepseek: false, opencode: false, openrouter: false },
       authInfoByProvider: state.authInfoByProvider,
     }, state, daemon);
 

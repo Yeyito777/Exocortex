@@ -11,7 +11,23 @@
 
 // ── Providers / Models ──────────────────────────────────────────────
 
-export type ProviderId = "openai" | "anthropic" | "deepseek" | "opencode" | "openrouter";
+export type ProviderId = "openai" | "anthropic" | "gemini" | "deepseek" | "opencode" | "openrouter";
+
+/** Every provider id, in the default order. */
+export const PROVIDER_IDS: readonly ProviderId[] = ["openai", "anthropic", "gemini", "deepseek", "opencode", "openrouter"];
+
+export function isProviderId(value: unknown): value is ProviderId {
+  return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * Providers backed by an agent CLI that runs its own agent loop and tools
+ * (Claude Code for anthropic, Antigravity CLI for gemini). Exocortex appends
+ * to their system prompt and offers them only its host tools over MCP.
+ */
+export function runsOwnAgentLoop(provider: ProviderId | null | undefined): boolean {
+  return provider === "anthropic" || provider === "gemini";
+}
 
 /** Provider-scoped model identifier. */
 export type ModelId = string;
@@ -70,12 +86,13 @@ export interface ProviderInfo {
 export const DEFAULT_PROVIDER_ID: ProviderId = "openai";
 
 /** Preferred provider ordering for UI fallbacks and provider registries. */
-export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_ID, "anthropic", "deepseek", "opencode", "openrouter"];
+export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = PROVIDER_IDS;
 
 /** Preferred default model per provider when the app needs a fallback selection. */
 export const DEFAULT_MODEL_BY_PROVIDER = {
   openai: "gpt-6-astra",
   anthropic: "claude-opus-5-5",
+  gemini: "gemini-4-neon",
   deepseek: "deepseek-v4-pro",
   opencode: "ox-alpha",
   openrouter: "nousresearch/hermes-4-405b",
@@ -139,6 +156,10 @@ export const MAX_CONTEXT: Record<string, number> = {
   "deepseek-v4-pro": 1_000_000,
   "deepseek-v4-flash": 1_000_000,
   "ox-alpha": 1_000_000,
+  "gemini-4-neon": 1_048_576,
+  "gemini-4-hydrogen": 1_048_576,
+  "gemini-4-argon": 1_048_576,
+  "gemini-3.8-flash": 1_048_576,
 };
 
 // ── Image attachments ──────────────────────────────────────────────

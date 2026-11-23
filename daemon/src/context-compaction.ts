@@ -1,3 +1,4 @@
+import { runsOwnAgentLoop } from "@exocortex/shared/messages";
 import { streamMessage } from "./api";
 import { openAIWireModel } from "@exocortex/shared/daybreak";
 import { log } from "./log";
@@ -307,7 +308,7 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
  * it the orchestrator bounds just the part the session has not seen.
  */
 function assertReplayBounded(conv: Conversation, messages: ApiMessage[]): void {
-  if (conv.provider === "anthropic") return;
+  if (runsOwnAgentLoop(conv.provider)) return;
   assertBoundedContextReplay(estimateContextTokens(messages, conv.provider), getMaxContext(conv.provider, conv.model));
 }
 

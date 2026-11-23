@@ -1,3 +1,4 @@
+import { runsOwnAgentLoop } from "@exocortex/shared/messages";
 import type { Conversation } from "./messages";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { buildAppAgentSystemPrompt, buildClaudeCodeSystemAppend, buildSystemPrompt } from "./system";
@@ -31,10 +32,10 @@ export function buildConversationRequestSurface(
   const chatOnly = getModelInfo(conversation.provider, conversation.model)?.supportsTools === false;
   const toolNames = chatOnly ? [] : getConversationToolNames(conversation.provider);
   return {
-    // Claude Code (anthropic) keeps its own prompt and tools; Exocortex only
+    // Claude Code (anthropic) and the Antigravity CLI (gemini) keep their own prompt and tools; Exocortex only
     // appends its additions. State that changes during a conversation, such
     // as its goal, reaches the model as turn notices instead (turn-notices.ts).
-    system: conversation.provider === "anthropic" ? buildClaudeCodeSystemAppend({
+    system: runsOwnAgentLoop(conversation.provider) ? buildClaudeCodeSystemAppend({
       conversationInstructions: options.conversationInstructions,
       ...(scopedPromptOptions ?? {}),
       includeExternalToolHints: !chatOnly,
@@ -72,7 +73,7 @@ function buildAppRequestSurface(conversation: Conversation, app: AppConversation
   if (base === "full") {
     // Exactly an ordinary conversation's prompt, with the app's text as its instructions.
     const conversationInstructions = [text, options.conversationInstructions].filter(Boolean).join("\n\n") || undefined;
-    system = provider === "anthropic"
+    system = runsOwnAgentLoop(provider)
       ? buildClaudeCodeSystemAppend({ conversationInstructions, includeExternalToolHints: true })
       : buildSystemPrompt({
         conversationInstructions,

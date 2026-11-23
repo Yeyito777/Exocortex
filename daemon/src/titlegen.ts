@@ -42,6 +42,8 @@ export function titleModelForProvider(provider: ProviderId): string {
       return "ox-alpha";
     case "anthropic":
       return "claude-haiku-5-5";
+    case "gemini":
+      return "gemini-3.8-flash";
     case "openrouter":
       return "nousresearch/hermes-4-70b";
   }

@@ -202,8 +202,15 @@ function trimToolResultsFromStart(conv: Conversation, count: number): TrimConver
  */
 export const CLAUDE_CODE_TRIM_NOTE = "Claude Code resumes its own session, which still holds the trimmed content. Use /compact to shrink its context.";
 
+/** The same for a Gemini conversation's Antigravity CLI session. */
+export const GEMINI_TRIM_NOTE = "The Antigravity CLI resumes its own session, which still holds the trimmed content. Use /compact to shrink its context.";
+
 function resumesClaudeCodeSession(conv: Conversation): boolean {
   return conv.provider === "anthropic" && conv.messages.some((message) => message.providerData?.anthropic);
+}
+
+function resumesGeminiSession(conv: Conversation): boolean {
+  return conv.provider === "gemini" && conv.messages.some((message) => message.providerData?.gemini);
 }
 
 function trimInPlace(conv: Conversation, mode: TrimMode, count: number): TrimConversationResult {
@@ -225,7 +232,7 @@ export function trimConversationInPlace(conv: Conversation, mode: TrimMode, coun
   }
 
   const result = trimInPlace(conv, mode, count);
-  return result.changed && resumesClaudeCodeSession(conv)
-    ? { ...result, message: `${result.message}\n${CLAUDE_CODE_TRIM_NOTE}` }
-    : result;
+  if (result.changed && resumesClaudeCodeSession(conv)) return { ...result, message: `${result.message}\n${CLAUDE_CODE_TRIM_NOTE}` };
+  if (result.changed && resumesGeminiSession(conv)) return { ...result, message: `${result.message}\n${GEMINI_TRIM_NOTE}` };
+  return result;
 }

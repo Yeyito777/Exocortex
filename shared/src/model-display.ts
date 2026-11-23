@@ -42,6 +42,8 @@ function formatClaudeModelDisplayName(modelId: string): string | null {
  */
 export function formatModelDisplayName(modelId: ModelId): string {
   if (modelId === "ox-alpha") return "Ox Alpha";
+  const gemini = /^gemini-(\d+(?:\.\d+)?)-([a-z]+)$/i.exec(modelId);
+  if (gemini) return `Gemini ${gemini[1]} ${capitalizeFirst(gemini[2].toLowerCase())}`;
   if (modelId === "gpt-6-astra") return "GPT-6-Astra";
   if (modelId === "gpt-6.1-sol") return "GPT-6.1-Sol";
   if (modelId === "gpt-6-sol") return "GPT-6-Sol";

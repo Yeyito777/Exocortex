@@ -22,6 +22,7 @@ selects another daemon without moving client-side UI operations to that host.
   connection per `/ssh` alias, and its security tradeoff
 - [/proxy: another machine's provider login](provider-proxy.md)
 - [Several Claude accounts](claude-accounts.md)
+- [Gemini (Antigravity CLI)](gemini.md): Gemini on a Google AI Pro/Ultra plan
 - [Goals](goals.md)
 - [Scratchpad](scratchpad.md): `scratchpad.md` in a conversation's workspace,
   shown below the Tasks panel

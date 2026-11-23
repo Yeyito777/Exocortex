@@ -39,6 +39,7 @@ function getFallbackProvidersById(): Record<ProviderId, ProviderInfo> {
     opencode: buildFallbackProviderInfo("opencode"),
     openrouter: buildFallbackProviderInfo("openrouter"),
     anthropic: buildFallbackProviderInfo("anthropic"),
+    gemini: buildFallbackProviderInfo("gemini"),
   };
   return fallbackProvidersByIdCache;
 }
@@ -62,6 +63,12 @@ const MODEL_ID_ALIASES: Record<ProviderId, Record<string, ModelId>> = {
     "v4-pro": "deepseek-v4-pro",
     flash: "deepseek-v4-flash",
     "v4-flash": "deepseek-v4-flash",
+  },
+  gemini: {
+    neon: "gemini-4-neon",
+    hydrogen: "gemini-4-hydrogen",
+    argon: "gemini-4-argon",
+    flash: "gemini-3.8-flash",
   },
   opencode: {
     ox: "ox-alpha",

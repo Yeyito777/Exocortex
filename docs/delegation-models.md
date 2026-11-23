@@ -19,7 +19,9 @@ model?: string, effort?: EffortLevel}}`, `{abort: conversation_id}` or
 - `sol fast`: the latest Sol in fast mode;
 - `astra`: the latest Astra, without fast mode;
 - a Claude family (`opus`, `sonnet`, …): its latest catalog model;
-- an exact Claude catalog id such as `claude-opus-5-5`.
+- an exact Claude catalog id such as `claude-opus-5-5`;
+- a Gemini model (`neon`, `hydrogen`, `argon`, or an exact id such as
+  `gemini-4-neon`), on the Google AI plan (see [Gemini](gemini.md)).
 
 Other OpenAI sizes and ids, and Claude ids outside the provider catalog, are
 rejected. The default depends on the parent's provider, not `/default-model`:

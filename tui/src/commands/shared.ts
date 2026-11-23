@@ -145,7 +145,9 @@ export function trimHelpText(state: RenderState): string {
     "toolresults Replaces the oldest tool result payloads with placeholders first.",
     ...(state.provider === "anthropic"
       ? ["", "Claude Code resumes its own session, which keeps trimmed content; /compact shrinks its context."]
-      : []),
+      : state.provider === "gemini"
+        ? ["", "The Antigravity CLI resumes its own session, which keeps trimmed content; /compact shrinks its context."]
+        : []),
   ].join("\n");
 }
 

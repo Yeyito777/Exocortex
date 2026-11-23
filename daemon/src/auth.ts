@@ -107,6 +107,7 @@ export function getAuthByProvider(): Record<ProviderId, boolean> {
     opencode: hasConfiguredCredentials("opencode"),
     openrouter: hasConfiguredCredentials("openrouter"),
     anthropic: hasConfiguredCredentials("anthropic"),
+    gemini: hasConfiguredCredentials("gemini"),
   };
 }
 
@@ -239,5 +240,6 @@ export function getAuthInfoByProvider(): Record<ProviderId, ProviderAuthInfo> {
     opencode: getAuthInfo("opencode"),
     openrouter: getAuthInfo("openrouter"),
     anthropic: getAuthInfo("anthropic"),
+    gemini: getAuthInfo("gemini"),
   };
 }

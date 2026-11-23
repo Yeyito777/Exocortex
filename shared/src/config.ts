@@ -200,9 +200,15 @@ export interface AnthropicApiCreditGrantConfig {
   label?: string;
 }
 
+export interface GeminiProviderConfig {
+  /** Path to the Antigravity CLI (`agy`). Defaults to ~/.local/bin/agy, then PATH. */
+  binary?: string;
+}
+
 export interface ProvidersConfig {
   openai?: OpenAIProviderConfig;
   anthropic?: AnthropicProviderConfig;
+  gemini?: GeminiProviderConfig;
   deepseek?: DeepSeekProviderConfig;
   opencode?: OpenCodeProviderConfig;
   /** OpenRouter API base URL override (API keys belong in provider auth or OPENROUTER_API_KEY). */
@@ -433,7 +439,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isProviderId(value: unknown): value is ProviderId {
-  return value === "openai" || value === "anthropic" || value === "deepseek" || value === "opencode" || value === "openrouter";
+  return value === "openai" || value === "anthropic" || value === "gemini" || value === "deepseek" || value === "opencode" || value === "openrouter";
 }
 
 function isEffortLevel(value: unknown): value is EffortLevel {

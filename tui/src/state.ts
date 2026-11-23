@@ -860,6 +860,7 @@ export function createInitialState(): RenderState {
       opencode: false,
       openrouter: false,
       anthropic: false,
+      gemini: false,
     },
     authInfoByProvider: {
       openai: createEmptyProviderAuthInfo(),
@@ -867,6 +868,7 @@ export function createInitialState(): RenderState {
       opencode: createEmptyProviderAuthInfo(),
       openrouter: createEmptyProviderAuthInfo(),
       anthropic: createEmptyProviderAuthInfo(),
+      gemini: createEmptyProviderAuthInfo(),
     },
     usageByProvider: {
       openai: null,
@@ -874,6 +876,7 @@ export function createInitialState(): RenderState {
       opencode: null,
       openrouter: null,
       anthropic: null,
+      gemini: null,
     },
     machineResources: null,
     machineResourcesShape: DEFAULT_RESOURCES_SHAPE,

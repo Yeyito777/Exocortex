@@ -21,6 +21,7 @@ const SUMMARY_MODEL_BY_PROVIDER: Record<ProviderId, ModelId> = {
   opencode: "ox-alpha",
   openrouter: "nousresearch/hermes-4-70b",
   anthropic: "claude-haiku-5-5",
+  gemini: "gemini-3.8-flash",
 };
 
 const SUMMARY_SERVICE_TIER_BY_PROVIDER: Partial<Record<ProviderId, ServiceTier>> = {

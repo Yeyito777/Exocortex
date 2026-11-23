@@ -636,6 +636,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
     if (lowered.startsWith("gpt-") || lowered.startsWith("o1") || lowered.startsWith("o3") || lowered.startsWith("o4")) return "openai";
     if (lowered === "ox" || lowered === "ox-alpha" || lowered === "ox-alpha-free") return "opencode";
+    if (lowered.startsWith("gemini-") || ["neon", "hydrogen", "argon"].includes(lowered)) return "gemini";
     return undefined;
   };
   const modelDefaultForProvider = (provider: import("./messages").ProviderId): string => {
@@ -4344,17 +4345,18 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const scopedPromptOptions = conversation
           ? scopedSubagentPromptOptions(conversation, subagentMaxDepth)
           : null;
-        if (conversation?.provider === "anthropic") {
+        if (conversation?.provider === "anthropic" || conversation?.provider === "gemini") {
           const append = buildClaudeCodeSystemAppend({
             conversationInstructions: instructions ?? undefined,
             ...(scopedPromptOptions ?? {}),
           });
+          const agent = conversation.provider === "gemini" ? "The Antigravity CLI's" : "Claude Code's";
           server.sendTo(client, {
             type: "system_prompt",
             reqId: cmd.reqId,
             systemPrompt: append
-              ? `Claude Code's own system prompt, with Exocortex appending:\n\n${append}`
-              : "Claude Code's own system prompt (Exocortex appends nothing).",
+              ? `${agent} own system prompt, with Exocortex appending:\n\n${append}`
+              : `${agent} own system prompt (Exocortex appends nothing).`,
           });
           break;
         }

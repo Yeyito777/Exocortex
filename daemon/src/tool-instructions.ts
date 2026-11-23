@@ -8,6 +8,7 @@
  * save_tool_instructions (./tool-instructions-save) writes back.
  */
 
+import { runsOwnAgentLoop } from "@exocortex/shared/messages";
 import { join } from "path";
 import type { ToolInstructionsBlock, ToolInstructionsEntry } from "@exocortex/shared/protocol";
 import { repoRoot } from "@exocortex/shared/paths";
@@ -50,6 +51,7 @@ const LABELS = {
 /** Where hints go on the route; descriptions are always the tool schemas'. */
 const ROUTES = {
   claudeCode: "Claude Code runs its own tools; these reach it over MCP, with the hints as the server's instructions.",
+  antigravity: "The Antigravity CLI runs its own tools; these reach it over MCP, with the hints as the server's instructions.",
   exocortex: "Hints go in the system prompt.",
 } as const;
 
@@ -106,7 +108,7 @@ export function describeToolTextTargets(provider: ProviderId, model: ModelId | n
   });
 
   // Claude Code brings its own tools; only the host tools are Exocortex's.
-  const claudeCode = provider === "anthropic";
+  const claudeCode = runsOwnAgentLoop(provider);
   const defs = getToolDefs(getConversationToolNames(provider), conversationId, provider);
   const internal = (claudeCode ? hostToolDefs(defs) : defs).map((def): ToolInstructionsEntry => {
     const description = internalTarget(def.name, "description", provider);
@@ -120,7 +122,7 @@ export function describeToolTextTargets(provider: ProviderId, model: ModelId | n
       blocks: [add(description, LABELS.description), add(hint, LABELS.hint)],
     };
   });
-  return { view: { route: claudeCode ? ROUTES.claudeCode : ROUTES.exocortex, internal, external }, targets };
+  return { view: { route: provider === "gemini" ? ROUTES.antigravity : claudeCode ? ROUTES.claudeCode : ROUTES.exocortex, internal, external }, targets };
 }
 
 /** Tool text for a turn on `provider`/`model` (see buildConversationRequestSurface). */

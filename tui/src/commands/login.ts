@@ -14,6 +14,7 @@ function loginDescription(provider: ProviderId): string {
     case "opencode": return "Check public OpenCode Zen access";
     case "openrouter": return "Save an OpenRouter API key";
     case "anthropic": return "Sign in with a Claude subscription";
+    case "gemini": return "Sign in with Google (Google AI Pro/Ultra) via the Antigravity CLI";
   }
 }
 

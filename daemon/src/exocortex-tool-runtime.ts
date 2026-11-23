@@ -66,11 +66,16 @@ export function resolveSubagentModel(parentProvider: ProviderId, requested?: str
     const fastMode = size === "sol";
     if (fastMode && !supportsFastMode("openai", model)) throw new Error("Sol fast is unavailable.");
     selection = { provider: "openai", model, fastMode };
+  } else if (/^(?:neon|hydrogen|argon)$|^gemini-/.test(choice)) {
+    const gemini = catalog("gemini");
+    const model = gemini.find(id => id === choice || id === `gemini-4-${choice}`);
+    if (!model) throw new Error(`Gemini model "${requested}" is unavailable (${gemini.join(", ") || "Gemini is not signed in"}).`);
+    selection = { provider: "gemini", model, fastMode: false };
   } else {
     const claude = catalog("anthropic");
     const model = claude.find(id => id === choice) ?? latestClaudeModel(choice, claude);
     if (!model) {
-      throw new Error(`Unknown subagent model "${requested}". Use sol fast, astra, opus, fable, sonnet, or a Claude catalog id (${claude.join(", ") || "none available"}).`);
+      throw new Error(`Unknown subagent model "${requested}". Use sol fast, astra, opus, fable, sonnet, a Claude catalog id, neon or hydrogen (${claude.join(", ") || "none available"}).`);
     }
     selection = { provider: "anthropic", model, fastMode: false };
   }

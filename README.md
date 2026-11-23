@@ -75,7 +75,8 @@ curl -fsSL https://raw.githubusercontent.com/Yeyito777/Exocortex/main/install.sh
 exocortexd doctor
 ```
 
-- `exocortexd doctor --json` reports Bun, Claude Code and its sign-in, whether
+- `exocortexd doctor --json` reports Bun, Claude Code and its sign-in, the
+  Antigravity CLI (Gemini, [docs/gemini.md](docs/gemini.md)) and its sign-in, whether
   the daemon is running, provider logins and whether the TUI is installed.
   `ok` is true when the daemon answers and a provider is signed in; `problems`
   lists each missing piece with the command that fixes it. It exits 0 whenever
