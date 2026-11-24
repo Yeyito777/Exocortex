@@ -16,6 +16,7 @@ import { FakeClock, flush, scriptedProbe } from "../../connectivity-test-helpers
 import { runWithNetworkWait } from "../../network-wait";
 import { RetryableStreamAbortController } from "../../watchdog-retry";
 import { antigravityKindStyle, getAntigravityToolDisplayInfo, summarizeAntigravityTool } from "../../tools/antigravity";
+import { summarizeTool } from "../../tools/registry";
 import { buildGeminiPromptContent, planGeminiPrompt, resetSessionHeadsForTest, setSessionHead } from "./prompt";
 import { closeAllGeminiProcesses, configureGeminiSessions, fingerprintOf, geminiToolDenial, openGeminiProcess, setGeminiPromptWatchForTest, translateAcpError } from "./session";
 import { createGeminiStreamState, diffText } from "./stream";
@@ -489,6 +490,14 @@ describe("tool display", () => {
     expect(summarizeAntigravityTool("search_web", { query: "flint ntt" })).toEqual({ label: "Search", detail: "flint ntt" });
     expect(antigravityKindStyle("frobnicate_files", "search")?.color).toBe(display.get("grep_search")!.color);
     expect(antigravityKindStyle("edit_file", "edit")).toBeNull();
+  });
+
+  test("history re-summarizes the CLI's tools with their own summaries", () => {
+    expect(summarizeTool("write_file", { Content: "alpha\nbeta\n", Overwrite: true, Path: "/w/a.txt" })).toEqual({ label: "Write", detail: "/w/a.txt" });
+    expect(summarizeTool("edit_file", { Path: "/w/a.txt", Target: "beta", Replacement: "gamma" })).toEqual({ label: "Edit", detail: "/w/a.txt" });
+    expect(summarizeTool("manage_task", { Action: "kill", TaskId: "s/task-7" })).toEqual({ label: "Task", detail: "kill task-7" });
+    // Claude Code's own tools keep theirs.
+    expect(summarizeTool("Write", { file_path: "/w/c.txt", content: "x" }).detail).toBe("/w/c.txt");
   });
 
   test("an edit's result is its changed lines, a new file its size: never the path again", () => {

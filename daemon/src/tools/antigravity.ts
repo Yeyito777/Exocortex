@@ -179,6 +179,16 @@ export function getAntigravityToolDisplayInfo(): ToolDisplayInfo[] {
   return STYLED.map(([name, tool, label]) => ({ name, label: label ?? tool().display.label, color: tool().display.color }));
 }
 
+/**
+ * Whether a tool name is one of the CLI's own (or an MCP tool as the CLI
+ * names it, `mcp_<server>_<tool>`; Claude Code's are `mcp__<server>__<tool>`).
+ * History re-summarizes calls by name, and these need this file's summaries.
+ */
+export function isAntigravityToolName(name: string): boolean {
+  if (name.startsWith("mcp_") && !name.startsWith("mcp__")) return true;
+  return STYLED.some(([styled]) => styled === name) || name in LABELS || name in ANTIGRAVITY_REPLACED_TOOLS;
+}
+
 /** ACP tool kinds (agentclientprotocol.com) and the Exocortex tool whose look a call of that kind borrows. */
 const KIND_TOOLS: Record<string, () => Tool> = {
   read: () => read,

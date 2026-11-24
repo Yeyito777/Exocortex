@@ -6,7 +6,7 @@
 
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext, ToolParallelSafety, ToolResourceClass } from "./types";
 import { runsOwnAgentLoop, type ToolDisplayInfo } from "@exocortex/shared/messages";
-import { getAntigravityToolDisplayInfo } from "./antigravity";
+import { getAntigravityToolDisplayInfo, isAntigravityToolName, summarizeAntigravityTool } from "./antigravity";
 import type { ApiToolCall } from "../api";
 import type { ToolExecResult } from "../agent";
 import { bash, executeBashBackgroundable } from "./bash";
@@ -181,6 +181,8 @@ export function buildToolSystemHints(allowedNames?: readonly string[], conversat
 
 export function summarizeTool(name: string, input: Record<string, unknown>, conversationId?: string): ToolSummary {
   const tool = getTool(name, conversationId);
+  // The Antigravity CLI's own tools (gemini provider).
+  if (!tool && isAntigravityToolName(name)) return summarizeAntigravityTool(name, input);
   // Anything else came from Claude Code's own tools (anthropic provider).
   if (!tool) return summarizeClaudeCodeTool(name, input);
   return tool.summarize(input);
