@@ -18,6 +18,7 @@ import {
   tuiStartingStatePath,
   type TuiStartingState,
 } from "./startingstate";
+import { isCardFolded, toggleCardFold } from "./sidecards";
 
 const statePath = tuiStartingStatePath();
 
@@ -99,6 +100,7 @@ describe("TUI starting state", () => {
           },
           expandedFolderIds: [],
           conversationScrollPositions: {},
+          foldedCards: {},
         },
       },
     });
@@ -118,7 +120,7 @@ describe("TUI starting state", () => {
       sidebar: { open: false, expandedFolderIds: [] },
       conversationScrollPositions: {},
       routes: {
-        local: { focusedConversationId: null, sidebarCursor: null, expandedFolderIds: [], conversationScrollPositions: {} },
+        local: { focusedConversationId: null, sidebarCursor: null, expandedFolderIds: [], conversationScrollPositions: {}, foldedCards: {} },
       },
     });
   });
@@ -338,6 +340,7 @@ describe("TUI starting state", () => {
       sidebarCursor: { currentFolderId: null, selectedItem: null, scrollOffset: 0 },
       expandedFolderIds: ["local-folder"],
       conversationScrollPositions: { "local-conversation": 0.25 },
+      foldedCards: {},
     });
 
     // A TUI starts on its local socket, then reaches the /ssh route.
@@ -369,6 +372,7 @@ describe("TUI starting state", () => {
         sidebarCursor: { currentFolderId: "work", selectedItem: { type: "folder", id: "work" }, scrollOffset: 2 },
         expandedFolderIds: ["work"],
         conversationScrollPositions: { conversation: 0.5 },
+        foldedCards: {},
       });
     }
   });
@@ -388,6 +392,7 @@ describe("TUI starting state", () => {
       sidebarCursor: null,
       expandedFolderIds: ["remote"],
       conversationScrollPositions: {},
+      foldedCards: {},
     });
   });
 
@@ -416,5 +421,65 @@ describe("TUI starting state", () => {
     // A list without folders says nothing about them.
     handleConversationsList({ type: "conversations_list", conversations: [] }, state);
     expect(state.sidebar.expandedFolderIds).toEqual(new Set(["kept"]));
+  });
+
+  test("folded cards are kept per conversation, across a restart and per route", () => {
+    const state = createInitialState();
+    state.convId = "a";
+    toggleCardFold(state, "subscriptions");
+    toggleCardFold(state, "tasks");
+    state.convId = "b";
+    // Another conversation keeps its own cards.
+    expect(isCardFolded(state, "tasks")).toBe(false);
+    toggleCardFold(state, "scratchpad");
+    state.convId = "a";
+    expect(isCardFolded(state, "tasks")).toBe(true);
+    expect(isCardFolded(state, "subscriptions")).toBe(true);
+    expect(isCardFolded(state, "scratchpad")).toBe(false);
+
+    const routes = new RouteViewStates(null);
+    saveTuiStartingState(captureTuiStartingState(state, routes));
+    const loaded = loadTuiStartingState()!;
+    expect(loaded.routes?.local.foldedCards).toEqual({ a: ["tasks", "subscriptions"], b: ["scratchpad"] });
+
+    const restarted = createInitialState();
+    const reopenedRoutes = new RouteViewStates(loaded);
+    applyTuiStartingState(restarted, loaded, reopenedRoutes);
+    expect(restarted.convId).toBe("a");
+    expect(isCardFolded(restarted, "tasks")).toBe(true);
+    expect(isCardFolded(restarted, "scratchpad")).toBe(false);
+    // Unfolding the last card of a conversation forgets it.
+    restarted.convId = "b";
+    toggleCardFold(restarted, "scratchpad");
+    expect(captureRouteViewState(restarted).foldedCards).toEqual({ a: ["tasks", "subscriptions"] });
+
+    // Another daemon's ids mean nothing here: its route starts with none.
+    applyRouteViewState(restarted, reopenedRoutes.forRoute(daemonRouteKey("whale")));
+    restarted.convId = "a";
+    expect(isCardFolded(restarted, "tasks")).toBe(false);
+  });
+
+  test("folds of deleted conversations are forgotten; malformed folds are dropped", () => {
+    const state = createInitialState();
+    state.convId = "kept";
+    toggleCardFold(state, "tasks");
+    state.convId = "deleted";
+    toggleCardFold(state, "tasks");
+    handleConversationsList({ type: "conversations_list", conversations: [conversation("kept")] }, state);
+    expect([...state.foldedCards.keys()]).toEqual(["kept"]);
+
+    writeFileSync(statePath, JSON.stringify({
+      version: 2,
+      focusedConversationId: null,
+      sidebar: { open: false },
+      conversationScrollPositions: {},
+      routes: {
+        local: {
+          focusedConversationId: null, sidebarCursor: null, expandedFolderIds: [], conversationScrollPositions: {},
+          foldedCards: { good: ["scratchpad", "bogus"], bad: "tasks", empty: [] },
+        },
+      },
+    }));
+    expect(new RouteViewStates(loadTuiStartingState()).forRoute(daemonRouteKey(null)).foldedCards).toEqual({ good: ["scratchpad"] });
   });
 });

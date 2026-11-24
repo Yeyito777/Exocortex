@@ -12,7 +12,16 @@ import type { RenderState } from "./state";
 import { focusHistory, focusPrompt, focusSidebar } from "./state";
 import { handleSidebarActionMenuResult, type KeyResult } from "./focus";
 import { scrollBy } from "./chat";
-import { isTaskPanelExpanded, scrollTaskPanel, taskPanelLinkAt, toggleTaskPanelExpansion } from "./activitypanel";
+import {
+  isSubscriptionsExpanded,
+  isTaskPanelExpanded,
+  scrollSubscriptions,
+  scrollTaskPanel,
+  taskPanelLinkAt,
+  toggleSubscriptionsExpansion,
+  toggleTaskPanelExpansion,
+} from "./activitypanel";
+import { isCardFolded, toggleCardFold, type SideCard } from "./sidecards";
 import { isScratchpadExpanded, scrollScratchpad, toggleScratchpadExpansion } from "./scratchpadpanel";
 import {
   activateSidebarItem,
@@ -52,13 +61,34 @@ function isInsideTaskCard(col: number, row: number, state: RenderState): boolean
   return isInsideRect(col, row, state.layout.taskPanelRect);
 }
 
+function isInsideSubscriptions(col: number, row: number, state: RenderState): boolean {
+  return isInsideRect(col, row, state.layout.subscriptionsRect);
+}
+
 function isInsideScratchpad(col: number, row: number, state: RenderState): boolean {
   return isInsideRect(col, row, state.layout.scratchpadRect);
 }
 
-/** On either card of the right-hand column; clicks there never reach the history under it. */
+/** The card of the right-hand column at (col, row), and whether that cell is on its header row. */
+function sideCardAt(col: number, row: number, state: RenderState): { card: SideCard; header: boolean } | null {
+  const { taskPanelRect, subscriptionsRect, scratchpadRect } = state.layout;
+  const hits: Array<[SideCard, typeof taskPanelRect]> = [["tasks", taskPanelRect], ["subscriptions", subscriptionsRect], ["scratchpad", scratchpadRect]];
+  for (const [card, rect] of hits) {
+    if (rect && isInsideRect(col, row, rect)) return { card, header: row === rect.top };
+  }
+  return null;
+}
+
+function isSideCardToggleable(state: RenderState, card: SideCard): boolean {
+  const { layout } = state;
+  return card === "tasks" ? layout.taskPanelToggleable
+    : card === "subscriptions" ? layout.subscriptionsToggleable
+    : layout.scratchpadToggleable;
+}
+
+/** On any card of the right-hand column; clicks there never reach the history under it. */
 function isInsideTaskPanel(col: number, row: number, state: RenderState): boolean {
-  return isInsideTaskCard(col, row, state) || isInsideScratchpad(col, row, state);
+  return sideCardAt(col, row, state) !== null;
 }
 
 /** Whether (col, row) is on the status line's usage block as last rendered. */
@@ -251,10 +281,14 @@ export function cursorZone(col: number, row: number, state: RenderState): Cursor
   // Message area (chat history) → text, except for the task panel, which a click expands or collapses.
   // The queue prompt swallows clicks, so nothing under it is clickable.
   if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) {
-    if (isInsideScratchpad(col, row, state)) return state.queuePrompt || !layout.scratchpadToggleable ? "pointer" : "hand";
-    if (isInsideTaskPanel(col, row, state)) {
-      if (state.mouseShift && taskPanelLinkAt(state, col, row)) return "hand";
-      return state.queuePrompt || !layout.taskPanelToggleable ? "pointer" : "hand";
+    const hit = sideCardAt(col, row, state);
+    if (hit) {
+      if (state.queuePrompt) return "pointer";
+      // Shift+click on a header folds or unfolds its card.
+      if (state.mouseShift && hit.header) return "hand";
+      if (isCardFolded(state, hit.card)) return "pointer";
+      if (hit.card === "tasks" && state.mouseShift && taskPanelLinkAt(state, col, row)) return "hand";
+      return isSideCardToggleable(state, hit.card) ? "hand" : "pointer";
     }
     return !state.queuePrompt && historyClickableAtScreen(col, row, state) ? "hand" : "text";
   }
@@ -400,6 +434,10 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       scrollTaskPanel(state, -delta);
       return { type: "handled" };
     }
+    if (isInsideSubscriptions(col, row, state) && isSubscriptionsExpanded(state) && layout.subscriptionsMaxScroll > 0) {
+      scrollSubscriptions(state, -delta);
+      return { type: "handled" };
+    }
     if (isInsideScratchpad(col, row, state) && isScratchpadExpanded(state) && layout.scratchpadMaxScroll > 0) {
       scrollScratchpad(state, -delta);
       return { type: "handled" };
@@ -435,17 +473,23 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       return { type: "handled" };
     }
 
-    // Shift+click on a subagent's rows opens its conversation. Otherwise the task panel is one toggle:
-    // expand to list every entry, or back to the capped card.
-    // A collapsed card that already shows everything has nothing to expand to.
-    if (isInsideScratchpad(col, row, state)) {
-      if (layout.scratchpadToggleable) toggleScratchpadExpansion(state);
-      return { type: "handled" };
-    }
-    if (isInsideTaskPanel(col, row, state)) {
-      const convId = ev.shift ? taskPanelLinkAt(state, col, row) : null;
+    // Shift+click on a card's header folds it to that row, or unfolds it. Shift+click on a subagent's
+    // rows opens its conversation. Otherwise each unfolded card is one toggle: expand to list every
+    // entry, or back to the capped card. A collapsed card that already shows everything has nothing to expand to.
+    const hit = sideCardAt(col, row, state);
+    if (hit) {
+      if (ev.shift && hit.header) {
+        toggleCardFold(state, hit.card);
+        return { type: "handled" };
+      }
+      if (isCardFolded(state, hit.card)) return { type: "handled" };
+      const convId = hit.card === "tasks" && ev.shift ? taskPanelLinkAt(state, col, row) : null;
       if (convId) return { type: "load_conversation", convId };
-      if (layout.taskPanelToggleable) toggleTaskPanelExpansion(state);
+      if (isSideCardToggleable(state, hit.card)) {
+        if (hit.card === "tasks") toggleTaskPanelExpansion(state);
+        else if (hit.card === "subscriptions") toggleSubscriptionsExpansion(state);
+        else toggleScratchpadExpansion(state);
+      }
       return { type: "handled" };
     }
 

@@ -64,6 +64,7 @@ import {
   forgetConversationScroll,
   pruneConversationScrollPositions,
 } from "../conversationscroll";
+import { pruneFoldedCards } from "../sidecards";
 
 /**
  * Open a conversation the moment its first message is sent, as a local open
@@ -149,7 +150,11 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
   const partial = event.sidebarPartial;
   state.sidebar.partial = partial ? { folderConversationCounts: partial.folderConversationCounts } : null;
   if (rejectedMove) pushSystemMessage(state, `✗ Could not move ${rejectedMove.label}; the sidebar was restored`, theme.error);
-  if (!partial) pruneConversationScrollPositions(state, event.conversations.map(conversation => conversation.id));
+  if (!partial) {
+    const ids = event.conversations.map(conversation => conversation.id);
+    pruneConversationScrollPositions(state, ids);
+    pruneFoldedCards(state, ids);
+  }
   // Forget expansion of folders deleted here or while this TUI was closed.
   if (event.folders) pruneExpandedFolders(state.sidebar.expandedFolderIds, event.folders);
   const activeConvId = state.convId;

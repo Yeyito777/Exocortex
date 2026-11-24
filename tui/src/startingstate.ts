@@ -20,6 +20,7 @@ import {
   parseConversationScrollPositions,
   type SerializedConversationScrollPositions,
 } from "./conversationscroll/persistence";
+import { applyFoldedCards, captureFoldedCards, parseFoldedCards, type SerializedFoldedCards } from "./sidecards";
 
 const TUI_STARTING_STATE_VERSION = 2;
 
@@ -50,6 +51,8 @@ export interface RouteViewState {
   sidebarCursor: SidebarCursorStartingState | null;
   expandedFolderIds: string[];
   conversationScrollPositions: SerializedConversationScrollPositions;
+  /** Right-hand column cards each conversation keeps folded (sidecards.ts). Absent in older files. */
+  foldedCards: SerializedFoldedCards;
 }
 
 export interface TuiStartingState {
@@ -81,6 +84,7 @@ function copyRouteViewState(view: RouteViewState): RouteViewState {
       : null,
     expandedFolderIds: [...view.expandedFolderIds],
     conversationScrollPositions: { ...view.conversationScrollPositions },
+    foldedCards: Object.fromEntries(Object.entries(view.foldedCards).map(([convId, cards]) => [convId, [...cards]])),
   };
 }
 
@@ -89,6 +93,7 @@ const EMPTY_ROUTE_VIEW: RouteViewState = {
   sidebarCursor: null,
   expandedFolderIds: [],
   conversationScrollPositions: {},
+  foldedCards: {},
 };
 
 /**
@@ -105,6 +110,7 @@ function legacyRouteView(startingState: TuiStartingState, routeKey: string): Rou
       : null,
     expandedFolderIds: startingState.expandedFolderIdsByRoute?.[routeKey] ?? sidebar.expandedFolderIds ?? [],
     conversationScrollPositions: startingState.conversationScrollPositions,
+    foldedCards: {},
   };
 }
 
@@ -214,6 +220,7 @@ function parseRouteViewState(value: unknown): RouteViewState | null {
     sidebarCursor,
     expandedFolderIds: parseExpandedFolderIds(value.expandedFolderIds),
     conversationScrollPositions,
+    foldedCards: parseFoldedCards(value.foldedCards),
   };
 }
 
@@ -278,6 +285,7 @@ export function captureRouteViewState(state: RenderState): RouteViewState {
       : null,
     expandedFolderIds: [...state.sidebar.expandedFolderIds],
     conversationScrollPositions: captureConversationScrollPositions(state),
+    foldedCards: captureFoldedCards(state),
   };
 }
 
@@ -288,6 +296,7 @@ export function captureRouteViewState(state: RenderState): RouteViewState {
 export function applyRouteViewState(state: RenderState, view: RouteViewState): void {
   state.convId = view.focusedConversationId;
   applyConversationScrollPositions(state, view.conversationScrollPositions);
+  applyFoldedCards(state, view.foldedCards);
   state.sidebar.expandedFolderIds = new Set(view.expandedFolderIds);
   const cursor = view.sidebarCursor;
   if (!state.sidebar.open || !cursor) return;

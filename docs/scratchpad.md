@@ -4,8 +4,8 @@ Each conversation can keep a `scratchpad.md` in its workspace (its working
 directory, `config/data/workspaces/<conversation-id>/`, see
 [Conversation workspaces](conversation-workspaces.md)). Agents edit it with
 their normal file tools; the TUI shows it read-only as a Scratchpad card in the
-right-hand column, directly below the Tasks card (or at the column's top when
-there is none). A missing or blank file shows no card. The `/scratchpad` macro
+right-hand column, below the Tasks and Subscriptions cards (or at the column's
+top without them). A missing or blank file shows no card. The `/scratchpad` macro
 asks the agent to set one up; `/scratchpad update` and `/scratchpad clear` ask it to
 bring it up to date or empty it.
 
@@ -55,8 +55,10 @@ Collapsed, the card shows one row per line, truncated, up to the same height
 cap as Tasks, and a last row `▸ N more` counting the lines left out. A click
 expands it to every line, wrapped, grown leftward like the Tasks card, and
 scrolling with the wheel when it is taller than the pane; another click
-collapses it. Expanding one of the two cards collapses the other. On a
-terminal too narrow for the Tasks card, neither shows.
+collapses it. Expanding one card of the column collapses the others.
+Shift+click on any card's header folds it to that row and again unfolds it;
+each conversation remembers its folded cards across restarts. On a terminal
+too narrow for the Tasks card, none shows.
 
 ## How it gets there
 

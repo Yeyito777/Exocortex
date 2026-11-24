@@ -36,6 +36,7 @@ import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
 import { DEFAULT_RESOURCES_SHAPE, type ResourcesShape } from "./machine-resources";
 import { ScratchpadStore } from "./scratchpadstore";
+import type { SideCard } from "./sidecards";
 import type { AccountsSnapshot, ConversationDefaultsSnapshot, MachineResources, ConversationGoal, MacroEnvironment, ProviderAuthInfo, UserMacro, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { TokenStatsView } from "./commands/tokens";
@@ -139,7 +140,13 @@ export interface LayoutCache {
   taskPanelToggleable: boolean;
   /** Screen cells of the task panel's subagent rows, each opening its child conversation on Shift+click. */
   taskPanelLinks: Array<{ row: number; left: number; right: number; convId: string }>;
-  /** Screen rectangle of the Scratchpad card below the Tasks panel; like taskPanelRect. */
+  /** Screen rectangle of the Subscriptions card below the Tasks panel; like taskPanelRect. */
+  subscriptionsRect: { top: number; bottom: number; left: number; right: number } | null;
+  /** Rows the expanded Subscriptions card can scroll; 0 when everything fits or it is collapsed. */
+  subscriptionsMaxScroll: number;
+  /** A click on the Subscriptions card toggles its expansion: false while the collapsed card already shows everything. */
+  subscriptionsToggleable: boolean;
+  /** Screen rectangle of the Scratchpad card below the Subscriptions card; like taskPanelRect. */
   scratchpadRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Rows the expanded Scratchpad card can scroll; 0 when everything fits or it is collapsed. */
   scratchpadMaxScroll: number;
@@ -478,8 +485,12 @@ export interface RenderState {
   taskPanelExpansion: { convId: string; scroll: number } | null;
   /** Scratchpad contents held, by the hash conversation summaries name them with (scratchpadstore.ts). */
   scratchpads: ScratchpadStore;
-  /** The Scratchpad card expanded by a click, like taskPanelExpansion; at most one of the two is expanded. */
+  /** The Subscriptions card expanded by a click, like taskPanelExpansion; at most one card is expanded. */
+  subscriptionsExpansion: { convId: string; scroll: number } | null;
+  /** The Scratchpad card expanded by a click, like taskPanelExpansion; at most one card is expanded. */
   scratchpadExpansion: { convId: string; scroll: number } | null;
+  /** Cards each conversation keeps folded to their header (sidecards.ts); saved with the route's view. */
+  foldedCards: Map<string, Set<SideCard>>;
 }
 
 /** The open conversation's sidebar summary (conversationById: no scan). */
@@ -890,7 +901,7 @@ export function createInitialState(): RenderState {
     sidebar: createSidebarState(loadSidebarFolderViewPreference()),
     sidebarOpenChosen: false,
     vim: createVimState(),
-    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, taskPanelToggleable: false, taskPanelLinks: [], scratchpadRect: null, scratchpadMaxScroll: 0, scratchpadToggleable: false, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
+    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, taskPanelToggleable: false, taskPanelLinks: [], subscriptionsRect: null, subscriptionsMaxScroll: 0, subscriptionsToggleable: false, scratchpadRect: null, scratchpadMaxScroll: 0, scratchpadToggleable: false, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
     unconfirmedSends: [],
@@ -941,7 +952,9 @@ export function createInitialState(): RenderState {
     claudeConversationAccounts: new Map(),
     taskPanelExpansion: null,
     scratchpads: new ScratchpadStore(),
+    subscriptionsExpansion: null,
     scratchpadExpansion: null,
+    foldedCards: new Map(),
     undo: createUndoState(),
     autocomplete: null,
     promptScrollOffset: 0,

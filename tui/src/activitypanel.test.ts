@@ -11,9 +11,13 @@ import {
   layoutTaskPanel,
   MAX_TASK_PANEL_HEIGHT,
   msUntilTaskPanelEntryUpdate,
+  renderSubscriptionsPanel,
   renderTaskPanel,
+  toggleSubscriptionsExpansion,
   toggleTaskPanelExpansion,
 } from "./activitypanel";
+import { layoutSidePanels } from "./scratchpadpanel";
+import { toggleCardFold } from "./sidecards";
 import { stripAnsi } from "./historycursor";
 import type { ExternalIntegrationSummary } from "./messages";
 import { renderSidebar } from "./sidebar/render";
@@ -326,8 +330,10 @@ describe("focused conversation subscriptions", () => {
     expect(hasFocusedConversationIntegrations(state)).toBe(false);
   });
 
-  test("uses a single Subscriptions header when no task rows are present", () => {
-    const panel = renderTaskPanel(stateWithIntegrations(), 100, 20, 43_000);
+  test("a conversation with only subscriptions shows a Subscriptions card and no Tasks card", () => {
+    const state = stateWithIntegrations();
+    expect(renderTaskPanel(state, 100, 20, 43_000)).toBeNull();
+    const panel = renderSubscriptionsPanel(state, 100, 20);
     expect(panel).not.toBeNull();
     expect(panel?.width).toBe(50);
     expect(panel?.lines).toHaveLength(4);
@@ -348,94 +354,118 @@ describe("focused conversation subscriptions", () => {
     expect(panel!.lines.every(line => visibleLength(line) === panel!.width)).toBe(true);
   });
 
-  test("keeps a Tasks header and a distinct Subscriptions section when both types are present", () => {
+  test("tasks and subscriptions are separate cards, each counting its own entries", () => {
     const state = stateWithTasks();
     state.externalToolStyles = [{ cmd: "discord", label: "Discord", color: "#5865f2" }];
     state.sidebar.conversations[0].integrations = [integration(), integration({ id: "integration:two", label: "Deployments" })];
 
-    const panel = renderTaskPanel(state, 100, 20, 43_000)!;
-    const plain = panel.lines.map(stripAnsi);
-    expect(panel.lines).toHaveLength(7);
-    expect(plain[0]).toContain("Tasks");
-    expect(plain[0].trimEnd()).toEndWith("4 ─╮");
-    expect(plain[1]).toContain("◆ Exocortex Map daemon events");
-    expect(plain[2]).toContain("$ Bash bun test tui");
-    expect(plain[3]).toContain("Subscriptions");
-    expect(plain[3].trimEnd()).toEndWith("2 ─┤");
-    expect(plain[4]).toContain("Discord Design alerts");
-    expect(plain[4]).toContain("wake active");
-    expect(panel.lines.every(line => visibleLength(line) === panel.width)).toBe(true);
+    const tasks = renderTaskPanel(state, 100, 20, 43_000)!.lines.map(stripAnsi);
+    expect(tasks).toHaveLength(4);
+    expect(tasks[0]).toMatch(/^╭─ Tasks ─+ 2 ─╮$/);
+    expect(tasks[1]).toContain("◆ Exocortex Map daemon events");
+    expect(tasks[2]).toContain("$ Bash bun test tui");
+    expect(tasks.join("\n")).not.toContain("Subscriptions");
+    expect(tasks.join("\n")).not.toContain("Design alerts");
+
+    const subscriptions = renderSubscriptionsPanel(state, 100, 20)!.lines.map(stripAnsi);
+    expect(subscriptions).toHaveLength(4);
+    expect(subscriptions[0]).toMatch(/^╭─ Subscriptions ─+ 2 ─╮$/);
+    expect(subscriptions[1]).toContain("Discord Design alerts");
+    expect(subscriptions[1]).toContain("wake active");
+    expect(subscriptions[2]).toContain("Discord Deployments");
   });
 
-  test("keeps combined sections and overflow correct at the 30-column minimum", () => {
-    const state = stateWithTasks();
-    state.sidebar.conversations[0].tasks!.push(
-      { id: "bash:98", kind: "background", title: "lint", startedAt: 2_000 },
-      { id: "bash:99", kind: "background", title: "typecheck", startedAt: 3_000 },
-    );
+  test("keeps the Subscriptions card and its overflow correct at the 30-column minimum", () => {
+    const state = stateWithIntegrations();
     state.externalToolStyles = [{ cmd: "discord", label: "An impossibly long tool label", color: "#5865f2" }];
     state.sidebar.conversations[0].integrations = [
       integration({ label: "A very long source label", delivery: "inbox", status: "disabled" }),
       integration({ id: "integration:two", label: "Second source" }),
       integration({ id: "integration:three", label: "Third source" }),
+      integration({ id: "integration:four", label: "Fourth source" }),
     ];
 
-    const panel = renderTaskPanel(state, 30, 6, 50_000)!;
+    const panel = renderSubscriptionsPanel(state, 30, 5)!;
     const plain = panel.lines.map(stripAnsi);
     expect(panel.width).toBe(30);
-    expect(panel.lines).toHaveLength(6);
-    expect(plain[0]).toContain("Tasks");
-    expect(plain.join("\n")).toContain("Subscriptions");
-    expect(plain.join("\n")).toContain("inbox disabled");
-    expect(plain.join("\n")).toContain("▸ 5 more");
+    expect(panel.lines).toHaveLength(5);
+    expect(plain[0]).toContain("Subscriptions");
+    expect(plain[1]).toContain("inbox disabled");
+    expect(plain[3]).toContain("▸ 2 more");
+    expect(panel.toggleable).toBe(true);
     expect(panel.lines.every(line => termWidth(stripAnsi(line)) === 30)).toBe(true);
   });
 
-  test("gives subagents every slot they need, subscriptions the rest, and other tasks what remains", () => {
+  test("the column stacks Tasks, Subscriptions and Scratchpad, top to bottom", () => {
     const state = stateWithTasks();
-    state.sidebar.conversations[0].tasks!.push(
-      { id: "child-2", kind: "subagent", title: "Second child", startedAt: 2_000 },
-      { id: "bash:99", kind: "background", title: "typecheck", startedAt: 3_000 },
-    );
     state.externalToolStyles = [{ cmd: "discord", label: "Discord", color: "#5865f2" }];
-    state.sidebar.conversations[0].integrations = [
-      integration({ id: "integration:one", label: "Subscription one" }),
-      integration({ id: "integration:two", label: "Subscription two" }),
-      integration({ id: "integration:three", label: "Subscription three" }),
-    ];
+    state.sidebar.conversations[0].integrations = [integration()];
+    state.sidebar.conversations[0].scratchpad = "pad";
+    state.scratchpads.put("pad", "- [ ] Write the report\n- [x] Read the paper");
 
-    // Eight panel rows leave four entry slots after the borders, divider, and
-    // overflow row: both subagents, then two subscriptions, and no shell rows.
-    const panel = renderTaskPanel(state, 100, 8, 50_000)!;
-    const plain = panel.lines.map(stripAnsi).join("\n");
-    expect(panel.lines).toHaveLength(8);
-    expect(plain).toContain("Map daemon events");
-    expect(plain).toContain("Second child");
-    expect(plain).not.toContain("bun test tui");
-    expect(plain).not.toContain("typecheck");
-    expect(plain).toContain("Subscription one");
-    expect(plain).toContain("Subscription two");
-    expect(plain).not.toContain("Subscription three");
-    expect(plain).toContain("▸ 3 more");
+    const layout = layoutSidePanels(state, 120, 30, 43_000);
+    const column = [...layout.panel!.lines, ...layout.subscriptions!.lines, ...layout.scratchpad!.lines].map(stripAnsi);
+    const headers = column.filter(line => line.startsWith("╭"));
+    expect(headers.map(line => line.match(/Tasks|Subscriptions|Scratchpad/)?.[0])).toEqual(["Tasks", "Subscriptions", "Scratchpad"]);
+    expect(column).toHaveLength(4 + 3 + 4);
+    expect(layout.column).toEqual({ width: 50, height: 11 });
+    expect(layout.historyWidth).toBe(120 - 50 - 1);
   });
 
-  test("keeps the subscription count when subagents fill the card", () => {
+  test("a full Tasks card leaves room for the smallest Subscriptions and Scratchpad cards below it", () => {
     const state = stateWithTasks();
-    state.sidebar.conversations[0].tasks = [
-      { id: "bash:1", kind: "background", title: "bun test tui", startedAt: 1_000 },
-      ...[1, 2, 3, 4, 5].map(n => ({ id: `child-${n}`, kind: "subagent" as const, title: `Child ${n}`, startedAt: 1_000 + n })),
-    ];
-    state.sidebar.conversations[0].integrations = [
-      integration({ id: "integration:one", label: "Subscription one" }),
-      integration({ id: "integration:two", label: "Subscription two" }),
-      integration({ id: "integration:three", label: "Subscription three" }),
-    ];
+    state.sidebar.conversations[0].tasks = [1, 2, 3, 4, 5, 6, 7, 8].map(n => ({ id: `child-${n}`, kind: "subagent" as const, title: `Child ${n}`, startedAt: 1_000 + n }));
+    state.sidebar.conversations[0].integrations = ["one", "two", "three"].map(id => integration({ id: `integration:${id}`, label: `Subscription ${id}` }));
+    state.sidebar.conversations[0].scratchpad = "pad";
+    state.scratchpads.put("pad", "a\nb\nc");
 
-    const plain = renderTaskPanel(state, 100, 8, 50_000)!.lines.map(stripAnsi);
-    expect(plain.slice(1, 5).map(line => line.match(/Child \d/)?.[0])).toEqual(["Child 1", "Child 2", "Child 3", "Child 4"]);
-    expect(plain[5]).toMatch(/^├─ Subscriptions ─+ 3 ─┤$/);
-    expect(plain[6]).toContain("▸ 5 more");
-    expect(plain.join("\n")).not.toContain("Subscription one");
+    // 12 rows: Subscriptions and Scratchpad each keep a row, an overflow row and borders (4 + 4), Tasks the 4 left.
+    const layout = layoutSidePanels(state, 120, 12, 50_000);
+    expect(layout.panel!.lines).toHaveLength(4);
+    expect(stripAnsi(layout.panel!.lines[2])).toContain("▸ 7 more");
+    expect(layout.subscriptions!.lines).toHaveLength(4);
+    expect(stripAnsi(layout.subscriptions!.lines[0])).toMatch(/Subscriptions ─+ 3 ─╮$/);
+    expect(layout.scratchpad!.lines).toHaveLength(4);
+    expect(layout.column!.height).toBe(12);
+
+    // Folded cards below take a row each, so Tasks gets the rest.
+    toggleCardFold(state, "subscriptions");
+    toggleCardFold(state, "scratchpad");
+    const folded = layoutSidePanels(state, 120, 12, 50_000);
+    expect(folded.panel!.lines).toHaveLength(10);
+    expect(folded.subscriptions!.lines).toHaveLength(1);
+    expect(folded.scratchpad!.lines).toHaveLength(1);
+  });
+
+  test("Shift-folding a card leaves just its header, with its count", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].integrations = [integration()];
+    toggleCardFold(state, "tasks");
+    const tasks = renderTaskPanel(state, 100, 20, 43_000)!;
+    expect(tasks.lines.map(stripAnsi)).toEqual([expect.stringMatching(/^╶─ Tasks ─+ 2 ─╴$/)]);
+    expect(tasks.width).toBe(50);
+    expect(tasks.toggleable).toBe(false);
+    expect(tasks.links).toEqual([]);
+    expect(renderSubscriptionsPanel(state, 100, 20)!.lines).toHaveLength(3);
+
+    // Folding an expanded card collapses it; unfolding brings back the capped card.
+    toggleCardFold(state, "tasks");
+    toggleTaskPanelExpansion(state);
+    toggleCardFold(state, "tasks");
+    expect(state.taskPanelExpansion).toBeNull();
+    toggleCardFold(state, "tasks");
+    expect(renderTaskPanel(state, 100, 20, 43_000)!.lines).toHaveLength(4);
+  });
+
+  test("at most one card of the column is expanded", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].integrations = [integration()];
+    toggleTaskPanelExpansion(state);
+    toggleSubscriptionsExpansion(state);
+    expect(state.taskPanelExpansion).toBeNull();
+    expect(state.subscriptionsExpansion).toEqual({ convId: "parent", scroll: 0 });
+    toggleTaskPanelExpansion(state);
+    expect(state.subscriptionsExpansion).toBeNull();
   });
 
   test("lists subagents first, ahead of the daemon's shell and Chrono order, collapsed and expanded", () => {
@@ -445,13 +475,12 @@ describe("focused conversation subscriptions", () => {
       { id: "child", kind: "subagent", title: "Map daemon events", startedAt: 2_000 },
       { id: "chrono:1", kind: "chrono", title: "Hourly review", startedAt: 1_000, dueAt: 90_000, chronoMode: "wake" },
     ];
-    state.sidebar.conversations[0].integrations = [integration()];
     const order = (lines: string[]) => lines.map(stripAnsi)
-      .map(line => line.match(/Map daemon events|bun test tui|Hourly review|Design alerts/)?.[0])
+      .map(line => line.match(/Map daemon events|bun test tui|Hourly review/)?.[0])
       .filter(Boolean);
-    expect(order(renderTaskPanel(state, 100, 20, 50_000)!.lines)).toEqual(["Map daemon events", "bun test tui", "Hourly review", "Design alerts"]);
+    expect(order(renderTaskPanel(state, 100, 20, 50_000)!.lines)).toEqual(["Map daemon events", "bun test tui", "Hourly review"]);
     toggleTaskPanelExpansion(state);
-    expect(order(renderTaskPanel(state, 100, 20, 50_000)!.lines)).toEqual(["Map daemon events", "bun test tui", "Hourly review", "Design alerts"]);
+    expect(order(renderTaskPanel(state, 100, 20, 50_000)!.lines)).toEqual(["Map daemon events", "bun test tui", "Hourly review"]);
   });
 
   test("falls back to the manifest name and generic tool color when no external style is available", () => {
@@ -459,7 +488,7 @@ describe("focused conversation subscriptions", () => {
     state.externalToolStyles = [];
     state.sidebar.conversations[0].integrations = [integration({ toolName: "custom-feed" })];
 
-    const panel = renderTaskPanel(state, 100, 20)!;
+    const panel = renderSubscriptionsPanel(state, 100, 20)!;
     expect(stripAnsi(panel.lines[1])).toContain("custom-feed Design alerts");
     expect(panel.lines[1]).toContain(theme.tool);
   });

@@ -1,11 +1,11 @@
 /**
- * Focused-conversation activity panel.
+ * Focused-conversation activity cards.
  *
- * Renders the current goal, active subagents, detached background commands,
- * displayable Chrono work, and durable external notification subscriptions.
- * The daemon supplies conversation summaries;
- * this module adds the durable goal and owns all visual formatting and
- * horizontal space reservation for the panel.
+ * The Tasks card renders the current goal, active subagents, detached
+ * background commands and displayable Chrono work; the Subscriptions card
+ * below it renders durable external notification subscriptions. The daemon
+ * supplies conversation summaries; this module adds the durable goal and owns
+ * all visual formatting and horizontal space reservation for both cards.
  *
  * Collapsed, every entry is one compact row and the card is capped in height,
  * its last row counting the entries left out. When it leaves out an entry or
@@ -15,6 +15,7 @@
  * than that onto indented continuation rows (a subagent's prompt up to
  * EXPANDED_SUBAGENT_TITLE_ROWS rows), and scrolls when it outgrows the message
  * area. A collapsed card that already shows everything ignores clicks.
+ * Shift+click on a card's header folds it to that row alone (sidecards.ts).
  *
  * A subagent's rows are a link to its conversation while Shift is held: the
  * pointer over them highlights them, and a Shift+click there opens the
@@ -31,6 +32,7 @@ import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisi
 import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap } from "./textwrap";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
+import { collapseOtherExpansions, isCardFolded } from "./sidecards";
 
 export const MAX_PANEL_WIDTH = 50;
 export const MIN_PANEL_WIDTH = 30;
@@ -130,19 +132,42 @@ export function isTaskPanelExpanded(state: RenderState): boolean {
   return state.convId !== null && state.taskPanelExpansion?.convId === state.convId;
 }
 
-/** Expand the focused conversation's panel at its top (collapsing the Scratchpad card), or collapse it. */
+/** Expand the focused conversation's Tasks card at its top (collapsing any other card), or collapse it. */
 export function toggleTaskPanelExpansion(state: RenderState): void {
   state.taskPanelExpansion = isTaskPanelExpanded(state) || !state.convId
     ? null
     : { convId: state.convId, scroll: 0 };
-  if (state.taskPanelExpansion) state.scratchpadExpansion = null;
+  if (state.taskPanelExpansion) collapseOtherExpansions(state, "tasks");
 }
 
 /** Scroll the expanded panel by `delta` rows within what the last frame could show; true when it moved. */
 export function scrollTaskPanel(state: RenderState, delta: number): boolean {
   const expansion = state.taskPanelExpansion;
   if (!expansion || !isTaskPanelExpanded(state)) return false;
-  const scroll = Math.max(0, Math.min(state.layout.taskPanelMaxScroll, expansion.scroll + delta));
+  return scrollExpansion(expansion, state.layout.taskPanelMaxScroll, delta);
+}
+
+export function isSubscriptionsExpanded(state: RenderState): boolean {
+  return state.convId !== null && state.subscriptionsExpansion?.convId === state.convId;
+}
+
+/** Expand the focused conversation's Subscriptions card (collapsing any other card), or collapse it. */
+export function toggleSubscriptionsExpansion(state: RenderState): void {
+  state.subscriptionsExpansion = isSubscriptionsExpanded(state) || !state.convId
+    ? null
+    : { convId: state.convId, scroll: 0 };
+  if (state.subscriptionsExpansion) collapseOtherExpansions(state, "subscriptions");
+}
+
+export function scrollSubscriptions(state: RenderState, delta: number): boolean {
+  const expansion = state.subscriptionsExpansion;
+  if (!expansion || !isSubscriptionsExpanded(state)) return false;
+  return scrollExpansion(expansion, state.layout.subscriptionsMaxScroll, delta);
+}
+
+/** Move an expanded card's scroll by `delta` within 0..maxScroll; true when it moved. */
+export function scrollExpansion(expansion: { scroll: number }, maxScroll: number, delta: number): boolean {
+  const scroll = Math.max(0, Math.min(maxScroll, expansion.scroll + delta));
   if (scroll === expansion.scroll) return false;
   expansion.scroll = scroll;
   return true;
@@ -262,79 +287,9 @@ export function formatIntegrationDeliveryStatus(
   return `${integration.delivery} ${integration.status}`;
 }
 
-type PanelSectionTitle = "Tasks" | "Subscriptions";
-
-interface VisiblePanelContent {
-  tasks: TaskPanelEntry[];
-  integrations: ExternalIntegrationSummary[];
-  hiddenCount: number;
-  headerTitle: PanelSectionTitle;
-  showSubscriptionsDivider: boolean;
-}
-
-/** The goal and Exocortex subagents outrank subscriptions, which outrank other tasks. */
+/** The goal and Exocortex subagents lead the Tasks card; other tasks keep the daemon's order. */
 function isPriorityTask(task: TaskPanelEntry): boolean {
   return task.kind === "goal" || task.kind === "subagent";
-}
-
-/**
- * Fit entries when the card cannot show them all. `tasks` lists priority
- * tasks (isPriorityTask) first; they get every slot they need, subscriptions
- * the slots left after them, and other tasks whatever remains. The
- * Subscriptions divider keeps their count even when none of their rows fit.
- */
-function fitTasksAndSubscriptions(
-  tasks: TaskPanelEntry[],
-  integrations: ExternalIntegrationSummary[],
-  maxContentRows: number,
-): VisiblePanelContent {
-  const totalEntries = tasks.length + integrations.length;
-  const headerTitle = tasks.length > 0 ? "Tasks" : "Subscriptions";
-
-  if (tasks.length === 0 || integrations.length === 0) {
-    const entriesFit = totalEntries <= maxContentRows;
-    const visibleCount = entriesFit ? totalEntries : Math.max(0, maxContentRows - 1);
-    return {
-      tasks: tasks.slice(0, visibleCount),
-      integrations: integrations.slice(0, visibleCount),
-      hiddenCount: totalEntries - visibleCount,
-      headerTitle,
-      showSubscriptionsDivider: false,
-    };
-  }
-
-  if (totalEntries + 1 <= maxContentRows) {
-    return {
-      tasks,
-      integrations,
-      hiddenCount: 0,
-      headerTitle,
-      showSubscriptionsDivider: true,
-    };
-  }
-
-  if (maxContentRows < 2) {
-    return {
-      tasks: [],
-      integrations: [],
-      hiddenCount: 0,
-      headerTitle,
-      showSubscriptionsDivider: true,
-    };
-  }
-
-  const entrySlots = Math.max(0, maxContentRows - 2);
-  const priorityCount = Math.min(entrySlots, tasks.filter(isPriorityTask).length);
-  const visibleIntegrationCount = Math.min(integrations.length, entrySlots - priorityCount);
-  const visibleTaskCount = Math.min(tasks.length, entrySlots - visibleIntegrationCount);
-
-  return {
-    tasks: tasks.slice(0, visibleTaskCount),
-    integrations: integrations.slice(0, visibleIntegrationCount),
-    hiddenCount: totalEntries - visibleTaskCount - visibleIntegrationCount,
-    headerTitle,
-    showSubscriptionsDivider: true,
-  };
 }
 
 export interface PanelPalette {
@@ -482,16 +437,6 @@ function taskRows(
   return entryRows(palette, lead, termWidth(label), titleRows(title, titleWidth, wrap, limit), time, ELAPSED_WIDTH, highlight);
 }
 
-function sectionDivider(palette: PanelPalette, innerWidth: number, title: string, count: number): string {
-  const left = `─ ${title} `;
-  const right = ` ${count} ─`;
-  const fill = "─".repeat(Math.max(0, innerWidth - termWidth(left) - termWidth(right)));
-  return palette.withPanelBg(
-    `${palette.outline}├─ ${theme.reset}${theme.muted}${title}${palette.outline} ${fill}`
-    + `${theme.reset}${theme.muted} ${count}${palette.outline} ─┤`,
-  );
-}
-
 function integrationStyle(state: RenderState, integration: ExternalIntegrationSummary): { label: string; color: string } {
   const style = state.externalToolStyles.find(candidate => candidate.cmd === integration.toolName);
   return {
@@ -546,18 +491,6 @@ export function expandedPanelFooter(palette: PanelPalette, innerWidth: number, a
   );
 }
 
-/**
- * Build the activity panel for the focused conversation.
- *
- * `maxHeight` is the available message-area height. Collapsed, the card is
- * capped at MAX_TASK_PANEL_HEIGHT; when every entry cannot fit, the final
- * content row reports how many entries are hidden and invites a click, while
- * the header keeps the total count visible. Expanded, the same rows list every
- * entry up to `maxHeight`, scrolling by `state.taskPanelExpansion.scroll` rows;
- * the card widens leftward until its longest title fits on one row, but never
- * past EXPANDED_PANEL_WIDTH_FACTOR × its collapsed width or `chatWidth`, and
- * wraps titles instead of truncating them.
- */
 /** The time an entry shows: its state, countdown or elapsed time. */
 function taskTime(task: TaskPanelEntry, now: number): string {
   return task.kind === "goal" && task.goalStatus !== "active"
@@ -567,13 +500,130 @@ function taskTime(task: TaskPanelEntry, now: number): string {
       : formatTaskElapsed(task.startedAt, now);
 }
 
+/**
+ * A card's top row: its title on the left and `count` (when not empty) on the
+ * right. Folded, the row is the whole card and its corners close it.
+ */
+export function cardHeader(palette: PanelPalette, innerWidth: number, title: string, count: string, folded = false): string {
+  const left = `─ ${title} `;
+  const right = count ? ` ${count} ─` : "";
+  const fill = "─".repeat(Math.max(0, innerWidth - termWidth(left) - termWidth(right)));
+  const [open, close] = folded ? ["╶", "╴"] : ["╭", "╮"];
+  return palette.withPanelBg(
+    `${palette.topOutline}${open}─ ${theme.reset}${theme.muted}${title}${palette.topOutline} ${fill}`
+    + (count ? `${theme.reset}${theme.muted} ${count}${palette.topOutline} ─` : "")
+    + close,
+  );
+}
+
+/** One entry of an entry card: its rows at a card width, how wide a card fits it on one row, and the conversation its rows open. */
+interface CardEntry {
+  fitWidth: number;
+  rows: (innerWidth: number, wrap: boolean, highlight: boolean) => string[];
+  linkConvId?: string;
+}
+
+interface EntryCardSpec {
+  title: string;
+  /** Entries, built for this collapsed width (a subagent's label is shorter on a narrow card). */
+  entries: (collapsedWidth: number) => CardEntry[];
+  expansion: { scroll: number } | null;
+  folded: boolean;
+  /** Whether the expanded card's footer says how to collapse it. */
+  footerHint: boolean;
+}
+
+/**
+ * Build an entry card (Tasks or Subscriptions).
+ *
+ * `maxHeight` is the rows the card may take. Collapsed, the card is capped at
+ * MAX_TASK_PANEL_HEIGHT; when every entry cannot fit, the final content row
+ * reports how many entries are hidden and invites a click, while the header
+ * keeps the total count visible. Expanded, the same rows list every entry up
+ * to `maxHeight`, scrolling by the expansion's scroll; the card widens
+ * leftward until its longest title fits on one row, but never past
+ * EXPANDED_PANEL_WIDTH_FACTOR × its collapsed width or `chatWidth`, and wraps
+ * titles instead of truncating them. Folded, it is its header row alone.
+ */
+function buildEntryCard(state: RenderState, spec: EntryCardSpec, chatWidth: number, maxHeight: number): TaskPanelRender | null {
+  const collapsedWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
+  const entries = spec.entries(collapsedWidth);
+  const expanded = spec.expansion !== null && !spec.folded;
+  const panelHeight = spec.folded ? 1 : expanded ? maxHeight : Math.min(maxHeight, MAX_TASK_PANEL_HEIGHT);
+  if (entries.length === 0 || chatWidth < MIN_PANEL_WIDTH || panelHeight < (spec.folded ? 1 : 3)) return null;
+  const palette = panelPalette(state);
+  const count = String(entries.length);
+  if (spec.folded) {
+    return { width: collapsedWidth, lines: [cardHeader(palette, collapsedWidth - 2, spec.title, count, true)], scroll: 0, maxScroll: 0, toggleable: false, links: [] };
+  }
+
+  const widestEntry = Math.max(...entries.map(entry => entry.fitWidth));
+  const panelWidth = expanded
+    ? Math.max(collapsedWidth, Math.min(widestEntry, chatWidth, Math.floor(collapsedWidth * EXPANDED_PANEL_WIDTH_FACTOR)))
+    : collapsedWidth;
+  const innerWidth = panelWidth - 2;
+  const maxContentRows = panelHeight - 2;
+  const visibleCount = expanded || entries.length <= maxContentRows ? entries.length : Math.max(0, maxContentRows - 1);
+  const lines = [cardHeader(palette, innerWidth, spec.title, count)];
+
+  const body: string[] = [];
+  // Every row of a linked entry opens its conversation, label, title and time, between the borders.
+  const bodyLinks: Array<Omit<TaskPanelLink, "line"> & { bodyIndex: number }> = [];
+  for (const entry of entries.slice(0, visibleCount)) {
+    const rows = entry.rows(innerWidth, expanded, false);
+    const convId = entry.linkConvId;
+    if (convId) {
+      let hoverRows: string[] | null = null;
+      const highlighted = () => hoverRows ??= entry.rows(innerWidth, expanded, true);
+      rows.forEach((_, index) => bodyLinks.push({
+        bodyIndex: body.length + index,
+        left: 1,
+        right: innerWidth,
+        convId,
+        hoverLine: () => highlighted()[index],
+      }));
+    }
+    body.push(...rows);
+  }
+  const linksFrom = (scroll: number, shownRows: number): TaskPanelLink[] => bodyLinks
+    .filter(link => link.bodyIndex >= scroll && link.bodyIndex < scroll + shownRows)
+    .map(({ bodyIndex, ...link }) => ({ ...link, line: 1 + bodyIndex - scroll }));
+
+  if (expanded) {
+    const maxScroll = Math.max(0, body.length - maxContentRows);
+    const scroll = Math.max(0, Math.min(maxScroll, spec.expansion?.scroll ?? 0));
+    const shown = body.slice(scroll, scroll + maxContentRows);
+    lines.push(...shown);
+    lines.push(expandedPanelFooter(palette, innerWidth, scroll, body.length - scroll - shown.length, spec.footerHint));
+    return { width: panelWidth, lines, scroll, maxScroll, toggleable: true, links: linksFrom(scroll, shown.length) };
+  }
+
+  lines.push(...body);
+  const hiddenCount = entries.length - visibleCount;
+  if (hiddenCount > 0) {
+    // The overflow row is the way in to the rest: say so when it fits.
+    const more = `▸ ${hiddenCount} more`;
+    const invitation = `${more} · click to expand`;
+    const overflow = termWidth(invitation) <= innerWidth - 2 ? invitation : more;
+    lines.push(palette.withPanelBg(
+      `${palette.outline}│${theme.reset} ${theme.muted}`
+      + `${padRightToWidth(overflow, innerWidth - 2)}${theme.reset} ${palette.outline}│`,
+    ));
+  }
+
+  lines.push(palette.withPanelBg(`${palette.outline}╰${"─".repeat(innerWidth)}╯`));
+  // Expanding shows the entries the card leaves out and the rest of any title it cuts short; with neither, a click has nothing to show.
+  const toggleable = hiddenCount > 0 || widestEntry > panelWidth;
+  return { width: panelWidth, lines, scroll: 0, maxScroll: 0, toggleable, links: linksFrom(0, body.length) };
+}
+
 const taskPanelCache = new WeakMap<RenderState, { key: unknown[]; panel: TaskPanelRender | null }>();
 
 /**
  * The Tasks card, built again only when something it shows changed: its
  * entries, their times as shown (a countdown or elapsed time changes at most
- * once a second), their activity, the card's expansion and size. Scroll and
- * glide frames reuse it.
+ * once a second), their activity, the card's expansion, fold and size. Scroll
+ * and glide frames reuse it.
  */
 export function renderTaskPanel(
   state: RenderState,
@@ -583,7 +633,7 @@ export function renderTaskPanel(
 ): TaskPanelRender | null {
   const key: unknown[] = [
     state.convId, chatWidth, maxHeight, state.taskPanelExpansion?.convId, state.taskPanelExpansion?.scroll,
-    focusedConversation(state)?.integrations, state.goal, state.externalToolStyles, state.toolRegistry, theme.name,
+    isCardFolded(state, "tasks"), state.goal, state.toolRegistry, theme.name,
   ];
   for (const task of focusedConversationTasks(state)) {
     const indicator = subagentIndicator(state, task);
@@ -597,102 +647,59 @@ export function renderTaskPanel(
   return panel;
 }
 
-function buildTaskPanel(
-  state: RenderState,
-  chatWidth: number,
-  maxHeight: number,
-  now: number,
-): TaskPanelRender | null {
-  // Priority tasks lead the Tasks section, collapsed or expanded; the rest keep the daemon's order.
+function buildTaskPanel(state: RenderState, chatWidth: number, maxHeight: number, now: number): TaskPanelRender | null {
+  // Priority tasks lead the card, collapsed or expanded; the rest keep the daemon's order.
   const allTasks = focusedConversationTasks(state);
   const tasks = [...allTasks.filter(isPriorityTask), ...allTasks.filter(task => !isPriorityTask(task))];
-  const integrations = focusedConversationIntegrations(state);
-  const totalEntries = tasks.length + integrations.length;
-  const expanded = isTaskPanelExpanded(state);
-  const panelHeight = expanded ? maxHeight : Math.min(maxHeight, MAX_TASK_PANEL_HEIGHT);
-  if (totalEntries === 0 || chatWidth < MIN_PANEL_WIDTH || panelHeight < 3) return null;
-
-  const collapsedWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
-  // Only a card at MAX_PANEL_WIDTH widens, so a subagent's label keeps its form when the card expands.
-  const compactExocortex = collapsedWidth < 38;
-  const widestEntry = Math.max(
-    ...tasks.map(task => entryFitWidth(taskLabel(task, compactExocortex), taskTitle(task), ELAPSED_WIDTH)),
-    ...integrations.map(integration =>
-      entryFitWidth(integrationStyle(state, integration).label, integrationTitle(integration), INTEGRATION_STATE_WIDTH)),
-  );
-  const panelWidth = expanded
-    ? Math.max(collapsedWidth, Math.min(widestEntry, chatWidth, Math.floor(collapsedWidth * EXPANDED_PANEL_WIDTH_FACTOR)))
-    : collapsedWidth;
-  const innerWidth = panelWidth - 2;
-  const maxContentRows = panelHeight - 2;
-  const visible = fitTasksAndSubscriptions(tasks, integrations, expanded ? Infinity : maxContentRows);
   const palette = panelPalette(state);
-  const { outline, topOutline, withPanelBg } = palette;
+  return buildEntryCard(state, {
+    title: "Tasks",
+    entries: collapsedWidth => {
+      // Only a card at MAX_PANEL_WIDTH widens, so a subagent's label keeps its form when the card expands.
+      const compactExocortex = collapsedWidth < 38;
+      return tasks.map(task => {
+        const indicator = subagentIndicator(state, task);
+        return {
+          fitWidth: entryFitWidth(taskLabel(task, compactExocortex), taskTitle(task), ELAPSED_WIDTH),
+          rows: (innerWidth, wrap, highlight) => taskRows(task, palette, innerWidth, compactExocortex, now, indicator, wrap, highlight),
+          ...(task.kind === "subagent" ? { linkConvId: task.id } : {}),
+        };
+      });
+    },
+    expansion: isTaskPanelExpanded(state) ? state.taskPanelExpansion : null,
+    folded: isCardFolded(state, "tasks"),
+    footerHint: true,
+  }, chatWidth, maxHeight);
+}
 
-  const headerTitle = visible.headerTitle;
-  const entryCount = String(totalEntries);
-  const headerLeft = `─ ${headerTitle} `;
-  const headerRight = ` ${entryCount} ─`;
-  const headerFill = "─".repeat(Math.max(0, innerWidth - termWidth(headerLeft) - termWidth(headerRight)));
-  const lines = [
-    withPanelBg(
-      `${topOutline}╭─ ${theme.reset}${theme.muted}${headerTitle}${topOutline} ${headerFill}`
-      + `${theme.reset}${theme.muted} ${entryCount}${topOutline} ─╮`,
-    ),
+const subscriptionsPanelCache = new WeakMap<RenderState, { key: unknown[]; panel: TaskPanelRender | null }>();
+
+/** The Subscriptions card, built again only when its entries, expansion, fold, size or colours changed. */
+export function renderSubscriptionsPanel(state: RenderState, chatWidth: number, maxHeight: number): TaskPanelRender | null {
+  const key: unknown[] = [
+    state.convId, chatWidth, maxHeight, isSubscriptionsExpanded(state), state.subscriptionsExpansion?.scroll,
+    isCardFolded(state, "subscriptions"), focusedConversation(state)?.integrations, state.externalToolStyles, state.toolRegistry, theme.name,
   ];
+  const cached = subscriptionsPanelCache.get(state);
+  if (cached && cached.key.every((value, index) => value === key[index])) return cached.panel;
+  const panel = buildSubscriptionsPanel(state, chatWidth, maxHeight);
+  subscriptionsPanelCache.set(state, { key, panel });
+  return panel;
+}
 
-  const body: string[] = [];
-  // Every row of a subagent's entry opens its conversation, label, title and time, between the borders.
-  const bodyLinks: Array<Omit<TaskPanelLink, "line"> & { bodyIndex: number }> = [];
-  for (const task of visible.tasks) {
-    const indicator = subagentIndicator(state, task);
-    const rows = taskRows(task, palette, innerWidth, compactExocortex, now, indicator, expanded);
-    if (task.kind === "subagent") {
-      let hoverRows: string[] | null = null;
-      const highlighted = () => hoverRows ??= taskRows(task, palette, innerWidth, compactExocortex, now, indicator, expanded, true);
-      rows.forEach((_, index) => bodyLinks.push({
-        bodyIndex: body.length + index,
-        left: 1,
-        right: innerWidth,
-        convId: task.id,
-        hoverLine: () => highlighted()[index],
-      }));
-    }
-    body.push(...rows);
-  }
-  const linksFrom = (scroll: number, shownRows: number): TaskPanelLink[] => bodyLinks
-    .filter(link => link.bodyIndex >= scroll && link.bodyIndex < scroll + shownRows)
-    .map(({ bodyIndex, ...link }) => ({ ...link, line: 1 + bodyIndex - scroll }));
-  if (visible.showSubscriptionsDivider) {
-    body.push(sectionDivider(palette, innerWidth, "Subscriptions", integrations.length));
-  }
-  body.push(...visible.integrations.flatMap(integration => integrationRows(state, palette, innerWidth, integration, expanded)));
-
-  if (expanded) {
-    const maxScroll = Math.max(0, body.length - maxContentRows);
-    const scroll = Math.max(0, Math.min(maxScroll, state.taskPanelExpansion?.scroll ?? 0));
-    const shown = body.slice(scroll, scroll + maxContentRows);
-    lines.push(...shown);
-    lines.push(expandedPanelFooter(palette, innerWidth, scroll, body.length - scroll - shown.length));
-    return { width: panelWidth, lines, scroll, maxScroll, toggleable: true, links: linksFrom(scroll, shown.length) };
-  }
-
-  lines.push(...body);
-  if (visible.hiddenCount > 0) {
-    // The overflow row is the way in to the rest: say so when it fits.
-    const more = `▸ ${visible.hiddenCount} more`;
-    const invitation = `${more} · click to expand`;
-    const overflow = termWidth(invitation) <= innerWidth - 2 ? invitation : more;
-    lines.push(withPanelBg(
-      `${outline}│${theme.reset} ${theme.muted}`
-      + `${padRightToWidth(overflow, innerWidth - 2)}${theme.reset} ${outline}│`,
-    ));
-  }
-
-  lines.push(withPanelBg(`${outline}╰${"─".repeat(innerWidth)}╯`));
-  // Expanding shows the entries the card leaves out and the rest of any title it cuts short; with neither, a click has nothing to show.
-  const toggleable = visible.tasks.length + visible.integrations.length < totalEntries || widestEntry > panelWidth;
-  return { width: panelWidth, lines, scroll: 0, maxScroll: 0, toggleable, links: linksFrom(0, body.length) };
+function buildSubscriptionsPanel(state: RenderState, chatWidth: number, maxHeight: number): TaskPanelRender | null {
+  const integrations = focusedConversationIntegrations(state);
+  const palette = panelPalette(state);
+  return buildEntryCard(state, {
+    title: "Subscriptions",
+    entries: () => integrations.map(integration => ({
+      fitWidth: entryFitWidth(integrationStyle(state, integration).label, integrationTitle(integration), INTEGRATION_STATE_WIDTH),
+      rows: (innerWidth, wrap) => integrationRows(state, palette, innerWidth, integration, wrap),
+    })),
+    expansion: isSubscriptionsExpanded(state) ? state.subscriptionsExpansion : null,
+    folded: isCardFolded(state, "subscriptions"),
+    footerHint: true,
+  }, chatWidth, maxHeight);
 }
 
 /**

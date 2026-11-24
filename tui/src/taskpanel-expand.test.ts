@@ -6,9 +6,11 @@ import {
   isTaskPanelExpanded,
   layoutTaskPanel,
   MAX_TASK_PANEL_HEIGHT,
+  renderSubscriptionsPanel,
   renderTaskPanel,
   taskPanelHoverChanged,
   taskPanelLinkAt,
+  toggleSubscriptionsExpansion,
   toggleTaskPanelExpansion,
 } from "./activitypanel";
 import { disposeHistoryImages, invalidateHistoryImagePlacements } from "./historyimages";
@@ -203,8 +205,8 @@ describe("expanded task panel", () => {
       status: "active",
       createdAt: NOW,
     }];
-    toggleTaskPanelExpansion(state);
-    const body = bodyOf(renderTaskPanel(state, 100, 60, NOW)!.lines);
+    toggleSubscriptionsExpansion(state);
+    const body = bodyOf(renderSubscriptionsPanel(state, 100, 60)!.lines);
     expect(body.length).toBeGreaterThan(1);
     expect(body[0]).toStartWith("│ Discord Paramount DMs");
     expect(body[0].trimEnd()).toEndWith("wake active │");
@@ -212,9 +214,9 @@ describe("expanded task panel", () => {
     expect(body.join(" ")).toContain("plus replies");
   });
 
-  test("keeps the subscriptions divider and lists every subscription", () => {
+  test("an expanded Subscriptions card lists every subscription, and the Tasks card none", () => {
     const state = stateWithTasks(manyTasks(2));
-    state.sidebar.conversations[0].integrations = ["one", "two", "three"].map(id => ({
+    state.sidebar.conversations[0].integrations = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"].map(id => ({
       id: `integration:${id}`,
       toolName: "discord",
       sourceId: `channel:${id}`,
@@ -223,12 +225,14 @@ describe("expanded task panel", () => {
       status: "active" as const,
       createdAt: NOW,
     }));
-    toggleTaskPanelExpansion(state);
-    const text = plain(renderTaskPanel(state, 100, 60, NOW)!.lines);
-    const divider = text.findIndex(line => line.includes("Subscriptions"));
-    expect(divider).toBeGreaterThan(14);
-    expect(text).toHaveLength(divider + 3 + 2);
-    expect(text.slice(divider + 1, divider + 4).map(line => line.match(/Subscription \w+/)?.[0])).toEqual(["Subscription one", "Subscription two", "Subscription three"]);
+    expect(plain(renderTaskPanel(state, 100, 60, NOW)!.lines).join("\n")).not.toContain("Subscription");
+    const collapsed = renderSubscriptionsPanel(state, 100, 60)!;
+    expect(collapsed.lines).toHaveLength(MAX_TASK_PANEL_HEIGHT);
+    expect(collapsed.toggleable).toBe(true);
+    toggleSubscriptionsExpansion(state);
+    const text = plain(renderSubscriptionsPanel(state, 100, 60)!.lines);
+    expect(text).toHaveLength(12 + 2);
+    expect(text.slice(1, 4).map(line => line.match(/Subscription \w+/)?.[0])).toEqual(["Subscription one", "Subscription two", "Subscription three"]);
   });
 
   test("caps its height to the pane, scrolling by rows", () => {
@@ -309,9 +313,9 @@ describe("expanded task panel", () => {
     state.sidebar.conversations[0].integrations = [{
       id: "integration:dms", toolName: "discord", sourceId: "dm:1", label, delivery: "wake", status: "active", createdAt: NOW,
     }];
-    expect(renderTaskPanel(state, 100, 60, NOW)!.toggleable).toBe(true);
-    toggleTaskPanelExpansion(state);
-    const expanded = renderTaskPanel(state, 100, 60, NOW)!;
+    expect(renderSubscriptionsPanel(state, 100, 60)!.toggleable).toBe(true);
+    toggleSubscriptionsExpansion(state);
+    const expanded = renderSubscriptionsPanel(state, 100, 60)!;
     expect(expanded.width).toBe(7 + termWidth(label) + 14 + 5);
     expect(bodyOf(expanded.lines)).toEqual([expect.stringContaining(label)]);
   });
@@ -556,6 +560,106 @@ describe("task panel clicks", () => {
     conversation.tasks = manyTasks(2, Date.now());
     capture(() => render(state));
     expect(state.layout.taskPanelRect!.right - state.layout.taskPanelRect!.left + 1).toBe(50);
+  });
+});
+
+describe("the column's three cards", () => {
+  function columnState(): RenderState {
+    const state = chatState(120, 40, filler(80), fittingTasks(Date.now()));
+    state.externalToolStyles = [{ cmd: "discord", label: "Discord", color: "#5865f2" }];
+    state.sidebar.conversations[0].integrations = Array.from({ length: 12 }, (_, i) => ({
+      id: `integration:${i}`, toolName: "discord", sourceId: `channel:${i}`, label: `Subscription ${i}`,
+      delivery: "wake" as const, status: "active" as const, createdAt: NOW,
+    }));
+    state.sidebar.conversations[0].scratchpad = "pad";
+    state.scratchpads.put("pad", "- [ ] Write the report\n- [x] Read the paper");
+    capture(() => render(state));
+    return state;
+  }
+
+  test("Tasks, Subscriptions and Scratchpad stack with one right edge, each clicked on its own", () => {
+    const state = columnState();
+    const { taskPanelRect: tasks, subscriptionsRect: subs, scratchpadRect: pad } = state.layout;
+    expect(subs!.top).toBe(tasks!.bottom + 1);
+    expect(pad!.top).toBe(subs!.bottom + 1);
+    expect([tasks!.right, subs!.right, pad!.right]).toEqual([120, 120, 120]);
+    expect(state.layout.subscriptionsToggleable).toBe(true);
+    expect(cursorZone(subs!.left + 5, subs!.top + 1, state)).toBe("hand");
+
+    // A plain click expands only the card clicked; the wheel scrolls it.
+    click(state, subs!.left + 5, subs!.top + 1);
+    expect(state.subscriptionsExpansion?.convId).toBe("conv");
+    expect(state.taskPanelExpansion).toBeNull();
+    capture(() => render(state));
+    expect(state.layout.subscriptionsRect!.bottom - state.layout.subscriptionsRect!.top + 1).toBe(12 + 2);
+    click(state, state.layout.subscriptionsRect!.left + 5, state.layout.subscriptionsRect!.top + 1);
+    expect(state.subscriptionsExpansion).toBeNull();
+  });
+
+  test("the expanded Subscriptions card scrolls independently and clamps at both ends", () => {
+    const state = columnState();
+    state.rows = 16;
+    capture(() => render(state));
+    const rect = state.layout.subscriptionsRect!;
+    click(state, rect.left + 4, rect.top);
+    capture(() => render(state));
+    expect(state.layout.subscriptionsMaxScroll).toBeGreaterThan(0);
+    const offset = state.scrollOffset;
+    const wheel = (button: 64 | 65) => {
+      const current = state.layout.subscriptionsRect!;
+      capture(() => handleMouseEvent(mouse(current.left + 4, current.top + 1, "press", button), state));
+    };
+    wheel(65);
+    expect(state.subscriptionsExpansion?.scroll).toBe(Math.min(3, state.layout.subscriptionsMaxScroll));
+    expect(state.scrollOffset).toBe(offset);
+    for (let i = 0; i < 20; i++) wheel(65);
+    expect(state.subscriptionsExpansion?.scroll).toBe(state.layout.subscriptionsMaxScroll);
+    for (let i = 0; i < 20; i++) wheel(64);
+    expect(state.subscriptionsExpansion?.scroll).toBe(0);
+    expect(state.scrollOffset).toBe(offset);
+  });
+
+  test("Shift+click on a header folds its card to that row and again unfolds it; plain clicks leave a folded card", () => {
+    const state = columnState();
+    const subs = state.layout.subscriptionsRect!;
+    state.mouseShift = true;
+    expect(cursorZone(subs.left + 5, subs.top, state)).toBe("hand");
+    state.mouseShift = false;
+    // Shift on a body row is no fold: it stays the card's own click.
+    click(state, subs.left + 5, subs.top + 1, true);
+    expect(state.subscriptionsExpansion?.convId).toBe("conv");
+
+    expect(click(state, subs.left + 5, subs.top, true)).toEqual(["handled", "handled"]);
+    expect(state.foldedCards.get("conv")).toEqual(new Set(["subscriptions"]));
+    expect(state.subscriptionsExpansion).toBeNull();
+    capture(() => render(state));
+    const folded = state.layout.subscriptionsRect!;
+    expect(folded.bottom).toBe(folded.top);
+    expect(state.layout.scratchpadRect!.top).toBe(folded.top + 1);
+    state.mouseShift = false;
+    expect(cursorZone(folded.left + 5, folded.top, state)).toBe("pointer");
+    click(state, folded.left + 5, folded.top);
+    expect(state.foldedCards.get("conv")).toEqual(new Set(["subscriptions"]));
+
+    // Another conversation keeps its own cards; coming back finds this one folded.
+    state.convId = "other";
+    expect(state.foldedCards.has("other")).toBe(false);
+    state.convId = "conv";
+
+    click(state, folded.left + 5, folded.top, true);
+    expect(state.foldedCards.has("conv")).toBe(false);
+    capture(() => render(state));
+    expect(state.layout.subscriptionsRect).toEqual(subs);
+
+    // Every card folds the same way.
+    for (const key of ["taskPanelRect", "scratchpadRect"] as const) {
+      const rect = state.layout[key]!;
+      click(state, rect.left + 5, rect.top, true);
+      capture(() => render(state));
+    }
+    expect(state.foldedCards.get("conv")).toEqual(new Set(["tasks", "scratchpad"]));
+    expect(state.layout.taskPanelRect!.bottom).toBe(state.layout.taskPanelRect!.top);
+    expect(state.layout.scratchpadRect!.bottom).toBe(state.layout.scratchpadRect!.top);
   });
 });
 

@@ -53,6 +53,7 @@ import { getVoicePromptRanges } from "./voice";
 import {
   hasFocusedConversationIntegrations,
   hasFocusedConversationTasks,
+  isSubscriptionsExpanded,
   isTaskPanelExpanded,
   taskPanelHoverTarget,
 } from "./activitypanel";
@@ -1749,9 +1750,11 @@ export function render(state: RenderState): boolean {
   // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
   // An expanded panel belongs to the conversation it was opened in, and ends with its last entry.
-  if (state.taskPanelExpansion && (!isTaskPanelExpanded(state)
-    || (!hasFocusedConversationTasks(state) && !hasFocusedConversationIntegrations(state)))) {
+  if (state.taskPanelExpansion && (!isTaskPanelExpanded(state) || !hasFocusedConversationTasks(state))) {
     state.taskPanelExpansion = null;
+  }
+  if (state.subscriptionsExpansion && (!isSubscriptionsExpanded(state) || !hasFocusedConversationIntegrations(state))) {
+    state.subscriptionsExpansion = null;
   }
   if (state.scratchpadExpansion && (!isScratchpadExpanded(state) || focusedScratchpadLines(state).length === 0)) {
     state.scratchpadExpansion = null;
@@ -1858,10 +1861,11 @@ export function render(state: RenderState): boolean {
   }
   const preserveViewportTop = scrollUpdate.topAnchorRow !== null;
 
-  // Float the task panel (and the Scratchpad card below it) over only the
+  // Float the task panel (and the cards below it) over only the
   // history rows they actually occupy, keeping one extra row narrow below
   // them as visual breathing room.
   const taskPanel = taskLayout.panel;
+  const subscriptions = taskLayout.subscriptions;
   const scratchpad = taskLayout.scratchpad;
   const column = taskLayout.column;
   const panelFlowHeight = column ? Math.min(messageAreaHeight, column.height + 1) : 0;
@@ -1954,14 +1958,30 @@ export function render(state: RenderState): boolean {
       appendRowWrite(ctx, panelTop + i, panelCol, hoverLines.get(i)?.() ?? taskPanel.lines[i]);
     }
   }
-  // ── Scratchpad card (below the task panel, same right edge) ────
+  // ── Subscriptions card (below the task panel, same right edge) ──
+  state.layout.subscriptionsRect = null;
+  state.layout.subscriptionsMaxScroll = subscriptions?.maxScroll ?? 0;
+  state.layout.subscriptionsToggleable = subscriptions?.toggleable ?? false;
+  if (state.subscriptionsExpansion && subscriptions) state.subscriptionsExpansion.scroll = subscriptions.scroll;
+  const subscriptionsTop = messageAreaStart + (taskPanel?.lines.length ?? 0);
+  if (subscriptions) {
+    const cardCol = chatCol + chatW - subscriptions.width;
+    state.layout.subscriptionsRect = {
+      top: subscriptionsTop,
+      bottom: subscriptionsTop + subscriptions.lines.length - 1,
+      left: cardCol,
+      right: cardCol + subscriptions.width - 1,
+    };
+    for (let i = 0; i < subscriptions.lines.length; i++) appendRowWrite(ctx, subscriptionsTop + i, cardCol, subscriptions.lines[i]);
+  }
+  // ── Scratchpad card (below the Subscriptions card, same right edge) ──
   state.layout.scratchpadRect = null;
   state.layout.scratchpadMaxScroll = scratchpad?.maxScroll ?? 0;
   state.layout.scratchpadToggleable = scratchpad?.toggleable ?? false;
   if (state.scratchpadExpansion && scratchpad) state.scratchpadExpansion.scroll = scratchpad.scroll;
   if (scratchpad) {
     const cardCol = chatCol + chatW - scratchpad.width;
-    const cardTop = messageAreaStart + (taskPanel?.lines.length ?? 0);
+    const cardTop = subscriptionsTop + (subscriptions?.lines.length ?? 0);
     state.layout.scratchpadRect = {
       top: cardTop,
       bottom: cardTop + scratchpad.lines.length - 1,
@@ -2050,7 +2070,7 @@ export function render(state: RenderState): boolean {
   // Floating overlays are drawn as text, which images (z above text) would
   // cover. The task panel, autocomplete, queue prompt, edit menu, conversation
   // menu, accounts screen and image viewer crop them around their box.
-  const imageCovers: ScreenRect[] = [state.layout.taskPanelRect, state.layout.scratchpadRect, autocompleteRect]
+  const imageCovers: ScreenRect[] = [state.layout.taskPanelRect, state.layout.subscriptionsRect, state.layout.scratchpadRect, autocompleteRect]
     .filter((rect): rect is ScreenRect => rect !== null);
   // A daemon switch can turn images off under an open viewer.
   if (state.imageModal && !inlineImagesActive()) state.imageModal = null;
