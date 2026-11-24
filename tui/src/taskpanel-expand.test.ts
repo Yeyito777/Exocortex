@@ -663,6 +663,56 @@ describe("the column's three cards", () => {
   });
 });
 
+describe("Shift over a card's header", () => {
+  test("highlights the header (the fold target) on motion or a modifier report, and clears off it or without Shift", () => {
+    const state = chatState(120, 40, filler(80), fittingTasks(Date.now()));
+    state.sidebar.conversations[0].integrations = [{
+      id: "integration:one", toolName: "discord", sourceId: "channel:one", label: "Design alerts", delivery: "wake", status: "active", createdAt: NOW,
+    }];
+    capture(() => render(state));
+    const subs = state.layout.subscriptionsRect!;
+    const header = (bg: string) => `${bg}${theme.bold}${theme.muted}╭─ ${theme.reset}${bg}${theme.muted}Subscriptions`;
+    const plain = header(hexToAnsiBg("#00050f"));
+    const lit = header(`${hexToAnsiBg("#00050f")}${theme.sidebarSelBg}`);
+
+    // Shift held while the pointer moves onto the header (the motion report carries Shift).
+    capture(() => handleMouseEvent(mouse(subs.left + 5, subs.top, "motion", 35, true), state));
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    let shown = capture(() => render(state));
+    expect(state.taskPanelHover).toBe("header:subscriptions");
+    expect(shown).toContain(lit);
+    expect(taskPanelHoverChanged(state)).toBe(false);
+
+    // Shift released with the pointer still (st's mode 7778 report).
+    handleModifierEvent({ type: "modifiers", col: subs.left + 5, row: subs.top, shift: false, meta: false, ctrl: false }, state);
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    shown = capture(() => render(state));
+    expect(state.taskPanelHover).toBeNull();
+    expect(shown).toContain(plain);
+    expect(shown).not.toContain(lit);
+
+    // Pressed again, then the pointer leaves the header for the card's body.
+    handleModifierEvent({ type: "modifiers", col: subs.left + 5, row: subs.top, shift: true, meta: false, ctrl: false }, state);
+    capture(() => render(state));
+    expect(state.taskPanelHover).toBe("header:subscriptions");
+    capture(() => handleMouseEvent(mouse(subs.left + 5, subs.top + 1, "motion", 35, true), state));
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    capture(() => render(state));
+    expect(state.taskPanelHover).toBeNull();
+
+    // Every card's header lights the same way, folded too.
+    const tasks = state.layout.taskPanelRect!;
+    capture(() => handleMouseEvent(mouse(tasks.left + 5, tasks.top, "motion", 35, true), state));
+    capture(() => render(state));
+    expect(state.taskPanelHover).toBe("header:tasks");
+    click(state, tasks.left + 5, tasks.top, true);
+    shown = capture(() => render(state));
+    expect(state.layout.taskPanelRect!.bottom).toBe(state.layout.taskPanelRect!.top);
+    expect(state.taskPanelHover).toBe("header:tasks");
+    expect(shown).toContain(`${hexToAnsiBg("#00050f")}${theme.sidebarSelBg}${theme.bold}${theme.muted}╶─ `);
+  });
+});
+
 describe("images under the expanded card", () => {
   const ref: ImageRef = { id: "a".repeat(64), mediaType: "image/png", width: 2400, height: 900, sizeBytes: 533_000, name: "shot.png" };
   const fetchPreview = async (request: { width: number; height: number; format: string }) => request.format === "png"

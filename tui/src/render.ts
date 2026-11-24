@@ -54,10 +54,13 @@ import {
   hasFocusedConversationIntegrations,
   hasFocusedConversationTasks,
   isSubscriptionsExpanded,
+  cardHeaderHoverTarget,
+  highlightPanelRow,
   isTaskPanelExpanded,
   taskPanelHoverTarget,
 } from "./activitypanel";
 import { focusedScratchpadLines, isScratchpadExpanded, layoutSidePanels } from "./scratchpadpanel";
+import type { SideCard } from "./sidecards";
 import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
 import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btw/panel";
 import { wordWrap } from "./textwrap";
@@ -1928,67 +1931,49 @@ export function render(state: RenderState): boolean {
     hlFirst, hlLast, searchQuery, lineAnchors,
   );
 
-  // ── Active task panel (top-right float) ────────────────────────
-  state.layout.taskPanelRect = null;
+  // ── Right-hand column: Tasks, Subscriptions, Scratchpad (top-right float, one right edge) ──
   state.layout.taskPanelMaxScroll = taskPanel?.maxScroll ?? 0;
   state.layout.taskPanelToggleable = taskPanel?.toggleable ?? false;
-  state.layout.taskPanelLinks = [];
-  state.taskPanelHover = null;
-  if (state.taskPanelExpansion && taskPanel) state.taskPanelExpansion.scroll = taskPanel.scroll;
-  if (taskPanel) {
-    const panelCol = chatCol + chatW - taskPanel.width;
-    const panelTop = messageAreaStart;
-    state.layout.taskPanelRect = {
-      top: panelTop,
-      bottom: panelTop + taskPanel.lines.length - 1,
-      left: panelCol,
-      right: panelCol + taskPanel.width - 1,
-    };
-    state.layout.taskPanelLinks = taskPanel.links.map(link => ({
-      row: panelTop + link.line,
-      left: panelCol + link.left,
-      right: panelCol + link.right,
-      convId: link.convId,
-    }));
-    // Shift over a subagent's rows highlights them; mouse motion repaints only when that changes.
-    const hovered = taskPanelHoverTarget(state);
-    const hoverLines = new Map(taskPanel.links.filter(link => link.convId === hovered).map(link => [link.line, link.hoverLine]));
-    state.taskPanelHover = hoverLines.size > 0 ? hovered : null;
-    for (let i = 0; i < taskPanel.lines.length; i++) {
-      appendRowWrite(ctx, panelTop + i, panelCol, hoverLines.get(i)?.() ?? taskPanel.lines[i]);
-    }
-  }
-  // ── Subscriptions card (below the task panel, same right edge) ──
-  state.layout.subscriptionsRect = null;
   state.layout.subscriptionsMaxScroll = subscriptions?.maxScroll ?? 0;
   state.layout.subscriptionsToggleable = subscriptions?.toggleable ?? false;
-  if (state.subscriptionsExpansion && subscriptions) state.subscriptionsExpansion.scroll = subscriptions.scroll;
-  const subscriptionsTop = messageAreaStart + (taskPanel?.lines.length ?? 0);
-  if (subscriptions) {
-    const cardCol = chatCol + chatW - subscriptions.width;
-    state.layout.subscriptionsRect = {
-      top: subscriptionsTop,
-      bottom: subscriptionsTop + subscriptions.lines.length - 1,
-      left: cardCol,
-      right: cardCol + subscriptions.width - 1,
-    };
-    for (let i = 0; i < subscriptions.lines.length; i++) appendRowWrite(ctx, subscriptionsTop + i, cardCol, subscriptions.lines[i]);
-  }
-  // ── Scratchpad card (below the Subscriptions card, same right edge) ──
-  state.layout.scratchpadRect = null;
   state.layout.scratchpadMaxScroll = scratchpad?.maxScroll ?? 0;
   state.layout.scratchpadToggleable = scratchpad?.toggleable ?? false;
+  if (state.taskPanelExpansion && taskPanel) state.taskPanelExpansion.scroll = taskPanel.scroll;
+  if (state.subscriptionsExpansion && subscriptions) state.subscriptionsExpansion.scroll = subscriptions.scroll;
   if (state.scratchpadExpansion && scratchpad) state.scratchpadExpansion.scroll = scratchpad.scroll;
-  if (scratchpad) {
-    const cardCol = chatCol + chatW - scratchpad.width;
-    const cardTop = subscriptionsTop + (subscriptions?.lines.length ?? 0);
-    state.layout.scratchpadRect = {
-      top: cardTop,
-      bottom: cardTop + scratchpad.lines.length - 1,
-      left: cardCol,
-      right: cardCol + scratchpad.width - 1,
-    };
-    for (let i = 0; i < scratchpad.lines.length; i++) appendRowWrite(ctx, cardTop + i, cardCol, scratchpad.lines[i]);
+  // Every card's place first, so what the pointer is over is judged on this frame's cards.
+  const placedCards: Array<{ card: SideCard; lines: string[]; top: number; col: number }> = [];
+  let cardTop = messageAreaStart;
+  for (const [card, render] of [["tasks", taskPanel], ["subscriptions", subscriptions], ["scratchpad", scratchpad]] as const) {
+    const rect = render ? { top: cardTop, bottom: cardTop + render.lines.length - 1, left: chatCol + chatW - render.width, right: chatCol + chatW - 1 } : null;
+    if (card === "tasks") state.layout.taskPanelRect = rect;
+    else if (card === "subscriptions") state.layout.subscriptionsRect = rect;
+    else state.layout.scratchpadRect = rect;
+    if (!render || !rect) continue;
+    placedCards.push({ card, lines: render.lines, top: rect.top, col: rect.left });
+    cardTop += render.lines.length;
+  }
+  const panelCol = state.layout.taskPanelRect?.left ?? 0;
+  const panelTop = messageAreaStart;
+  state.layout.taskPanelLinks = (taskPanel?.links ?? []).map(link => ({
+    row: panelTop + link.line,
+    left: panelCol + link.left,
+    right: panelCol + link.right,
+    convId: link.convId,
+  }));
+  // Shift over a subagent's rows, or over a card's header (the fold target), highlights it;
+  // mouse motion repaints only when that changes.
+  const hovered = taskPanelHoverTarget(state);
+  const hoverLines = new Map((taskPanel?.links ?? []).filter(link => link.convId === hovered).map(link => [link.line, link.hoverLine]));
+  const hoveredHeader = placedCards.find(placed => hovered === cardHeaderHoverTarget(placed.card));
+  state.taskPanelHover = hoverLines.size > 0 || hoveredHeader ? hovered : null;
+  for (const placed of placedCards) {
+    for (let i = 0; i < placed.lines.length; i++) {
+      const line = i === 0 && placed === hoveredHeader ? highlightPanelRow(placed.lines[0])
+        : placed.card === "tasks" ? hoverLines.get(i)?.() ?? placed.lines[i]
+        : placed.lines[i];
+      appendRowWrite(ctx, placed.top + i, placed.col, line);
+    }
   }
 
   // ── Autocomplete popup (overlays message area above input) ────

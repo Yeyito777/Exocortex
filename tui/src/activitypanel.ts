@@ -19,7 +19,8 @@
  *
  * A subagent's rows are a link to its conversation while Shift is held: the
  * pointer over them highlights them, and a Shift+click there opens the
- * subagent instead of toggling the card.
+ * subagent instead of toggling the card. A card's header highlights the same
+ * way while Shift is held over it, where a click folds the card.
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
@@ -32,7 +33,7 @@ import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisi
 import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap } from "./textwrap";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
-import { collapseOtherExpansions, isCardFolded } from "./sidecards";
+import { collapseOtherExpansions, isCardFolded, type SideCard } from "./sidecards";
 
 export const MAX_PANEL_WIDTH = 50;
 export const MIN_PANEL_WIDTH = 30;
@@ -86,22 +87,52 @@ export interface TaskPanelLink {
   hoverLine: () => string;
 }
 
+/** Nothing in the column is clickable under a modal overlay. */
+function sideCardsBlocked(state: RenderState): boolean {
+  return Boolean(state.imageModal || state.accountsScreen || state.instructionsModal || state.editMessagePrompt
+    || state.queuePrompt || state.sidebar.actionMenu);
+}
+
 /** The conversation whose subagent row is at (col, row), or null; nothing is clickable under a modal overlay. */
 export function taskPanelLinkAt(state: RenderState, col: number, row: number): string | null {
-  if (state.imageModal || state.accountsScreen || state.instructionsModal || state.editMessagePrompt
-    || state.queuePrompt || state.sidebar.actionMenu) return null;
+  if (sideCardsBlocked(state)) return null;
   return state.layout.taskPanelLinks.find(link => link.row === row && col >= link.left && col <= link.right)?.convId ?? null;
 }
 
-/** The subagent the pointer highlights: only while Shift is held. */
-export function taskPanelHoverTarget(state: RenderState): string | null {
-  const pointer = state.taskPanelPointer;
-  return pointer?.shift ? taskPanelLinkAt(state, pointer.col, pointer.row) : null;
+/** The card whose header row (the Shift+click fold target) is at (col, row), as last drawn; null under a modal overlay. */
+export function cardHeaderAt(state: RenderState, col: number, row: number): SideCard | null {
+  if (sideCardsBlocked(state)) return null;
+  const { taskPanelRect, subscriptionsRect, scratchpadRect } = state.layout;
+  const cards: Array<[SideCard, typeof taskPanelRect]> = [["tasks", taskPanelRect], ["subscriptions", subscriptionsRect], ["scratchpad", scratchpadRect]];
+  return cards.find(([, rect]) => rect && rect.top === row && col >= rect.left && col <= rect.right)?.[0] ?? null;
 }
 
-/** Whether the last pointer report highlights a different subagent than the last frame drew. */
+/** Hover target of a card's header, told apart from subagent conversation ids. */
+export function cardHeaderHoverTarget(card: SideCard): string {
+  return `header:${card}`;
+}
+
+/**
+ * What the pointer highlights, only while Shift is held: a subagent (its
+ * conversation id), or a card's header (cardHeaderHoverTarget) that a click
+ * would fold or unfold.
+ */
+export function taskPanelHoverTarget(state: RenderState): string | null {
+  const pointer = state.taskPanelPointer;
+  if (!pointer?.shift) return null;
+  const card = cardHeaderAt(state, pointer.col, pointer.row);
+  return card ? cardHeaderHoverTarget(card) : taskPanelLinkAt(state, pointer.col, pointer.row);
+}
+
+/** Whether the last pointer report highlights something other than what the last frame drew. */
 export function taskPanelHoverChanged(state: RenderState): boolean {
   return taskPanelHoverTarget(state) !== (state.taskPanelHover ?? null);
+}
+
+/** A card row drawn on the hover background (the highlighted subagent rows' colour) over the card's own. */
+export function highlightPanelRow(line: string): string {
+  const panelBg = hexToAnsiBg(PANEL_BG_HEX);
+  return line.replaceAll(panelBg, `${panelBg}${theme.sidebarSelBg}`);
 }
 
 export interface TaskPanelLayout {
