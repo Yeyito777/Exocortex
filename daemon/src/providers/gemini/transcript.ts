@@ -21,6 +21,8 @@ export interface AgyTranscriptStep {
   type?: string;
   output_tokens?: number;
   content?: string;
+  /** When the step started, to the second (ISO). */
+  created_at?: string;
 }
 
 export interface AgyBackgroundTask {
@@ -92,6 +94,12 @@ export class AgyTranscriptReader {
 
 export function modelCallTokens(step: AgyTranscriptStep): number {
   return step.type === "PLANNER_RESPONSE" && typeof step.output_tokens === "number" && step.output_tokens > 0 ? step.output_tokens : 0;
+}
+
+/** When a step started (ms), or null. The CLI logs it to the second. */
+export function stepStartedAt(step: AgyTranscriptStep): number | null {
+  const at = typeof step.created_at === "string" ? Date.parse(step.created_at) : NaN;
+  return Number.isFinite(at) ? at : null;
 }
 
 const BACKGROUND_RE = /Tool is running as a background task with task id: (\S+)/;

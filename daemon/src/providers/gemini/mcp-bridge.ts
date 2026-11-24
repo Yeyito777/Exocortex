@@ -48,19 +48,38 @@ async function connect() {
   return daemon;
 }
 
-async function ask(request: Json): Promise<Json> {
+async function ask(request: Json, onSent?: (id: number) => void): Promise<Json> {
   const socket = await connect();
   const id = nextId++;
   return new Promise(resolve => {
     waiting.set(id, resolve);
     socket.write(`${JSON.stringify({ ...request, id, token })}\n`);
+    onSent?.(id);
   });
+}
+
+/** Tool calls in flight: the CLI's request id → the daemon request running it. */
+const calls = new Map<unknown, number>();
+/** Calls the CLI cancelled (it gives up on a tool call after three minutes): no reply is due. */
+const cancelled = new Set<unknown>();
+
+/** The CLI cancelled a call: have the daemon stop it. */
+async function cancel(params: Json): Promise<void> {
+  const requestId = params.requestId;
+  cancelled.add(requestId);
+  const daemonId = calls.get(requestId);
+  if (daemonId === undefined) return;
+  const socket = await connect();
+  socket.write(`${JSON.stringify({ type: "cancel", target: daemonId, token })}\n`);
 }
 
 async function handle(message: Json): Promise<void> {
   const id = message.id;
   const params = (message.params ?? {}) as Json;
-  if (id === undefined || id === null) return; // notifications
+  if (id === undefined || id === null) {
+    if (message.method === "notifications/cancelled") await cancel(params);
+    return;
+  }
   switch (message.method) {
     case "initialize": {
       const listed = await ask({ type: "list" });
@@ -89,7 +108,12 @@ async function handle(message: Json): Promise<void> {
     }
     case "tools/call": {
       const { toolSummary: _summary, ...args } = (params.arguments ?? {}) as Json;
-      const answer = await ask({ type: "call", name: params.name, arguments: args });
+      const answer = await ask({ type: "call", name: params.name, arguments: args }, daemonId => {
+        calls.set(id, daemonId);
+        if (cancelled.has(id)) void cancel({ requestId: id });
+      })
+        .finally(() => calls.delete(id));
+      if (cancelled.delete(id)) return;
       const result = (answer.result ?? null) as { text?: string; isError?: boolean } | null;
       const text = result?.text ?? String(answer.error ?? "The tool returned no result.");
       out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }], isError: result ? result.isError === true : true } });

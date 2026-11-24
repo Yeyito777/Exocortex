@@ -56,7 +56,7 @@ export function inferModelProvider(model: string | undefined): ProviderId | unde
   if (isKnownModel("openrouter", lowered)) return "openrouter";
   if (lowered.startsWith("claude-") || ["opus", "sonnet", "haiku", "fable"].includes(lowered)) return "anthropic";
   if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
-  if (lowered.startsWith("gemini-") || ["neon", "hydrogen", "argon"].includes(lowered)) return "gemini";
+  if (lowered.startsWith("gemini-") || ["neon", "carbon", "hydrogen", "argon"].includes(lowered)) return "gemini";
   return undefined;
 }
 

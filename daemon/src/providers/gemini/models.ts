@@ -25,10 +25,11 @@ const EFFORT_DESCRIPTIONS: Record<string, string> = {
 const MODEL_LEVEL_RE = /^(gemini-\d+(?:\.\d+)?-[a-z]+)-(low|medium|high|xhigh)$/;
 
 /** Preferred order in the picker. */
-const PREFERRED_ORDER = ["gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon", "gemini-3.8-flash"];
+const PREFERRED_ORDER = ["gemini-4-neon", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-argon", "gemini-3.8-flash"];
 
 const LABELS: Record<string, string> = {
   "gemini-4-neon": "Gemini 4 Neon",
+  "gemini-4-carbon": "Gemini 4 Carbon",
   "gemini-4-hydrogen": "Gemini 4 Hydrogen",
   "gemini-4-argon": "Gemini 4 Argon",
   "gemini-3.8-flash": "Gemini 3.8 Flash",

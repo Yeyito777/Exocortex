@@ -14,7 +14,7 @@ import {
 import { onBackgroundTaskEnded, type CompletedConversationTask } from "../conversation-activity";
 import { checkChronoWaitTarget, chronoWaitTargetLabel, waitForChronoWaitTarget } from "../chrono-wait-targets";
 import { backgroundTaskWakeText } from "./chrono-output";
-import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "./chrono-limits";
+import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS, GEMINI_TOOL_CALL_MAX_MS } from "./chrono-limits";
 import { parseDurationMs } from "@exocortex/shared/duration";
 import { LONG_CHRONO_SLEEP_THRESHOLD_MS, chronoCallLine, chronoCallLineText, chronoWhat } from "@exocortex/shared/chrono";
 import type { ToolCallPresentation } from "@exocortex/shared/messages";
@@ -58,6 +58,20 @@ function abortableSleep(durationMs: number, signal?: AbortSignal): Promise<void>
 function inlineChronoLimitMs(context: Parameters<Tool["execute"]>[1]): number {
   return runsOwnAgentLoop(context?.provider) ? CLAUDE_CODE_INLINE_CHRONO_MAX_MS : LONG_CHRONO_SLEEP_THRESHOLD_MS;
 }
+
+let geminiInlineMaxMs = GEMINI_TOOL_CALL_MAX_MS;
+
+/** For tests: a shorter Gemini call limit (null restores it). */
+export function setGeminiInlineChronoMaxForTest(ms: number | null): void {
+  geminiInlineMaxMs = ms ?? GEMINI_TOOL_CALL_MAX_MS;
+}
+
+/** In a Gemini turn, how long one sleep or wait call may run before it returns to be called again. */
+function geminiChunkMs(context: Parameters<Tool["execute"]>[1], requestedMs: number): number | null {
+  return context?.provider === "gemini" && requestedMs > geminiInlineMaxMs ? geminiInlineMaxMs : null;
+}
+
+const GEMINI_CHUNK_NOTE = "A chrono call in a Gemini turn returns within three minutes, the Antigravity CLI's limit for a tool call.";
 
 function undeferrableLongChronoError(kind: "sleep" | "wait", context: Parameters<Tool["execute"]>[1]): string {
   if (runsOwnAgentLoop(context?.provider)) {
@@ -234,7 +248,8 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
     else signal?.addEventListener("abort", abort, { once: true });
     const userInterrupt = interruptibleByUser(context);
     userInterrupt.signal.addEventListener("abort", abort, { once: true });
-    const limit = abortableSleep(maxWaitMs, limitController.signal)
+    const chunkMs = geminiChunkMs(context, maxWaitMs);
+    const limit = abortableSleep(chunkMs ?? maxWaitMs, limitController.signal)
       .then(() => {
         limitReached = true;
         waitController.abort();
@@ -254,6 +269,18 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
       return { output: completed.output, isError: false };
     } catch (err) {
       if (limitReached && err instanceof DOMException && err.name === "AbortError") {
+        if (chunkMs !== null) {
+          return {
+            output: JSON.stringify({
+              task_id: taskId,
+              status: "still_running",
+              waited: formatElapsedDuration(Date.now() - startedAt),
+              max_wait: maxWait,
+              next: `${GEMINI_CHUNK_NOTE} Call chrono wait again to keep waiting, with max_wait ${formatElapsedDuration(Math.max(1000, maxWaitMs - (Date.now() - startedAt)))} for the rest of this wait.`,
+            }),
+            isError: false,
+          };
+        }
         return { output: JSON.stringify({ task_id: taskId, status: "wait_limit_reached", max_wait: maxWait }), isError: false };
       }
       if (userInterrupt.signal.aborted && !signal?.aborted && err instanceof DOMException && err.name === "AbortError") {
@@ -323,8 +350,16 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
       finishedTask = task;
       taskWake.abort();
     });
+    const chunkMs = geminiChunkMs(context, durationMs);
     try {
-      await abortableSleep(durationMs, AbortSignal.any([userInterrupt.signal, taskWake.signal, ...(signal ? [signal] : [])]));
+      await abortableSleep(chunkMs ?? durationMs, AbortSignal.any([userInterrupt.signal, taskWake.signal, ...(signal ? [signal] : [])]));
+      if (chunkMs !== null) {
+        const slept = Date.now() - startedAt;
+        return {
+          output: `Slept ${formatElapsedDuration(slept)} of the requested ${formatElapsedDuration(durationMs)}. ${GEMINI_CHUNK_NOTE} Call chrono sleep again with duration ${formatElapsedDuration(Math.max(1000, durationMs - slept))} to sleep the rest.`,
+          isError: false,
+        };
+      }
       return { output: `Sleep finished at ${new Date().toISOString()}.`, isError: false };
     } catch (err) {
       if (signal?.aborted) throw err;
@@ -465,9 +500,11 @@ const WAKE_PROPERTIES = {
   },
 };
 
-// {{longWaits}}: Claude Code runs long sleeps and waits inside the call; other providers suspend the turn.
+// {{longWaits}}: Claude Code runs long sleeps and waits inside the call; Gemini in calls of under three minutes; other providers suspend the turn.
 const TEXT = toolTextSource("chrono", provider => ({
-  longWaits: runsOwnAgentLoop(provider)
+  longWaits: provider === "gemini"
+    ? "Sleeps and waits run inside the call, which returns after at most 2m50s (the Antigravity CLI's limit for a tool call); a longer one says so, and you call it again to keep waiting."
+    : runsOwnAgentLoop(provider)
     ? "Sleeps and waits of any practical length run inside the call."
     : "Sleeps and waits with limits longer than five minutes suspend the provider turn and resume it by replay on completion, timeout, or a user message.",
 }));

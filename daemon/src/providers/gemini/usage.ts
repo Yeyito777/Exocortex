@@ -211,13 +211,15 @@ export function clearUsage(): void {
 
 /**
  * Whether a turn on `model` can run now by the last quota read, for the
- * orchestrator's usage-limit wait; Argon has a weekly limit of its own.
+ * orchestrator's usage-limit wait. Argon follows a group of its own when the
+ * screen lists one, else the shared Gemini group.
  */
 export function geminiUsageAvailability(model: string | null, now = Date.now()): { ready: boolean; resetAt: number | null } {
   const report = lastReport;
   if (!report) return { ready: true, resetAt: null };
-  const argon = model?.includes("argon") ?? false;
-  const group = report.groups.find(g => argon ? /ARGON/i.test(g.name) : /^GEMINI MODELS$/i.test(g.name));
+  // Argon had a weekly limit of its own on Pro; since CLI 1.5.16 it shares the Gemini group.
+  const argon = model?.includes("argon") ? report.groups.find(g => /ARGON/i.test(g.name)) : undefined;
+  const group = argon ?? sharedGroup(report);
   if (!group) return { ready: true, resetAt: null };
   const spent = [group.fiveHour, group.weekly].filter((w): w is UsageWindow => !!w && w.utilization >= 100 && (w.resetsAt === null || w.resetsAt > now));
   if (spent.length === 0) return { ready: true, resetAt: null };

@@ -57,7 +57,7 @@ function logStep(sessionId: string, body: Json): number {
   if (!root) return index;
   const path = join(root, "brain", sessionId, ".system_generated", "logs", "transcript.jsonl");
   mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `${JSON.stringify({ step_index: index, source: "MODEL", status: "DONE", ...body })}\n`);
+  appendFileSync(path, `${JSON.stringify({ step_index: index, source: "MODEL", status: "DONE", created_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"), ...body })}\n`);
   return index;
 }
 

@@ -18,7 +18,7 @@ import { resolveToolCallPresentationFromCache } from "../../helper-tool-manifest
 import { takeHostToolAttachments } from "../anthropic/host-tool-attachments";
 import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
 import { setSessionHead } from "./prompt";
-import { AgyTranscriptReader, agyTranscriptPath, backgroundTaskOf, modelCallTokens, type AgyBackgroundTask } from "./transcript";
+import { AgyTranscriptReader, agyTranscriptPath, backgroundTaskOf, modelCallTokens, stepStartedAt, type AgyBackgroundTask } from "./transcript";
 import type { GeminiAssistantProviderData } from "./types";
 
 type Json = Record<string, unknown>;
@@ -59,10 +59,20 @@ export interface GeminiStreamState {
   transcript: AgyTranscriptReader | null;
   /** Background tasks the log announced that no call has claimed yet. */
   announcedTasks: AgyBackgroundTask[];
+  /** Model calls the log showed since the last rate was reported. */
+  loggedCalls: LoggedModelCall[];
   /** A cancel is in flight: a call it stops reports failure, which is an interruption. */
   cancelling: boolean;
   /** A call that ran as a background task finished. */
   onBackgroundEnd?: (taskId: string) => void;
+}
+
+/** A model call from the CLI's log: its tokens and, to the second, when it started and ended. */
+interface LoggedModelCall {
+  tokens: number;
+  startedAt: number | null;
+  /** The next step's start, once logged. */
+  endedAt: number | null;
 }
 
 interface RunningCommand {
@@ -112,6 +122,7 @@ export function createGeminiStreamState(callbacks: StreamCallbacks, cwd: string,
     commands: new Map(),
     transcript: options.transcript === undefined ? new AgyTranscriptReader(agyTranscriptPath(sessionId)) : options.transcript,
     announcedTasks: [],
+    loggedCalls: [],
     cancelling: false,
   };
 }
@@ -119,18 +130,47 @@ export function createGeminiStreamState(callbacks: StreamCallbacks, cwd: string,
 /** Take in what the CLI logged since the last read: model calls' tokens and announced background tasks. */
 function readTranscript(state: GeminiStreamState): void {
   for (const step of state.transcript?.read() ?? []) {
-    state.outputTokens += modelCallTokens(step);
+    const startedAt = stepStartedAt(step);
+    const previous = state.loggedCalls.at(-1);
+    if (previous && previous.endedAt === null && startedAt !== null) previous.endedAt = startedAt;
+    const tokens = modelCallTokens(step);
+    state.outputTokens += tokens;
+    if (tokens > 0) state.loggedCalls.push({ tokens, startedAt, endedAt: null });
     const task = backgroundTaskOf(step);
     if (task) state.announcedTasks.push(task);
   }
 }
 
-/** Report a finished model call's rate: its tokens over the time from its start to its end. */
-function reportCallRate(state: GeminiStreamState, tokens: number, endedAt: number | null): void {
+/** The CLI logs step times to the second. */
+const LOG_RESOLUTION_MS = 1_000;
+/** A model call timed only by the log's seconds counts toward the rate when it took at least this long. */
+const MIN_LOGGED_CALL_MS = 3_000;
+
+/**
+ * Report the rates of the model calls that ended since the last report. The
+ * span Exocortex timed (from the end of the previous round's tools to `endedAt`,
+ * the first tool call or the result) is one model call's only when the log
+ * shows just that call in it. Otherwise (a backgrounded command holds a round
+ * open while the agent makes more calls, or the round's call was already
+ * counted) each call logged with an end is timed by the log's own seconds.
+ */
+function reportCallRates(state: GeminiStreamState, tokens: number, endedAt: number | null): void {
+  const calls = state.loggedCalls;
+  state.loggedCalls = [];
   const startedAt = state.callStartedAt;
-  if (tokens <= 0 || startedAt === null || endedAt === null) return;
-  const seconds = (endedAt - startedAt) / 1000;
-  if (seconds > 0) state.callbacks.onGenerationRate?.(tokens / seconds);
+  const only = calls.length === 1 ? calls[0] : null;
+  const timedSpan = startedAt !== null && endedAt !== null && endedAt > startedAt
+    && (calls.length === 0 || (only !== null && (only.startedAt === null
+      || (only.startedAt >= startedAt - LOG_RESOLUTION_MS && only.startedAt <= endedAt))));
+  if (timedSpan) {
+    if (tokens > 0) state.callbacks.onGenerationRate?.(tokens / ((endedAt - startedAt) / 1000));
+    return;
+  }
+  for (const call of calls) {
+    if (call.startedAt === null || call.endedAt === null) continue;
+    const ms = call.endedAt - call.startedAt;
+    if (ms >= MIN_LOGGED_CALL_MS) state.callbacks.onGenerationRate?.(call.tokens / (ms / 1000));
+  }
 }
 
 function asRecord(value: unknown): Json | null {
@@ -175,7 +215,7 @@ function commitRound(state: GeminiStreamState, resumable = true): void {
   const onProviderRound = state.callbacks.onProviderRound;
   if (!onProviderRound || state.messages.length === 0) return;
   readTranscript(state);
-  reportCallRate(state, state.outputTokens - state.committedOutputTokens, state.roundToolAt);
+  reportCallRates(state, state.outputTokens - state.committedOutputTokens, state.roundToolAt);
   // The next model call starts once this round's tools are done.
   state.callStartedAt = state.now();
   state.roundToolAt = null;
@@ -419,7 +459,7 @@ export function finishGeminiTurn(state: GeminiStreamState, result: Json): Stream
     state.cachedInputTokens = num(usage.cachedReadTokens);
   }
   // The last model call: from the end of the last round's tools to the result.
-  reportCallRate(state, Math.max(usage ? state.outputTokens : tokensBefore, tokensBefore) - state.committedOutputTokens, state.now());
+  reportCallRates(state, Math.max(usage ? state.outputTokens : tokensBefore, tokensBefore) - state.committedOutputTokens, state.now());
   state.stopReason = str(result.stopReason) ?? "end_turn";
   state.done = true;
   if (state.messages.at(-1)?.role !== "assistant") state.messages.push({ role: "assistant", content: [] });

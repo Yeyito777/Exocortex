@@ -38,7 +38,6 @@ import type { StreamResult } from "../types";
 
 const IDLE_CLOSE_MS = 30 * 60_000;
 const MAX_IDLE = 6;
-const CANCEL_GRACE_MS = 15_000;
 const MCP_SERVER_NAME = "exocortex";
 
 type Json = Record<string, unknown>;
@@ -86,6 +85,8 @@ export interface GeminiPromptWatch {
   tickMs: number;
   silentMs: number;
   recoverMs: number;
+  /** How long a cancelled prompt may take to answer before its process is stopped. */
+  cancelGraceMs: number;
   isOnline(): boolean;
 }
 
@@ -93,6 +94,7 @@ const DEFAULT_WATCH: GeminiPromptWatch = {
   tickMs: 15_000,
   silentMs: 90_000,
   recoverMs: 60_000,
+  cancelGraceMs: 15_000,
   isOnline: () => connectivity.isOnline(),
 };
 
@@ -263,11 +265,14 @@ export class GeminiProcess {
     this.binding = execute ? { execute, signal } : null;
     let cancelled = false;
     let networkLost: GeminiUnreachableError | null = null;
+    let cancelTimer: ReturnType<typeof setTimeout> | null = null;
     const cancel = () => {
       state.cancelling = true;
       this.acp.notify("session/cancel", { sessionId: this.sessionId });
-      // The CLI answers a cancel with the prompt's result; if it does not, stop it.
-      setTimeout(() => { if (this.busy) this.close("it did not stop after a cancel"); }, CANCEL_GRACE_MS).unref?.();
+      // The CLI answers a cancel with the prompt's result; if it does not, stop it. Only this
+      // prompt: a steer sends the next one into the same process right after the cancel.
+      cancelTimer ??= setTimeout(() => { if (this.state === state) this.close("it did not stop after a cancel"); }, watch.cancelGraceMs);
+      cancelTimer.unref?.();
     };
     const onAbort = () => {
       cancelled = true;
@@ -343,6 +348,7 @@ export class GeminiProcess {
       throw translateAcpError(error);
     } finally {
       clearInterval(ticker);
+      if (cancelTimer) clearTimeout(cancelTimer);
       signal?.removeEventListener("abort", onAbort);
       // The session holds everything up to its newest committed point, finished turn or not.
       if (state.lastMark) this.head = state.lastMark;
@@ -406,6 +412,8 @@ export class GeminiProcess {
     const id = this.openCallFor(name, args);
     const [result] = await binding.execute([{ id, name, input: args }], binding.signal ? AbortSignal.any([binding.signal, signal]) : signal);
     if (!result) return { text: `${name} returned no result.`, isError: true };
+    // The CLI gave up on the call (its three-minute limit): its own message is what the agent saw.
+    if (signal.aborted) return { text: result.output, isError: true };
     if (result.attachments?.length) rememberHostToolAttachments(id, result.attachments);
     this.state?.hostResults.set(id, { output: result.output, isError: result.isError });
     return { text: result.output, isError: result.isError };

@@ -66,6 +66,7 @@ const MODEL_ID_ALIASES: Record<ProviderId, Record<string, ModelId>> = {
   },
   gemini: {
     neon: "gemini-4-neon",
+    carbon: "gemini-4-carbon",
     hydrogen: "gemini-4-hydrogen",
     argon: "gemini-4-argon",
     flash: "gemini-3.8-flash",

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dataDir } from "@exocortex/shared/paths";
-import { chrono, chronoCallPresentation } from "./chrono";
+import { chrono, chronoCallPresentation, setGeminiInlineChronoMaxForTest } from "./chrono";
 import { chronoInternalsForTest, installMigratedSchedule } from "../chrono-service";
 import { resetConversationActivityForTest, setBackgroundTaskActive, setSubagentActive, recordBackgroundTaskCompletion } from "../conversation-activity";
 import { create, remove } from "../conversations";
@@ -26,6 +26,7 @@ function useFakeSystemd(props: Record<string, string>, platform: NodeJS.Platform
 }
 
 afterEach(() => {
+  setGeminiInlineChronoMaxForTest(null);
   systemdUnitWaitInternalsForTest.reset();
   chronoInternalsForTest.reset();
   resetConversationActivityForTest();
@@ -234,6 +235,29 @@ describe("Chrono tool", () => {
     expect(JSON.parse(result.output)).toMatchObject({
       task_id: "bash:slow", status: "wait_interrupted", reason: "user_background", max_wait: "40m",
     });
+  });
+
+  test("a long wait in a Gemini turn returns before the CLI's three-minute tool limit, saying to wait again", async () => {
+    setGeminiInlineChronoMaxForTest(30);
+    const conversationId = makeConversation("long-wait-gemini");
+    setBackgroundTaskActive(conversationId, "bash:slow", true, { title: "slow", startedAt: 1 });
+    const [result] = await buildExecutor({ conversationId, provider: "gemini" })(
+      [{ id: "call_wait", name: "chrono", input: { action: "wait", task_id: "bash:slow", max_wait: "25m" } }],
+    );
+    expect(result.isError).toBe(false);
+    const output = JSON.parse(result.output);
+    expect(output).toMatchObject({ task_id: "bash:slow", status: "still_running", max_wait: "25m" });
+    expect(output.next).toContain("Call chrono wait again");
+  });
+
+  test("a long sleep in a Gemini turn sleeps one call's worth and says how much is left", async () => {
+    setGeminiInlineChronoMaxForTest(30);
+    const conversationId = makeConversation("long-sleep-gemini");
+    const [result] = await buildExecutor({ conversationId, provider: "gemini" })(
+      [{ id: "call_sleep", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output).toMatch(/^Slept .* of the requested 10m\. .* Call chrono sleep again with duration 9m/);
   });
 
   test("a wait above the same five-minute cutoff suspends immediately", async () => {
@@ -527,6 +551,7 @@ describe("Chrono tool", () => {
   test("its description says how long sleeps and waits run on each provider", () => {
     expect(chrono.describe!("anthropic")).toContain("Sleeps and waits of any practical length run inside the call");
     expect(chrono.describe!("anthropic")).not.toContain("five minutes");
+    expect(chrono.describe!("gemini")).toContain("returns after at most 2m50s");
     for (const provider of ["openai", "deepseek", undefined] as const) {
       expect(chrono.describe!(provider)).toContain("longer than five minutes suspend the provider turn and resume it by replay");
     }

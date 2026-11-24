@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { ToolExecutor } from "../../agent";
 import type { ApiMessage } from "../../messages";
 import type { ProviderRound, StreamCallbacks } from "../types";
-import { attachBridgeTarget, closeBridgeForTest, HOOK_SCRIPT } from "./bridge";
+import { attachBridgeTarget, closeBridgeForTest, HOOK_SCRIPT, MCP_BRIDGE_SCRIPT } from "./bridge";
 import { ensureExocortexHook, HOOK_COMMAND, HOOK_ENTRY_NAME } from "./hooks";
 import { agyModelLevel, FALLBACK_GEMINI_MODELS, listAgyModels, parseAgyModels } from "./models";
 import { invalidateGeminiSignIn, requireGeminiAuth } from "./auth";
@@ -19,7 +19,8 @@ import { antigravityKindStyle, getAntigravityToolDisplayInfo, summarizeAntigravi
 import { summarizeTool } from "../../tools/registry";
 import { buildGeminiPromptContent, planGeminiPrompt, resetSessionHeadsForTest, setSessionHead } from "./prompt";
 import { closeAllGeminiProcesses, configureGeminiSessions, fingerprintOf, geminiToolDenial, openGeminiProcess, setGeminiPromptWatchForTest, translateAcpError } from "./session";
-import { createGeminiStreamState, diffText } from "./stream";
+import { createGeminiStreamState, diffText, pushGeminiUpdate } from "./stream";
+import type { AgyTranscriptReader } from "./transcript";
 import { geminiQuotaLimits, geminiUsageAvailability, parseUsageScreen, setGeminiQuotaForTest } from "./usage";
 
 const FAKE_AGY = join(import.meta.dir, "test-fixtures", "fake-agy.ts");
@@ -72,14 +73,15 @@ describe("models", () => {
       "gemini-4-argon-low\tGemini 4 Argon (Low)",
       "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
       "gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)",
+      "gemini-4-carbon-medium\tGemini 4 Carbon (Medium)",
       "gemini-pro-orchestrator-neon\tOrchestrator (Neon)",
       "claude-opus-5-5-high\tClaude Opus 5.5 (High)",
     ].join("\n"));
-    expect(models.map(m => m.id)).toEqual(["gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon", "gemini-3.8-flash"]);
+    expect(models.map(m => m.id)).toEqual(["gemini-4-neon", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-argon", "gemini-3.8-flash"]);
     expect(models[0].label).toBe("Gemini 4 Neon");
     expect(models[0].supportedEfforts.map(e => e.effort)).toEqual(["high", "xhigh"]);
     expect(models[0].defaultEffort).toBe("high");
-    expect(models[2].defaultEffort).toBe("low");
+    expect(models[3].defaultEffort).toBe("low");
   });
 
   test("efforts map onto the levels a family has", () => {
@@ -141,6 +143,13 @@ describe("usage", () => {
       argon: { fiveHour: null, weekly: { utilization: 0, resetsAt: null } },
     });
     expect(geminiQuotaLimits({ account: null, groups: [{ name: "CLAUDE AND GPT MODELS", weekly: null, fiveHour: null }] })).toEqual({ shared: null, argon: null });
+  });
+
+  test("Argon follows the shared Gemini limits when the screen lists none of its own (CLI 1.5.16)", () => {
+    const now = 1_000_000;
+    setGeminiQuotaForTest(parseUsageScreen(screen.split("\r\nGEMINI 4 ARGON")[0], now));
+    expect(geminiUsageAvailability("gemini-4-argon", now)).toEqual({ ready: false, resetAt: now + 125 * 60_000 });
+    expect(geminiUsageAvailability("gemini-4-carbon", now).ready).toBe(false);
   });
 });
 
@@ -218,6 +227,39 @@ describe("tool gate", () => {
       expect(await runHook(env, "run_command")).toBe("");
       expect(await runHook({ EXOCORTEX_GEMINI_HOOK: "" }, "schedule")).toBe("");
     } finally {
+      bridge.release();
+    }
+  });
+});
+
+describe("MCP bridge", () => {
+  test("a call the CLI cancels (its three-minute tool limit) stops in the daemon and gets no reply", async () => {
+    let started = false;
+    let aborted = false;
+    const bridge = attachBridgeTarget({
+      tools: () => ({ tools: [], instructions: "" }),
+      call: (_name, _args, signal) => new Promise(resolve => {
+        started = true;
+        signal.addEventListener("abort", () => { aborted = true; resolve({ text: "stopped", isError: true }); }, { once: true });
+      }),
+      preToolUse: () => null,
+    });
+    const proc = Bun.spawn([process.execPath, MCP_BRIDGE_SCRIPT], {
+      env: { ...process.env, EXOCORTEX_GEMINI_SOCKET: bridge.socketPath, EXOCORTEX_GEMINI_TOKEN: bridge.token },
+      stdin: "pipe", stdout: "pipe", stderr: "inherit",
+    });
+    const send = (message: Record<string, unknown>) => { proc.stdin.write(`${JSON.stringify(message)}\n`); proc.stdin.flush(); };
+    try {
+      send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "chrono", arguments: { action: "wait" } } });
+      await until(() => started);
+      send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7, reason: "context deadline exceeded" } });
+      await until(() => aborted);
+      send({ jsonrpc: "2.0", id: 8, method: "ping" });
+      const reader = proc.stdout.getReader();
+      const { value } = await reader.read();
+      expect(JSON.parse(new TextDecoder().decode(value).split("\n")[0])).toEqual({ jsonrpc: "2.0", id: 8, result: {} });
+    } finally {
+      proc.kill();
       bridge.release();
     }
   });
@@ -302,6 +344,26 @@ describe("Antigravity process", () => {
     expect(proc.closed).toBe(false);
     const next = await proc.prompt(createGeminiStreamState(callbacks(), cwd(), proc.sessionId!), [{ type: "text", text: "again" }], undefined, undefined);
     expect(next.text).toContain("again");
+  });
+
+  test("a prompt sent right after a cancel (a steer) is not stopped by that cancel's grace timer", async () => {
+    setGeminiPromptWatchForTest({ cancelGraceMs: 40 });
+    const proc = openGeminiProcess("c4b", key(), "sys", []);
+    await proc.initialize();
+    await proc.openSession(null);
+    const first = new AbortController();
+    const running = proc.prompt(createGeminiStreamState(callbacks(), cwd(), proc.sessionId!), [{ type: "text", text: "slow" }], undefined, first.signal);
+    await until(() => proc.busy);
+    first.abort();
+    await expect(running).rejects.toThrow();
+    const second = new AbortController();
+    const steered = proc.prompt(createGeminiStreamState(callbacks(), cwd(), proc.sessionId!), [{ type: "text", text: "slow" }], undefined, second.signal);
+    await until(() => proc.busy);
+    await Bun.sleep(120);
+    expect(proc.closed).toBe(false);
+    second.abort();
+    await expect(steered).rejects.toThrow();
+    expect(proc.closed).toBe(false);
   });
 
   test("a session the CLI no longer has starts a new one", async () => {
@@ -436,7 +498,8 @@ describe("long-running commands", () => {
     // The round carries its model calls' tokens from the CLI's log; the rest is the last call's.
     expect(rounds[0].outputTokens).toBe(46);
     expect(result.outputTokens).toBe(51);
-    expect(rates.length).toBeGreaterThanOrEqual(2);
+    // The round held two model calls too short to time from the log's seconds; the last call has its rate.
+    expect(rates).toHaveLength(1);
     expect(rates.every(rate => rate > 0)).toBe(true);
     expect(rounds[0].blocks.map(block => block.type)).toEqual(["tool_call", "text", "tool_result"]);
     expect(result.text).toBe("built it");
@@ -517,5 +580,33 @@ describe("tool display", () => {
     expect(outputs).toEqual(["@@ line 2 @@\n- beta\n+ gamma", "Wrote 2 lines", "found"]);
     const unknown = calls.find(call => call.name === "frobnicate_files")!;
     expect((unknown.presentation as { toolStyle?: { label: string } }).toolStyle?.label).toBe("frobnicate_files");
+  });
+});
+
+describe("generation rate", () => {
+  test("model calls made while a backgrounded command holds a round open are timed by the CLI's log, not by that round", () => {
+    const base = Date.parse("2026-11-24T20:59:00Z");
+    let now = base;
+    const logged: Record<string, unknown>[] = [];
+    const transcript = { read: () => logged.splice(0) } as unknown as AgyTranscriptReader;
+    const rates: number[] = [];
+    const state = createGeminiStreamState({ ...callbacks(), onGenerationRate: rate => { rates.push(rate); } }, dir, "s-rate", { transcript, now: () => now });
+    const at = (ms: number) => new Date(base + ms).toISOString().replace(/\.\d+Z$/, "Z");
+    // One model call (5 s, 650 tokens) makes two tool calls, which the CLI runs one after the other.
+    logged.push({ type: "PLANNER_RESPONSE", output_tokens: 650, created_at: at(0) });
+    now = base + 5_000;
+    pushGeminiUpdate(state, { sessionUpdate: "tool_call", toolCallId: "t1", name: "manage_task", rawInput: {}, status: "in_progress" });
+    logged.push({ type: "GENERIC", created_at: at(5_000) });
+    now = base + 6_000;
+    pushGeminiUpdate(state, { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed", rawOutput: { output: "ok" } });
+    // The second goes to the background; the round stays open 84 s while the agent makes another 15 s call.
+    now = base + 6_008;
+    pushGeminiUpdate(state, { sessionUpdate: "tool_call", toolCallId: "t2", name: "run_command", rawInput: { CommandLine: "make", WaitMsBeforeAsync: 1000 }, status: "in_progress" });
+    logged.push({ type: "GENERIC", created_at: at(6_000) });
+    logged.push({ type: "PLANNER_RESPONSE", output_tokens: 3000, created_at: at(20_000) });
+    logged.push({ type: "GENERIC", created_at: at(35_000) });
+    now = base + 90_000;
+    pushGeminiUpdate(state, { sessionUpdate: "tool_call_update", toolCallId: "t2", status: "completed", rawOutput: { output: "built" } });
+    expect(rates).toEqual([130, 200]);
   });
 });

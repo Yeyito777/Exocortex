@@ -157,6 +157,7 @@ export const MAX_CONTEXT: Record<string, number> = {
   "deepseek-v4-flash": 1_000_000,
   "ox-alpha": 1_000_000,
   "gemini-4-neon": 1_048_576,
+  "gemini-4-carbon": 1_048_576,
   "gemini-4-hydrogen": 1_048_576,
   "gemini-4-argon": 1_048_576,
   "gemini-3.8-flash": 1_048_576,

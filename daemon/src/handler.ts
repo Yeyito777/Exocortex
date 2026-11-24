@@ -642,7 +642,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
     if (lowered.startsWith("gpt-") || lowered.startsWith("o1") || lowered.startsWith("o3") || lowered.startsWith("o4")) return "openai";
     if (lowered === "ox" || lowered === "ox-alpha" || lowered === "ox-alpha-free") return "opencode";
-    if (lowered.startsWith("gemini-") || ["neon", "hydrogen", "argon"].includes(lowered)) return "gemini";
+    if (lowered.startsWith("gemini-") || ["neon", "carbon", "hydrogen", "argon"].includes(lowered)) return "gemini";
     return undefined;
   };
   const modelDefaultForProvider = (provider: import("./messages").ProviderId): string => {

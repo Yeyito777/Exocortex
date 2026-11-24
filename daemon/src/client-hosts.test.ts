@@ -190,9 +190,9 @@ describe("client hosts", () => {
 });
 
 describe("client_bash tool", () => {
-  async function run(input: Record<string, unknown>, result: Record<string, unknown>) {
+  async function run(input: Record<string, unknown>, result: Record<string, unknown>, provider?: "gemini") {
     const { client, sent } = attach();
-    const running = clientBash.execute({ host: "toronto", ...input }, { conversationId: "conv-1" });
+    const running = clientBash.execute({ host: "toronto", ...input }, { conversationId: "conv-1", ...(provider ? { provider } : {}) });
     await Bun.sleep(0);
     settleClientExec(client, {
       type: "client_exec_result", execId: lastRequest(sent).execId,
@@ -213,6 +213,15 @@ describe("client_bash tool", () => {
     expect(request).toMatchObject({ cwd: "/tmp", timeoutMs: 2_000 });
     expect(result.isError).toBe(true);
     expect(result.output).toBe("Error: command timed out after 2s on toronto (yeyito@toronto)\npartial");
+  });
+
+  test("in a Gemini turn a command ends before the CLI's three-minute tool limit, and says so", async () => {
+    const { result, request } = await run({ command: "make", timeout_seconds: 600 }, {
+      output: "partial", timedOut: true, signal: "SIGTERM", exitCode: null,
+    }, "gemini");
+    expect(request).toMatchObject({ timeoutMs: 170_000 });
+    expect(result.output).toStartWith("Error: command timed out after 170s on toronto (yeyito@toronto) (a tool call in a Gemini turn ends within three minutes;");
+    expect((await run({ command: "ls", timeout_seconds: 5 }, { output: "" }, "gemini")).request).toMatchObject({ timeoutMs: 5_000 });
   });
 
   test("reports client-side errors", async () => {

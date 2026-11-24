@@ -18,6 +18,7 @@ import { describeClientHost, runOnClientHost } from "../client-hosts";
 import * as convStore from "../conversations";
 import { announcedHost, CLIENT_HOST_NOTICE_KIND } from "../messages";
 import { toolTextSource } from "./tool-text";
+import { GEMINI_TOOL_CALL_MAX_MS } from "./chrono-limits";
 
 const DEFAULT_TIMEOUT_SECONDS = 600;
 
@@ -49,12 +50,15 @@ export const clientBash: Tool = {
   async execute(input, context, signal): Promise<ToolResult> {
     const command = getString(input, "command");
     if (!command) return { output: "Error: missing 'command' parameter", isError: true };
-    const timeoutSeconds = getNumber(input, "timeout_seconds") ?? DEFAULT_TIMEOUT_SECONDS;
-    if (!(timeoutSeconds > 0)) return { output: "Error: 'timeout_seconds' must be greater than 0 seconds", isError: true };
+    const requestedSeconds = getNumber(input, "timeout_seconds") ?? DEFAULT_TIMEOUT_SECONDS;
+    if (!(requestedSeconds > 0)) return { output: "Error: 'timeout_seconds' must be greater than 0 seconds", isError: true };
 
     const cwd = getString(input, "cwd");
     const host = getString(input, "host")?.trim() || undefined;
     const conv = context?.conversationId ? convStore.get(context.conversationId) : undefined;
+    // The Antigravity CLI cancels a tool call after three minutes: end it first, with its output.
+    const geminiLimitSeconds = (context?.provider ?? conv?.provider) === "gemini" ? GEMINI_TOOL_CALL_MAX_MS / 1000 : null;
+    const timeoutSeconds = geminiLimitSeconds !== null ? Math.min(requestedSeconds, geminiLimitSeconds) : requestedSeconds;
     const outcome = await runOnClientHost({
       host,
       announced: conv ? announcedHost(conv.messages, CLIENT_HOST_NOTICE_KIND) : null,
@@ -68,7 +72,10 @@ export const clientBash: Tool = {
     const where = `${outcome.clientId} (${describeClientHost(outcome.host)})`;
     let output = formatCommandOutput(outcome.output, outcome.byteTruncated);
     if (outcome.timedOut) {
-      output = `Error: command timed out after ${timeoutSeconds}s on ${where}${output ? `\n${output}` : ""}`;
+      const geminiNote = geminiLimitSeconds !== null && timeoutSeconds < requestedSeconds
+        ? ` (a tool call in a Gemini turn ends within three minutes; run longer work in the background there, e.g. with nohup and a log file, and check on it)`
+        : "";
+      output = `Error: command timed out after ${timeoutSeconds}s on ${where}${geminiNote}${output ? `\n${output}` : ""}`;
     } else if (outcome.error) {
       output = `Error on ${where}: ${outcome.error}${output ? `\n${output}` : ""}`;
     }

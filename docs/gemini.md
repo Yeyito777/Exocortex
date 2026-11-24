@@ -48,25 +48,27 @@ one model per family and the levels as its efforts):
 | Model ID | Alias | Efforts |
 | --- | --- | --- |
 | `gemini-4-neon` (default) | `neon` | low, medium, high (default), xhigh |
+| `gemini-4-carbon` | `carbon` | low, medium, high |
 | `gemini-4-hydrogen` | `hydrogen` | low, medium, high, xhigh |
 | `gemini-4-argon` | `argon` | low, medium, high |
 | `gemini-3.8-flash` | `flash` | low, medium, high (titles and summaries, at low) |
 
-Gemini 4 Carbon is not offered to a Pro account (it is Ultra-only in the
-Gemini app; the CLI does not list it). The plan's Claude and GPT-OSS models in
+Gemini 4 Carbon was Ultra-only until the CLI's 1.5.16 update (Nov 24 2026),
+which offers it on Pro too. The plan's Claude and GPT-OSS models in
 the CLI are left out: Claude runs on the Claude subscription. Context is
 1,048,576 tokens.
 
 ## Limits
 
 The CLI's `/usage` screen is the only place the plan's quota shows. Gemini
-models (Neon, Hydrogen, Flash) share a **five-hour** and a **weekly** limit
-(the five-hour one refills until the weekly one is spent); Argon has a smaller
-weekly limit of its own on Pro. Exocortex reads that screen by opening the CLI
+models (Neon, Carbon, Argon, Hydrogen, Flash) share a **five-hour** and a
+**weekly** limit (the five-hour one refills until the weekly one is spent);
+before CLI 1.5.16 Argon had a smaller weekly limit of its own on Pro, which
+Exocortex still follows if the screen lists it again. Exocortex reads that screen by opening the CLI
 in a pseudo-terminal at most every three minutes, after turns, and shows the
 shared Gemini windows as the usage bars. The Accounts screen (`/accounts`)
 shows the same read: the signed-in Google account and plan with the shared
-limits, and a row for Argon's own. A turn the plan refuses waits for the
+limits, and a row for Argon's own when there is one. A turn the plan refuses waits for the
 reset, like a Claude turn at a limit.
 
 ## How a turn runs
@@ -81,8 +83,12 @@ reset, like a Claude turn at a limit.
   `remote_bash`, `attach`) reach it as an MCP server, `mcp-bridge.ts`, which
   the CLI starts per session and which forwards each call to the daemon over a
   unix socket (`bridge.ts`), where the turn's tool executor runs it. History
-  records them under their own names. Chrono sleeps and waits run inside the
-  call (at most five minutes), as for Claude Code.
+  records them under their own names. The CLI gives an MCP tool call three
+  minutes and then cancels it (progress notifications do not extend that;
+  the bridge passes the cancel on, so the daemon stops the call too), so a
+  host tool call in a Gemini turn ends within 2m50s: a longer chrono sleep or
+  wait returns then, says how much is left, and the agent calls it again; a
+  `client_bash` command times out then with its output so far.
 - **A PreToolUse hook gates the CLI's own tools.** The CLI's hooks are global,
   so the daemon keeps one entry, `exocortex`, in `~/.gemini/config/hooks.json`
   (the owner's own hooks are kept). It does nothing outside Exocortex (empty
@@ -113,7 +119,10 @@ reset, like a Claude turn at a limit.
   tokens and the live tokens/s come from the CLI's own session log
   (`brain/<session>/.system_generated/logs/transcript.jsonl` in
   `~/.gemini/antigravity-cli/`), which records every model call's output
-  tokens and every command it moves to the background (`transcript.ts`).
+  tokens and every command it moves to the background (`transcript.ts`). A
+  round's span times its model call only when the log shows that one call in
+  it; calls made while a backgrounded command holds a round open are timed by
+  the log's own step times (to the second, so only calls of 3 s or more).
 - **Network trouble.** A turn waits for the network and runs again, as other
   providers' turns do ([network-outages.md](network-outages.md)), when `agy
   models` gives up on Google's model list, a session comes up without it

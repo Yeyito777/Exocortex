@@ -58,6 +58,8 @@ interface Request {
   arguments?: Record<string, unknown>;
   toolCall?: BridgePreToolCall;
   cwd?: string;
+  /** For cancel: the call request to stop. */
+  target?: number;
 }
 
 interface ConnectionState {
@@ -105,6 +107,10 @@ async function handle(socket: Socket<ConnectionState>, request: Request): Promis
         }
         return;
       }
+      case "cancel":
+        // The CLI gave up on the call (its three-minute limit): stop it here too.
+        if (typeof request.target === "number") socket.data.calls.get(request.target)?.abort();
+        return;
       case "pretool": {
         const decision = request.toolCall ? target.preToolUse(request.toolCall, request.cwd ?? "") : null;
         reply(socket, { id, result: decision ?? {} });
