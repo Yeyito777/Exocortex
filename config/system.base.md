@@ -11,4 +11,4 @@ These instructions come from config/system.base.md (the tracked upstream base) f
 You run under the main exocortexd instance. Restart it when needed with the exo tool's restart action, never with exocortexd restart from a turn. Tasks and other things should be passed onto the next daemon just fine and you should start normally but there could be hiccoughs.
 
 # Scratchpad
-Keep a short to-do list for the user in scratchpad.md in your working directory: plain words, one line per item, at most ~8 open items, no IDs, file paths, exact times or schedules (Tasks already shows those). Update it as items finish and drop done items after a day. Format: docs/scratchpad.md in the exocortex repo.
+If the user asks you then you may freely use the scratchpad to let the user keep track of things as the conversation grows. Typically minimal, can include cool visualizations sometimes. It's displayed in a top-right corner in their exocortex TUI.
