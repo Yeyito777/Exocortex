@@ -55,10 +55,38 @@ export function agyEnv(extra: Record<string, string> = {}): Record<string, strin
   return { ...env, ...extra };
 }
 
+/**
+ * The Antigravity CLI could not reach Google: `agy models` timed out, a
+ * session came up without its model list, or a prompt went silent after the
+ * network dropped. Its message carries the wording classifyNetworkFailure
+ * (../errors.ts) treats as a network failure, so the turn waits for the
+ * network and runs again instead of failing.
+ */
+export class GeminiUnreachableError extends Error {
+  override readonly name = "GeminiUnreachableError";
+  constructor(detail: string) {
+    super(`The Antigravity CLI could not reach Google: ${detail}`);
+  }
+}
+
+/** The CLI's own wording for failing to reach Google. */
+const AGY_UNREACHABLE_RE = /timed out waiting for available models|failed to fetch (?:available )?models|context deadline exceeded|dial tcp|no such host|connection refused|network is unreachable|i\/o timeout/i;
+
+export function isAgyUnreachableText(text: string): boolean {
+  return AGY_UNREACHABLE_RE.test(text);
+}
+
+/** Where the CLI keeps its sessions (`brain/<session>/`); overridable for tests. */
+export function agyStateDir(): string {
+  return process.env.EXOCORTEX_AGY_STATE_DIR?.trim() || join(homedir(), ".gemini", "antigravity-cli");
+}
+
 export interface AgyCommandResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /** Killed at the timeout. */
+  timedOut?: boolean;
 }
 
 export async function runAgy(args: string[], options: { timeoutMs?: number; signal?: AbortSignal; cwd?: string } = {}): Promise<AgyCommandResult> {
@@ -70,12 +98,13 @@ export async function runAgy(args: string[], options: { timeoutMs?: number; sign
     stdout: "pipe",
     stderr: "pipe",
   });
+  let timedOut = false;
   const kill = () => { try { proc.kill(); } catch { /* gone */ } };
-  const timer = setTimeout(kill, options.timeoutMs ?? 30_000);
+  const timer = setTimeout(() => { timedOut = true; kill(); }, options.timeoutMs ?? 30_000);
   options.signal?.addEventListener("abort", kill, { once: true });
   try {
     const [stdout, stderr, exitCode] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    return { exitCode, stdout, stderr };
+    return { exitCode, stdout, stderr, ...(timedOut ? { timedOut } : {}) };
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", kill);

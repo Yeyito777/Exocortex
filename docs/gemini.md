@@ -96,6 +96,34 @@ reset, like a Claude turn at a limit.
 - **Tool rounds commit as they finish**, as Claude Code's do: a round goes to
   the store when its last open call completes, so an interrupted turn keeps
   what ran.
+- **The CLI's tools look like Exocortex's.** `run_command` renders as bash,
+  `read_file` as Read, `edit_file` as Edit, `write_file` as Write,
+  `manage_task` as Task, `search_web` as Search, and so on
+  (`daemon/src/tools/antigravity.ts`); a tool with no entry takes the color
+  of its ACP `kind`. An edit's result is its changed lines and a new file its
+  size, not the path again.
+- **Long commands.** `run_command` waits `WaitMsBeforeAsync` and then moves a
+  command to the background; the call stays open, the agent can write
+  meanwhile, and its result arrives when the command ends. While any call is
+  open the turn sends a heartbeat, so an hour-long build is never a stale
+  stream, and a backgrounded command is listed in the conversation's Tasks
+  with the CLI's task id and log file. A call a cancel stops reads as
+  interrupted.
+- **Tokens.** ACP reports usage only when a prompt ends, so each round's
+  tokens and the live tokens/s come from the CLI's own session log
+  (`brain/<session>/.system_generated/logs/transcript.jsonl` in
+  `~/.gemini/antigravity-cli/`), which records every model call's output
+  tokens and every command it moves to the background (`transcript.ts`).
+- **Network trouble.** A turn waits for the network and runs again, as other
+  providers' turns do ([network-outages.md](network-outages.md)), when `agy
+  models` gives up on Google's model list, a session comes up without it
+  (what the CLI does offline), or a model call goes silent: with no tool
+  open and nothing from the CLI for 90 s, the daemon checks the network; if
+  it was down, the call is stopped 60 s after the network returns (the CLI
+  does not retry a request stuck on a dead connection) and the turn
+  continues in the same session. A timed-out sign-in check is never cached
+  as signed out, and a turn that is getting replies counts as a fresh check,
+  so a retry does not run `agy models` again.
 - **Sessions.** One `agy acp` process per conversation stays 30 minutes after
   its turn (at most 6 idle), so follow-ups continue in it. The CLI saves each
   session and can load it again but not fork it, so each committed round and

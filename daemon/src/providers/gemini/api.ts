@@ -26,7 +26,7 @@ import { getModelInfo } from "../registry";
 import { hostToolDefs } from "../anthropic/host-tools";
 import { AcpProcess } from "./acp";
 import { noteGeminiSignInWorking, requireGeminiAuth } from "./auth";
-import { agyBinary, agyEnv } from "./cli";
+import { agyBinary, agyEnv, GeminiUnreachableError } from "./cli";
 import { agyModelLevel } from "./models";
 import { buildGeminiHelperPrompt, buildGeminiPromptContent, planGeminiPrompt } from "./prompt";
 import { fingerprintOf, getGeminiProcess, openGeminiProcess, translateAcpError } from "./session";
@@ -129,6 +129,9 @@ async function runHelper(messages: ApiMessage[], model: ModelId, callbacks: Stre
     ].filter(Boolean).join("\n\n");
     const created = await acp.request<Record<string, unknown>>("session/new", { cwd, mcpServers: [], _meta: { antigravity: { systemPrompt: { append: system } } } });
     sessionId = String(created.sessionId);
+    const offered = Array.isArray(created.configOptions) ? created.configOptions as Record<string, unknown>[] : [];
+    // Offline, the CLI starts sessions without a model choice (session.ts configure).
+    if (!offered.some(option => option.id === "model")) throw new GeminiUnreachableError("the session came up without its model list");
     await acp.request("session/set_config_option", { sessionId, configId: "model", value: model });
     await acp.request("session/set_config_option", { sessionId, configId: "thought_level", value: agyModelLevel(getModelInfo("gemini", model), options.effort ?? "low") }).catch(() => {});
     const result = await acp.request<Record<string, unknown>>("session/prompt", { sessionId, prompt: [{ type: "text", text: buildGeminiHelperPrompt(messages) }] });

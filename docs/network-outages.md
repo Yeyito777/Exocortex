@@ -30,6 +30,10 @@ bar shows `⚠ offline` while the daemon finds the network unreachable.
   are not run again. Claude Code forks its session at the latest committed
   round and is told to continue ([anthropic.md](anthropic.md)); a network
   failure never falls back to replaying the whole history into a new session.
+- **Gemini.** The Antigravity CLI's offline failures (`agy models` timing
+  out, sessions without a model list) count as network failures, and a
+  model call it leaves hanging on a dead connection is stopped once the
+  network is back and sent again ([gemini.md](gemini.md)).
 - **Claude Code retrying by itself.** Claude Code retries failed API calls in
   its own loop (for many minutes). Its `api_retry` reports without an HTTP
   status make the daemon probe; if the network is down the turn shows the same

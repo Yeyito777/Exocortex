@@ -7,10 +7,18 @@ import type { ApiMessage } from "../../messages";
 import type { ProviderRound, StreamCallbacks } from "../types";
 import { attachBridgeTarget, closeBridgeForTest, HOOK_SCRIPT } from "./bridge";
 import { ensureExocortexHook, HOOK_COMMAND, HOOK_ENTRY_NAME } from "./hooks";
-import { agyModelLevel, FALLBACK_GEMINI_MODELS, parseAgyModels } from "./models";
+import { agyModelLevel, FALLBACK_GEMINI_MODELS, listAgyModels, parseAgyModels } from "./models";
+import { invalidateGeminiSignIn, requireGeminiAuth } from "./auth";
+import { classifyNetworkFailure } from "../errors";
+import { getConversationTasks } from "../../conversation-activity";
+import { ConnectivityMonitor } from "../../connectivity";
+import { FakeClock, flush, scriptedProbe } from "../../connectivity-test-helpers";
+import { runWithNetworkWait } from "../../network-wait";
+import { RetryableStreamAbortController } from "../../watchdog-retry";
+import { antigravityKindStyle, getAntigravityToolDisplayInfo, summarizeAntigravityTool } from "../../tools/antigravity";
 import { buildGeminiPromptContent, planGeminiPrompt, resetSessionHeadsForTest, setSessionHead } from "./prompt";
-import { closeAllGeminiProcesses, fingerprintOf, geminiToolDenial, openGeminiProcess, translateAcpError } from "./session";
-import { createGeminiStreamState } from "./stream";
+import { closeAllGeminiProcesses, configureGeminiSessions, fingerprintOf, geminiToolDenial, openGeminiProcess, setGeminiPromptWatchForTest, translateAcpError } from "./session";
+import { createGeminiStreamState, diffText } from "./stream";
 import { geminiQuotaLimits, geminiUsageAvailability, parseUsageScreen, setGeminiQuotaForTest } from "./usage";
 
 const FAKE_AGY = join(import.meta.dir, "test-fixtures", "fake-agy.ts");
@@ -22,12 +30,25 @@ beforeAll(() => {
   writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_AGY}" "$@"\n`);
   chmodSync(wrapper, 0o755);
   process.env.EXOCORTEX_AGY_BIN = wrapper;
+  process.env.EXOCORTEX_AGY_STATE_DIR = join(dir, "agy-state");
 });
 
 afterEach(() => {
   closeAllGeminiProcesses("test over");
   setGeminiQuotaForTest(null);
+  setGeminiPromptWatchForTest(null);
+  configureGeminiSessions(null);
+  delete process.env.FAKE_AGY_MODELS_TIMEOUT;
+  delete process.env.FAKE_AGY_OFFLINE;
 });
+
+async function until(check: () => boolean, ms = 3000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for the condition");
+    await Bun.sleep(5);
+  }
+}
 
 afterAll(() => {
   closeBridgeForTest();
@@ -291,5 +312,201 @@ describe("Antigravity process", () => {
     await other.initialize();
     expect(await other.openSession("kept-session")).toBe(true);
     expect(other.sessionId).toBe("kept-session");
+  });
+});
+
+describe("network trouble", () => {
+  const cwd = () => dir;
+  const key = () => ({ cwd: cwd(), fingerprint: fingerprintOf("sys", []) });
+
+  test("agy models timing out offline is a network failure, and does not cache a sign-out", async () => {
+    process.env.FAKE_AGY_MODELS_TIMEOUT = "1";
+    invalidateGeminiSignIn();
+    const error = await listAgyModels().then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(classifyNetworkFailure(error)).toBe("network");
+    const auth = await requireGeminiAuth().then(() => null, (e: unknown) => e);
+    expect((auth as Error).name).not.toBe("AuthError");
+    expect(classifyNetworkFailure(auth)).toBe("network");
+    // Back online: the next check runs again and passes (no cached "not signed in").
+    delete process.env.FAKE_AGY_MODELS_TIMEOUT;
+    await requireGeminiAuth();
+  });
+
+  test("a turn whose sign-in check timed out offline waits for the network and runs again", async () => {
+    process.env.FAKE_AGY_MODELS_TIMEOUT = "1";
+    invalidateGeminiSignIn();
+    const clock = new FakeClock();
+    const probe = scriptedProbe(false);
+    const monitor = new ConnectivityMonitor({ probe, clock });
+    const controller = new RetryableStreamAbortController();
+    const waits: string[] = [];
+    let calls = 0;
+    let done = false;
+    const run = runWithNetworkWait(controller, monitor, async () => { calls += 1; await requireGeminiAuth(); return "ran"; }, {
+      onWaitStart: () => { waits.push("start"); },
+      onWaitEnd: () => { waits.push("end"); },
+    }).then(value => { done = true; return value; });
+    await until(() => !monitor.isOnline());
+    expect(calls).toBe(1);
+    expect(done).toBe(false);
+    delete process.env.FAKE_AGY_MODELS_TIMEOUT;
+    probe.reachable = true;
+    await clock.advance(3_000);
+    expect(await run).toBe("ran");
+    expect(calls).toBe(2);
+    expect(waits).toEqual(["start", "end"]);
+    await flush();
+  });
+
+  test("a session that came up without its model list (offline) fails as a network failure", async () => {
+    process.env.FAKE_AGY_OFFLINE = "1";
+    const proc = openGeminiProcess("n1", key(), "sys", []);
+    await proc.initialize();
+    await proc.openSession(null);
+    const error = await proc.configure("gemini-4-neon", FALLBACK_GEMINI_MODELS[0], "high").then(() => null, (e: unknown) => e);
+    expect(classifyNetworkFailure(error)).toBe("network");
+    expect((error as Error).message).toContain("could not reach Google");
+  });
+
+  test("a model call silent after the network dropped is stopped once it is back, as a network failure, keeping the process", async () => {
+    let online = true;
+    setGeminiPromptWatchForTest({ tickMs: 10, silentMs: 40, recoverMs: 40, isOnline: () => online });
+    const proc = openGeminiProcess("n2", key(), "sys", []);
+    await proc.initialize();
+    await proc.openSession(null);
+    let troubles = 0;
+    let activity = 0;
+    const state = createGeminiStreamState({ ...callbacks(), onNetworkTrouble: () => { troubles += 1; }, onActivity: () => { activity += 1; } }, cwd(), proc.sessionId!);
+    let settled: unknown = null;
+    const running = proc.prompt(state, [{ type: "text", text: "slow" }], undefined, undefined).then(() => "resolved", (e: unknown) => { settled = e; return "rejected"; });
+    // Silent with the network up: the daemon is asked to check it.
+    await until(() => troubles > 0);
+    online = false;
+    const before = activity;
+    await Bun.sleep(80);
+    expect(settled).toBeNull();
+    // Waiting on the network is not a stale stream.
+    expect(activity).toBeGreaterThan(before);
+    online = true;
+    expect(await running).toBe("rejected");
+    expect(classifyNetworkFailure(settled)).toBe("network");
+    expect(proc.closed).toBe(false);
+    const next = await proc.prompt(createGeminiStreamState(callbacks(), cwd(), proc.sessionId!), [{ type: "text", text: "again" }], undefined, undefined);
+    expect(next.text).toContain("again");
+  });
+});
+
+describe("long-running commands", () => {
+  const cwd = () => dir;
+  const key = () => ({ cwd: cwd(), fingerprint: fingerprintOf("sys", []) });
+
+  test("a command the CLI moves to the background keeps the turn alive, is listed as a task, and finishes with its output", async () => {
+    setGeminiPromptWatchForTest({ tickMs: 10, silentMs: 150, recoverMs: 150, isOnline: () => true });
+    const changed: string[] = [];
+    configureGeminiSessions({ tasksChanged: convId => { changed.push(convId); } });
+    const proc = openGeminiProcess("bg1", key(), "sys", []);
+    await proc.initialize();
+    await proc.openSession(null);
+    const rounds: ProviderRound[] = [];
+    let activity = 0;
+    let troubles = 0;
+    const rates: number[] = [];
+    const state = createGeminiStreamState({
+      ...callbacks(rounds),
+      onActivity: () => { activity += 1; },
+      onNetworkTrouble: () => { troubles += 1; },
+      onGenerationRate: rate => { rates.push(rate); },
+    }, cwd(), proc.sessionId!);
+    const running = proc.prompt(state, [{ type: "text", text: "background 400" }], undefined, undefined);
+    await until(() => getConversationTasks("bg1").length === 1);
+    const [task] = getConversationTasks("bg1");
+    expect(task.kind).toBe("background");
+    expect(task.id).toBe(`${proc.sessionId}/task-2`);
+    expect(task.title).toBe("make long-job");
+    const result = await running;
+    // Heartbeats while the command ran; no network check for a command's silence.
+    expect(activity).toBeGreaterThan(5);
+    expect(troubles).toBe(0);
+    expect(getConversationTasks("bg1")).toEqual([]);
+    expect(changed.filter(id => id === "bg1").length).toBeGreaterThanOrEqual(2);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].messages[1].content).toEqual([{ type: "tool_result", tool_use_id: "call_bg_1", content: "Command exited with code 0.\n\nCommand output:\nbuilt\n", is_error: false }]);
+    // The round carries its model calls' tokens from the CLI's log; the rest is the last call's.
+    expect(rounds[0].outputTokens).toBe(46);
+    expect(result.outputTokens).toBe(51);
+    expect(rates.length).toBeGreaterThanOrEqual(2);
+    expect(rates.every(rate => rate > 0)).toBe(true);
+    expect(rounds[0].blocks.map(block => block.type)).toEqual(["tool_call", "text", "tool_result"]);
+    expect(result.text).toBe("built it");
+  });
+
+  test("a chrono wait on a task the agent was just told about finds it listed", async () => {
+    setGeminiPromptWatchForTest({ tickMs: 60_000, silentMs: 60_000, recoverMs: 60_000, isOnline: () => true });
+    const chronoDef = { name: "chrono", description: "Clock", input_schema: { type: "object", properties: {} } };
+    const proc = openGeminiProcess("bg3", key(), "sys", [chronoDef]);
+    await proc.initialize();
+    await proc.openSession(null);
+    const listed: string[][] = [];
+    const execute: ToolExecutor = async calls => calls.map(call => {
+      listed.push(getConversationTasks("bg3").map(task => task.id));
+      return { toolCallId: call.id, toolName: call.name, output: `waited on ${String(call.input.task_id)}`, isError: false };
+    });
+    const state = createGeminiStreamState(callbacks(), cwd(), proc.sessionId!);
+    await proc.prompt(state, [{ type: "text", text: "background 50 then-wait" }], execute, undefined);
+    expect(listed).toEqual([[`${proc.sessionId}/task-2`]]);
+    expect(getConversationTasks("bg3")).toEqual([]);
+  });
+
+  test("a command stopped by a cancel reads as interrupted, not failed", async () => {
+    const proc = openGeminiProcess("bg2", key(), "sys", []);
+    await proc.initialize();
+    await proc.openSession(null);
+    const rounds: ProviderRound[] = [];
+    const controller = new AbortController();
+    const state = createGeminiStreamState(callbacks(rounds), cwd(), proc.sessionId!);
+    const running = proc.prompt(state, [{ type: "text", text: "stop-tool" }], undefined, controller.signal);
+    await until(() => state.openToolUses.size === 1);
+    controller.abort();
+    await expect(running).rejects.toThrow();
+    const results = rounds.flatMap(round => round.messages).flatMap(message => Array.isArray(message.content) ? message.content : []).filter(block => block.type === "tool_result");
+    expect(results).toEqual([{ type: "tool_result", tool_use_id: "call_stop_1", content: "Interrupted before this tool call finished.", is_error: true }]);
+  });
+});
+
+describe("tool display", () => {
+  test("the CLI's tools look like their Exocortex counterparts", () => {
+    const display = new Map(getAntigravityToolDisplayInfo().map(info => [info.name, info]));
+    const editColor = display.get("replace_file_content")!.color;
+    expect(display.get("edit_file")).toEqual({ name: "edit_file", label: "Edit", color: editColor });
+    expect(display.get("write_file")?.label).toBe("Write");
+    expect(display.get("read_file")?.label).toBe("Read");
+    expect(display.get("manage_task")?.label).toBe("Task");
+    expect(summarizeAntigravityTool("edit_file", { Path: "/w/a.txt", Target: "beta", Replacement: "gamma" })).toEqual({ label: "Edit", detail: "/w/a.txt" });
+    expect(summarizeAntigravityTool("write_file", { Path: "/w/b.txt", Content: "x", Overwrite: true }).detail).toStartWith("/w/b.txt");
+    expect(summarizeAntigravityTool("read_file", { Path: "/w/a.txt", StartLine: 10, EndLine: 19 })).toEqual({ label: "Read", detail: "/w/a.txt --offset 10 --limit 10" });
+    expect(summarizeAntigravityTool("manage_task", { Action: "kill", TaskId: "d3e7/task-77" })).toEqual({ label: "Task", detail: "kill task-77" });
+    expect(summarizeAntigravityTool("search_web", { query: "flint ntt" })).toEqual({ label: "Search", detail: "flint ntt" });
+    expect(antigravityKindStyle("frobnicate_files", "search")?.color).toBe(display.get("grep_search")!.color);
+    expect(antigravityKindStyle("edit_file", "edit")).toBeNull();
+  });
+
+  test("an edit's result is its changed lines, a new file its size: never the path again", () => {
+    expect(diffText("alpha\nbeta\n", "alpha\ngamma\n")).toBe("@@ line 2 @@\n- beta\n+ gamma");
+    expect(diffText(undefined, "one\ntwo\n")).toBe("Wrote 2 lines");
+  });
+
+  test("edit rounds record diffs, and an unknown tool takes its kind's look", async () => {
+    const proc = openGeminiProcess("ed1", { cwd: dir, fingerprint: fingerprintOf("sys", []) }, "sys", []);
+    await proc.initialize();
+    await proc.openSession(null);
+    const rounds: ProviderRound[] = [];
+    const calls: { name: string; presentation?: unknown }[] = [];
+    const state = createGeminiStreamState({ ...callbacks(rounds), onToolCall: block => { calls.push({ name: block.toolName, presentation: block.presentation }); } }, dir, proc.sessionId!);
+    await proc.prompt(state, [{ type: "text", text: "edits" }], undefined, undefined);
+    const outputs = rounds.flatMap(round => round.blocks).flatMap(block => block.type === "tool_result" ? [block.output] : []);
+    expect(outputs).toEqual(["@@ line 2 @@\n- beta\n+ gamma", "Wrote 2 lines", "found"]);
+    const unknown = calls.find(call => call.name === "frobnicate_files")!;
+    expect((unknown.presentation as { toolStyle?: { label: string } }).toolStyle?.label).toBe("frobnicate_files");
   });
 });

@@ -95,11 +95,13 @@ async function cliSignedIn(maxAgeMs = STATUS_TTL_MS, signal?: AbortSignal): Prom
     try {
       await listAgyModels(signal);
       checkedOk = true;
-    } catch (error) {
-      if (error instanceof AgyNotSignedInError) checkedOk = false;
-      else throw error;
-    } finally {
       checkedAt = Date.now();
+    } catch (error) {
+      // Only a definite answer is cached: a timeout (offline) says nothing about the sign-in.
+      if (!(error instanceof AgyNotSignedInError)) throw error;
+      checkedOk = false;
+      checkedAt = Date.now();
+    } finally {
       inflight = null;
     }
     return checkedOk;

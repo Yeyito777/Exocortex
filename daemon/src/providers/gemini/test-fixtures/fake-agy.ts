@@ -7,8 +7,21 @@
  *   real mcp-bridge.ts), announced as `mcp_exocortex_<tool>` like the CLI.
  * - "shell": a run_command tool round, then a reply.
  * - "slow": waits for session/cancel and ends `cancelled`.
+ * - "background <ms>": a run_command the CLI moves to the background (logged
+ *   in the session's transcript, as the CLI does), finishing after <ms>.
+ * - "stop-tool": a run_command that is still running when the turn is
+ *   cancelled, which the CLI then reports failed with no output.
+ * - "edits": edit_file and write_file rounds with ACP diffs, and a tool
+ *   Exocortex has no entry for.
  * - anything else: thinks, then echoes it back.
+ *
+ * FAKE_AGY_MODELS_TIMEOUT: `agy models` gives up as it does offline.
+ * FAKE_AGY_OFFLINE: sessions come up without a model list, as offline.
+ * EXOCORTEX_AGY_STATE_DIR: where session transcripts are written.
  */
+
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export {};
 
@@ -17,6 +30,10 @@ if (process.argv.includes("--version")) {
   process.exit(0);
 }
 if (process.argv.includes("models")) {
+  if (process.env.FAKE_AGY_MODELS_TIMEOUT) {
+    console.log("Fetching available models...\nError: timed out waiting for available models");
+    process.exit(1);
+  }
   if (process.env.FAKE_AGY_SIGNED_OUT) {
     console.log("Fetching available models...\nError: Please sign in to view available models. Launch the CLI without arguments to sign in.");
     process.exit(1);
@@ -31,6 +48,20 @@ const update = (sessionId: string, body: Json) => out({ jsonrpc: "2.0", method: 
 
 const sessions = new Map<string, { mcp: Json[]; model: string; level: string }>();
 let cancelled: (() => void) | null = null;
+let step = 0;
+
+/** Log a step in the session's transcript, as the CLI does. */
+function logStep(sessionId: string, body: Json): number {
+  const index = ++step;
+  const root = process.env.EXOCORTEX_AGY_STATE_DIR;
+  if (!root) return index;
+  const path = join(root, "brain", sessionId, ".system_generated", "logs", "transcript.jsonl");
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify({ step_index: index, source: "MODEL", status: "DONE", ...body })}\n`);
+  return index;
+}
+
+const waitForCancel = () => new Promise<void>(resolve => { cancelled = resolve; });
 
 function configOptions(model: string, level: string): Json[] {
   return [
@@ -95,8 +126,55 @@ async function prompt(id: unknown, params: Json): Promise<void> {
     done();
     return;
   }
+  if (text.startsWith("background ")) {
+    const ms = Number(text.split(" ")[1]);
+    const input = { CommandLine: "make long-job", WaitMsBeforeAsync: 30, toolSummary: "Build" };
+    // The model call that makes the tool call takes a moment.
+    await Bun.sleep(20);
+    logStep(sessionId, { type: "PLANNER_RESPONSE", output_tokens: 40, tool_calls: [{ name: "run_command", args: input }] });
+    update(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_bg_1", name: "run_command", rawInput: input, status: "in_progress", kind: "execute" });
+    await Bun.sleep(40);
+    const root = process.env.EXOCORTEX_AGY_STATE_DIR ?? "/nowhere";
+    const index = step + 1;
+    const log = join(root, "brain", sessionId, ".system_generated", "tasks", `task-${index}.log`);
+    logStep(sessionId, { type: "GENERIC", content: `Created At: now\nTool is running as a background task with task id: ${sessionId}/task-${index}\nTask Description: make long-job\nTask logs are available at: file://${log}\nLog output:\n` });
+    logStep(sessionId, { type: "PLANNER_RESPONSE", output_tokens: 6 });
+    update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "launched; waiting" } });
+    if (text.includes("then-wait")) {
+      // The agent waits on the task with Exocortex's chrono as soon as it hears of it.
+      const args = { action: "wait", task_id: `${sessionId}/task-${index}`, max_wait: "1m" };
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_wait_1", name: "mcp_exocortex_chrono", rawInput: args, status: "in_progress" });
+      const said = await callMcp(session.mcp[0], "chrono", args);
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "call_wait_1", name: "mcp_exocortex_chrono", status: "completed", content: [{ type: "content", content: { type: "text", text: said } }] });
+    }
+    await Bun.sleep(ms);
+    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "call_bg_1", name: "run_command", status: "completed", kind: "execute", rawOutput: { output: "Command exited with code 0.\n\nCommand output:\nbuilt\n", exit_code: 0 }, content: [{ type: "content", content: { type: "text", text: "Command exited with code 0.\n\nCommand output:\nbuilt\n" } }] });
+    await Bun.sleep(20);
+    logStep(sessionId, { type: "PLANNER_RESPONSE", output_tokens: 5 });
+    update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "built it" } });
+    out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 51, cachedReadTokens: 0, thoughtTokens: 0 } } });
+    return;
+  }
+  if (text.includes("stop-tool")) {
+    update(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_stop_1", name: "run_command", rawInput: { CommandLine: "sleep 600", WaitMsBeforeAsync: 5000 }, status: "in_progress", kind: "execute" });
+    await waitForCancel();
+    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "call_stop_1", name: "run_command", status: "failed", kind: "execute" });
+    done("cancelled");
+    return;
+  }
+  if (text.includes("edits")) {
+    update(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_ed_1", name: "edit_file", rawInput: { Path: "/w/a.txt", Target: "beta", Replacement: "gamma" }, status: "in_progress", kind: "edit" });
+    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "call_ed_1", name: "edit_file", status: "completed", kind: "edit", rawOutput: {}, content: [{ type: "diff", path: "/w/a.txt", oldText: "alpha\nbeta\n", newText: "alpha\ngamma\n" }] });
+    update(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_wr_1", name: "write_file", rawInput: { Path: "/w/b.txt", Content: "one\ntwo\n" }, status: "in_progress", kind: "edit" });
+    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "call_wr_1", name: "write_file", status: "completed", kind: "edit", rawOutput: {}, content: [{ type: "diff", path: "/w/b.txt", newText: "one\ntwo\n" }] });
+    update(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_un_1", name: "frobnicate_files", rawInput: { Query: "needle" }, status: "in_progress", kind: "search" });
+    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "call_un_1", name: "frobnicate_files", status: "completed", kind: "search", rawOutput: { output: "found" } });
+    update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "edited" } });
+    done();
+    return;
+  }
   if (text.includes("slow")) {
-    await new Promise<void>(resolve => { cancelled = resolve; });
+    await waitForCancel();
     done("cancelled");
     return;
   }
@@ -115,8 +193,12 @@ async function handle(message: Json): Promise<void> {
       out({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } } });
       return;
     case "session/new": {
-      const sessionId = `fake-session-${++counter}`;
+      const sessionId = `fake-session-${process.pid}-${++counter}`;
       sessions.set(sessionId, { mcp: (params.mcpServers as Json[]) ?? [], model: "gemini-4-neon", level: "high" });
+      if (process.env.FAKE_AGY_OFFLINE) {
+        out({ jsonrpc: "2.0", id, result: { sessionId, configOptions: [{ id: "mode", type: "select", currentValue: "default", options: [{ value: "default" }] }] } });
+        return;
+      }
       out({ jsonrpc: "2.0", id, result: { sessionId, configOptions: configOptions("gemini-4-neon", "high"), _meta: { antigravity: { tier: { name: "Google AI Pro" } } } } });
       return;
     }
@@ -132,6 +214,10 @@ async function handle(message: Json): Promise<void> {
     }
     case "session/set_config_option": {
       const session = sessions.get(String(params.sessionId))!;
+      if (process.env.FAKE_AGY_OFFLINE && params.configId === "model") {
+        out({ jsonrpc: "2.0", id, error: { code: -32602, message: `Unknown model ID: ${String(params.value)}` } });
+        return;
+      }
       if (params.configId === "model") session.model = String(params.value);
       if (params.configId === "thought_level") session.level = String(params.value);
       out({ jsonrpc: "2.0", id, result: { configOptions: configOptions(session.model, session.level) } });

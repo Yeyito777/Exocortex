@@ -100,6 +100,7 @@ import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions, getClaudeCodeSession } from "./providers/anthropic/session";
+import { configureGeminiSessions } from "./providers/gemini/session";
 import { abandonAppCreate, announceAppConversation, appConversationInfo, appConversationOwner, appTurnSentByAnother, noteAppTurnSender, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, endAppSession, ensureAppFolder, finishAppRun, holdAppCommandUntilReady, listAppConversations, markAppApiReady, parseAppCreate, registerAppCreate, registerTurnAwait, repeatedTurnResult, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
 import { getAppRecord, isAppConversation, isEphemeralConversation, isHiddenConversation, touchAppConversation } from "./app-registry";
 import { appToolBroker } from "./app-tools";
@@ -372,6 +373,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     },
     (convId) => { broadcastConversationHistoryUpdated(server, convId); },
   );
+  // Gemini turns list the commands the Antigravity CLI moved to the background.
+  configureGeminiSessions({ tasksChanged: (convId) => broadcastConversationUpdated(server, convId) });
   // Claude Code processes outliving a turn report their background tasks, and
   // queue a turn when Claude Code starts work by itself (a task finished).
   configureClaudeCodeSessions({

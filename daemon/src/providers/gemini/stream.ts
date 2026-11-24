@@ -13,11 +13,12 @@
 import { randomUUID } from "node:crypto";
 import type { ApiContentBlock, ApiMessage } from "../../messages";
 import { chronoCallPresentation } from "../../tools/chrono";
-import { exocortexNameForAntigravity, summarizeAntigravityTool } from "../../tools/antigravity";
+import { antigravityKindStyle, exocortexNameForAntigravity, summarizeAntigravityTool } from "../../tools/antigravity";
 import { resolveToolCallPresentationFromCache } from "../../helper-tool-manifest";
 import { takeHostToolAttachments } from "../anthropic/host-tool-attachments";
 import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
 import { setSessionHead } from "./prompt";
+import { AgyTranscriptReader, agyTranscriptPath, backgroundTaskOf, modelCallTokens, type AgyBackgroundTask } from "./transcript";
 import type { GeminiAssistantProviderData } from "./types";
 
 type Json = Record<string, unknown>;
@@ -45,9 +46,49 @@ export interface GeminiStreamState {
   lastMark: string | null;
   done: boolean;
   stopReason: string;
+  now: () => number;
+  /** When the latest session/update arrived. */
+  lastUpdateAt: number;
+  /** When the model call now running started: the prompt was sent, or its round's tools finished. */
+  callStartedAt: number | null;
+  /** When the round's first tool call arrived: the end of the model call that made it. */
+  roundToolAt: number | null;
+  /** Open run_command calls: when each started and how long the CLI waits before moving it to the background. */
+  commands: Map<string, RunningCommand>;
+  /** The CLI's own log of the session, for per-call tokens and background tasks (transcript.ts). */
+  transcript: AgyTranscriptReader | null;
+  /** Background tasks the log announced that no call has claimed yet. */
+  announcedTasks: AgyBackgroundTask[];
+  /** A cancel is in flight: a call it stops reports failure, which is an interruption. */
+  cancelling: boolean;
+  /** A call that ran as a background task finished. */
+  onBackgroundEnd?: (taskId: string) => void;
 }
 
-export function createGeminiStreamState(callbacks: StreamCallbacks, cwd: string, sessionId: string): GeminiStreamState {
+interface RunningCommand {
+  startedAt: number;
+  waitMs: number;
+  command: string;
+  /** Set once the call is known to run in the background. */
+  taskId?: string;
+}
+
+export interface BackgroundedCommand {
+  toolCallId: string;
+  taskId: string;
+  command: string;
+  startedAt: number;
+  logPath: string | null;
+}
+
+export interface GeminiStreamStateOptions {
+  /** null: no transcript (helpers, tests). Default: the session's own. */
+  transcript?: AgyTranscriptReader | null;
+  now?: () => number;
+}
+
+export function createGeminiStreamState(callbacks: StreamCallbacks, cwd: string, sessionId: string, options: GeminiStreamStateOptions = {}): GeminiStreamState {
+  const now = options.now ?? Date.now;
   return {
     callbacks,
     cwd,
@@ -64,7 +105,32 @@ export function createGeminiStreamState(callbacks: StreamCallbacks, cwd: string,
     lastMark: null,
     done: false,
     stopReason: "",
+    now,
+    lastUpdateAt: now(),
+    callStartedAt: now(),
+    roundToolAt: null,
+    commands: new Map(),
+    transcript: options.transcript === undefined ? new AgyTranscriptReader(agyTranscriptPath(sessionId)) : options.transcript,
+    announcedTasks: [],
+    cancelling: false,
   };
+}
+
+/** Take in what the CLI logged since the last read: model calls' tokens and announced background tasks. */
+function readTranscript(state: GeminiStreamState): void {
+  for (const step of state.transcript?.read() ?? []) {
+    state.outputTokens += modelCallTokens(step);
+    const task = backgroundTaskOf(step);
+    if (task) state.announcedTasks.push(task);
+  }
+}
+
+/** Report a finished model call's rate: its tokens over the time from its start to its end. */
+function reportCallRate(state: GeminiStreamState, tokens: number, endedAt: number | null): void {
+  const startedAt = state.callStartedAt;
+  if (tokens <= 0 || startedAt === null || endedAt === null) return;
+  const seconds = (endedAt - startedAt) / 1000;
+  if (seconds > 0) state.callbacks.onGenerationRate?.(tokens / seconds);
 }
 
 function asRecord(value: unknown): Json | null {
@@ -108,6 +174,11 @@ function resumePoint(state: GeminiStreamState): GeminiAssistantProviderData {
 function commitRound(state: GeminiStreamState, resumable = true): void {
   const onProviderRound = state.callbacks.onProviderRound;
   if (!onProviderRound || state.messages.length === 0) return;
+  readTranscript(state);
+  reportCallRate(state, state.outputTokens - state.committedOutputTokens, state.roundToolAt);
+  // The next model call starts once this round's tools are done.
+  state.callStartedAt = state.now();
+  state.roundToolAt = null;
   if (resumable) state.messages[state.messages.length - 1].providerData = resumePoint(state);
   const round: ProviderRound = {
     blocks: state.blocks,
@@ -127,6 +198,38 @@ function toolInput(update: Json): Json {
   return input;
 }
 
+const DIFF_LINES = 40;
+
+function lineCount(text: string): number {
+  if (!text) return 0;
+  return text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+}
+
+/**
+ * An edit's ACP diff as its changed lines: what the call line (which already
+ * names the file) does not say. A new file reads as its size.
+ */
+export function diffText(oldText: string | undefined, newText: string): string {
+  if (oldText === undefined || oldText === null) {
+    const lines = lineCount(newText);
+    return `Wrote ${lines} line${lines === 1 ? "" : "s"}`;
+  }
+  const before = oldText.split("\n");
+  const after = newText.split("\n");
+  let start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) start++;
+  let endBefore = before.length;
+  let endAfter = after.length;
+  while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) { endBefore--; endAfter--; }
+  const removed = before.slice(start, endBefore).map(line => `- ${line}`);
+  const added = after.slice(start, endAfter).map(line => `+ ${line}`);
+  const changed = [...removed, ...added];
+  if (changed.length === 0) return "No change";
+  const shown = changed.slice(0, DIFF_LINES);
+  if (changed.length > DIFF_LINES) shown.push(`… ${changed.length - DIFF_LINES} more changed lines`);
+  return [`@@ line ${start + 1} @@`, ...shown].join("\n");
+}
+
 function resultText(update: Json): string {
   const rawOutput = asRecord(update.rawOutput);
   const parts: string[] = [];
@@ -134,7 +237,7 @@ function resultText(update: Json): string {
     const record = asRecord(item);
     const inner = asRecord(record?.content);
     if (record?.type === "content" && inner?.type === "text" && typeof inner.text === "string") parts.push(inner.text);
-    else if (record?.type === "diff") parts.push(`Edited ${str(record.path) ?? "a file"}`);
+    else if (record?.type === "diff" && typeof record.newText === "string") parts.push(diffText(str(record.oldText), record.newText));
   }
   if (parts.length > 0) return parts.join("\n");
   if (typeof rawOutput?.output === "string") return rawOutput.output;
@@ -152,10 +255,17 @@ function handleToolCall(state: GeminiStreamState, update: Json): void {
   const { label, detail } = summarizeAntigravityTool(name, input);
   const summary = detail || label;
   const bashStyles = name === "run_command" ? resolveToolCallPresentationFromCache("bash", { command: input.CommandLine }, state.cwd) : undefined;
-  const presentation = { ...bashStyles, ...(name === "chrono" ? chronoCallPresentation(input) : undefined) };
+  // A tool Exocortex has no entry for takes the look of its ACP kind's counterpart.
+  const toolStyle = antigravityKindStyle(name, str(update.kind));
+  const presentation = { ...bashStyles, ...(name === "chrono" ? chronoCallPresentation(input) : undefined), ...(toolStyle ? { toolStyle } : {}) };
   const named = Object.keys(presentation).length > 0 ? { presentation } : {};
   state.toolNames.set(id, name);
   state.openToolUses.add(id);
+  state.roundToolAt ??= state.now();
+  if (name === "run_command" && update.status !== "completed" && update.status !== "failed") {
+    const waitMs = typeof input.WaitMsBeforeAsync === "number" ? input.WaitMsBeforeAsync : Number(input.WaitMsBeforeAsync);
+    state.commands.set(id, { startedAt: state.now(), waitMs: Number.isFinite(waitMs) && waitMs >= 0 ? waitMs : DEFAULT_ASYNC_WAIT_MS, command: str(input.CommandLine) ?? "" });
+  }
   state.blocks.push({ type: "tool_call", id, name, input, summary: presentation.detail || summary, ...named });
   pushMessageContent(state, "assistant", { type: "tool_use", id, name, input, ...named });
   state.callbacks.onToolCall?.({ type: "tool_call", toolCallId: id, toolName: name, input, summary: presentation.detail || summary, ...named });
@@ -173,11 +283,15 @@ function handleToolUpdate(state: GeminiStreamState, update: Json): void {
     return;
   }
   if (!state.openToolUses.delete(id)) return;
+  endCommand(state, id);
+  // Text the agent wrote while the call ran (a background command) comes before its result.
+  flushPending(state);
   const toolName = state.toolNames.get(id) ?? "";
   const host = state.hostResults.get(id);
   state.hostResults.delete(id);
   const error = asRecord(asRecord(update.rawOutput)?.error);
-  const output = host?.output ?? (resultText(update) || (error ? str(error.message) ?? "The tool failed." : update.status === "failed" ? "The tool failed." : ""));
+  const failed = update.status === "failed" ? state.cancelling ? INTERRUPTED_TOOL_OUTPUT : "The tool failed." : "";
+  const output = host?.output ?? (resultText(update) || (error ? str(error.message) ?? failed : failed));
   const isError = host?.isError ?? update.status === "failed";
   const images = takeHostToolAttachments(id);
   const shown = images?.length ? { images } : {};
@@ -187,9 +301,53 @@ function handleToolUpdate(state: GeminiStreamState, update: Json): void {
   if (state.openToolUses.size === 0) commitRound(state);
 }
 
+/** A run_command call ended: a background task it ran is over. */
+function endCommand(state: GeminiStreamState, id: string): void {
+  const command = state.commands.get(id);
+  if (!command) return;
+  state.commands.delete(id);
+  if (command.taskId) state.onBackgroundEnd?.(command.taskId);
+}
+
+/** How long the CLI runs a command before moving it to the background, when the call does not say. */
+const DEFAULT_ASYNC_WAIT_MS = 5_000;
+/** Past its wait, how long a command may go unannounced in the CLI's log before it is taken as backgrounded anyway. */
+const ANNOUNCE_GRACE_MS = 5_000;
+
+/**
+ * Commands that moved to the background since the last call: still running
+ * past their WaitMsBeforeAsync. Each is matched to the task the CLI's log
+ * announced for it (its id and log file); unannounced after a grace period,
+ * it is named by its call.
+ */
+export function takeBackgroundedCommands(state: GeminiStreamState): BackgroundedCommand[] {
+  const now = state.now();
+  const due = [...state.commands].filter(([id, command]) => !command.taskId && state.openToolUses.has(id) && now - command.startedAt >= command.waitMs);
+  if (due.length === 0) return [];
+  readTranscript(state);
+  const taken: BackgroundedCommand[] = [];
+  for (const [id, command] of due) {
+    const firstLine = command.command.trim().split("\n")[0];
+    let index = state.announcedTasks.findIndex(task => task.description === command.command.trim());
+    if (index < 0 && firstLine) index = state.announcedTasks.findIndex(task => task.description.split("\n")[0] === firstLine);
+    if (index < 0 && due.length === 1 && state.announcedTasks.length === 1) index = 0;
+    const task = index >= 0 ? state.announcedTasks.splice(index, 1)[0] : null;
+    if (!task && now - command.startedAt < command.waitMs + ANNOUNCE_GRACE_MS) continue;
+    command.taskId = task?.taskId ?? `${state.sessionId}/${id}`;
+    taken.push({ toolCallId: id, taskId: command.taskId, command: command.command, startedAt: command.startedAt, logPath: task?.logPath ?? null });
+  }
+  return taken;
+}
+
+/** Background tasks of calls still open (to close them when the prompt ends). */
+export function runningBackgroundTasks(state: GeminiStreamState): string[] {
+  return [...state.commands.values()].flatMap(command => command.taskId ? [command.taskId] : []);
+}
+
 /** Feed one session/update into the turn. */
 export function pushGeminiUpdate(state: GeminiStreamState, update: Json): void {
   const cb = state.callbacks;
+  state.lastUpdateAt = state.now();
   switch (update.sessionUpdate) {
     case "agent_message_chunk": {
       const text = str(asRecord(update.content)?.text);
@@ -231,6 +389,7 @@ const INTERRUPTED_TOOL_OUTPUT = "Interrupted before this tool call finished.";
 export function commitInterruptedRound(state: GeminiStreamState): void {
   flushPending(state);
   for (const id of state.openToolUses) {
+    endCommand(state, id);
     const toolName = state.toolNames.get(id) ?? "";
     state.blocks.push({ type: "tool_result", toolUseId: id, toolName, output: INTERRUPTED_TOOL_OUTPUT, isError: true });
     pushMessageContent(state, "user", { type: "tool_result", tool_use_id: id, content: INTERRUPTED_TOOL_OUTPUT, is_error: true });
@@ -252,11 +411,15 @@ export function finishGeminiTurn(state: GeminiStreamState, result: Json): Stream
   // A call the CLI never closed (it ended the turn around it).
   if (state.openToolUses.size > 0) commitInterruptedRound(state);
   const usage = asRecord(result.usage);
+  readTranscript(state);
+  const tokensBefore = state.outputTokens;
   if (usage) {
     state.outputTokens = num(usage.outputTokens) + num(usage.thoughtTokens);
     state.inputTokens = num(usage.inputTokens) + num(usage.cachedReadTokens);
     state.cachedInputTokens = num(usage.cachedReadTokens);
   }
+  // The last model call: from the end of the last round's tools to the result.
+  reportCallRate(state, Math.max(usage ? state.outputTokens : tokensBefore, tokensBefore) - state.committedOutputTokens, state.now());
   state.stopReason = str(result.stopReason) ?? "end_turn";
   state.done = true;
   if (state.messages.at(-1)?.role !== "assistant") state.messages.push({ role: "assistant", content: [] });

@@ -23,15 +23,17 @@ import { evaluatePathSafety, evaluateToolCallSafety, formatSafetyBlock } from ".
 import { ANTIGRAVITY_REPLACED_TOOLS, antigravityEquivalent } from "../../tools/antigravity";
 import { hostToolDefs, hostToolServerInstructions, type ToolDef } from "../anthropic/host-tools";
 import { rememberHostToolAttachments } from "../anthropic/host-tool-attachments";
+import { connectivity } from "../../connectivity";
+import { setBackgroundTaskActive } from "../../conversation-activity";
 import { AuthError } from "../errors";
 import { AcpError, AcpProcess } from "./acp";
-import { noteGeminiPlan } from "./auth";
+import { noteGeminiPlan, noteGeminiSignInWorking } from "./auth";
 import { attachBridgeTarget, HOOK_SCRIPT, MCP_BRIDGE_SCRIPT, type BridgeCallResult, type BridgeDecision, type BridgePreToolCall } from "./bridge";
-import { agyBinary, agyEnv } from "./cli";
+import { agyBinary, agyEnv, GeminiUnreachableError, isAgyUnreachableText } from "./cli";
 import { ensureExocortexHook } from "./hooks";
 import { agyModelLevel } from "./models";
 import type { AcpContentBlock } from "./prompt";
-import { commitInterruptedRound, finishGeminiTurn, pushGeminiUpdate, type GeminiStreamState } from "./stream";
+import { commitInterruptedRound, finishGeminiTurn, pushGeminiUpdate, runningBackgroundTasks, takeBackgroundedCommands, type GeminiStreamState } from "./stream";
 import type { StreamResult } from "../types";
 
 const IDLE_CLOSE_MS = 30 * 60_000;
@@ -53,6 +55,52 @@ export interface GeminiProcessKey {
 }
 
 const processes = new Map<string, GeminiProcess>();
+
+export interface GeminiSessionHooks {
+  /** A conversation's task list changed (a command moved to the background, or one ended). */
+  tasksChanged(convId: string): void;
+}
+
+let hooks: GeminiSessionHooks | null = null;
+
+export function configureGeminiSessions(next: GeminiSessionHooks | null): void {
+  hooks = next;
+}
+
+/**
+ * How a running prompt is watched. The CLI sends nothing while its own tools
+ * run (a command can run for an hour), and nothing either when a model call
+ * hangs on a dead connection, which it does not retry by itself. So every
+ * tick:
+ * - while a tool call is open, the turn is alive: a heartbeat keeps the
+ *   stale-stream watchdog off, and commands that moved to the background are
+ *   listed as the conversation's tasks;
+ * - while no tool call is open and nothing came for `silentMs`, the daemon
+ *   checks the network (onNetworkTrouble), which shows the turn waiting for it
+ *   when it is down; while it is down the turn is not stale either. Once the
+ *   network has been down and is back, a call still silent `recoverMs` later
+ *   is stopped and the prompt fails as a network failure, so the turn sends
+ *   it again (network-wait.ts) and continues.
+ */
+export interface GeminiPromptWatch {
+  tickMs: number;
+  silentMs: number;
+  recoverMs: number;
+  isOnline(): boolean;
+}
+
+const DEFAULT_WATCH: GeminiPromptWatch = {
+  tickMs: 15_000,
+  silentMs: 90_000,
+  recoverMs: 60_000,
+  isOnline: () => connectivity.isOnline(),
+};
+
+let watch: GeminiPromptWatch = DEFAULT_WATCH;
+
+export function setGeminiPromptWatchForTest(next: Partial<GeminiPromptWatch> | null): void {
+  watch = next ? { ...DEFAULT_WATCH, ...next } : DEFAULT_WATCH;
+}
 
 export function fingerprintOf(system: string, tools: readonly ToolDef[]): string {
   return createHash("sha256").update(system).update("\u0000").update(JSON.stringify(tools.map(t => [t.name, t.description, t.input_schema]))).digest("hex");
@@ -76,6 +124,10 @@ export class GeminiProcess {
   sessionId: string | null = null;
   private model: string | null = null;
   private level: string | null = null;
+  /** The session offered a model choice: the CLI has Google's model list. */
+  private hasModelList = false;
+  /** Tasks listed for the running prompt's background commands. */
+  private readonly backgroundTasks = new Set<string>();
   private binding: TurnBinding | null = null;
   private state: GeminiStreamState | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -176,6 +228,7 @@ export class GeminiProcess {
 
   private readConfig(options: unknown): void {
     for (const option of Array.isArray(options) ? options as Json[] : []) {
+      if (option.id === "model") this.hasModelList = Array.isArray(option.options) ? option.options.length > 0 : true;
       if (option.id === "model" && typeof option.currentValue === "string") this.model = option.currentValue;
       if (option.id === "thought_level" && typeof option.currentValue === "string") this.level = option.currentValue;
     }
@@ -183,6 +236,8 @@ export class GeminiProcess {
 
   async configure(model: string, modelInfo: ModelInfo | null, effort: Parameters<typeof agyModelLevel>[1]): Promise<void> {
     const sessionId = this.sessionId!;
+    // Offline, the CLI starts sessions without a model choice and then refuses every model.
+    if (!this.hasModelList) throw new GeminiUnreachableError("the session came up without its model list");
     if (this.model !== model) {
       const result = await this.acp.request<Json>("session/set_config_option", { sessionId, configId: "model", value: model });
       this.readConfig(result.configOptions);
@@ -207,21 +262,75 @@ export class GeminiProcess {
     this.state = state;
     this.binding = execute ? { execute, signal } : null;
     let cancelled = false;
-    const onAbort = () => {
-      cancelled = true;
+    let networkLost: GeminiUnreachableError | null = null;
+    const cancel = () => {
+      state.cancelling = true;
       this.acp.notify("session/cancel", { sessionId: this.sessionId });
       // The CLI answers a cancel with the prompt's result; if it does not, stop it.
       setTimeout(() => { if (this.busy) this.close("it did not stop after a cancel"); }, CANCEL_GRACE_MS).unref?.();
     };
+    const onAbort = () => {
+      cancelled = true;
+      cancel();
+    };
     signal?.addEventListener("abort", onAbort, { once: true });
+    const tasks = this.backgroundTasks;
+    state.onBackgroundEnd = (taskId) => {
+      if (tasks.delete(taskId) && setBackgroundTaskActive(this.convId, taskId, false)) hooks?.tasksChanged(this.convId);
+    };
+    let sawOffline = false;
+    let onlineAgainAt: number | null = null;
+    let lastTroubleAt = 0;
+    const ticker = setInterval(() => {
+      if (cancelled || networkLost) return;
+      const now = state.now();
+      if (state.openToolUses.size > 0) {
+        // The CLI's own tools are running: alive, however long they take.
+        state.callbacks.onActivity?.();
+        this.listBackgroundTasks(state);
+        sawOffline = false;
+        onlineAgainAt = null;
+        return;
+      }
+      if (now - state.lastUpdateAt < watch.silentMs) {
+        sawOffline = false;
+        onlineAgainAt = null;
+        return;
+      }
+      if (!watch.isOnline()) {
+        // Silent because the network is down, which the turn shows and waits out: not a stale stream.
+        state.callbacks.onActivity?.();
+        sawOffline = true;
+        onlineAgainAt = null;
+        return;
+      }
+      if (sawOffline) {
+        onlineAgainAt ??= now;
+        if (now - onlineAgainAt >= watch.recoverMs && now - state.lastUpdateAt >= watch.recoverMs) {
+          log("warn", `gemini: no reply from the Antigravity CLI for ${this.convId} since the network dropped; stopping the request to send it again`);
+          networkLost = new GeminiUnreachableError("no reply since the network dropped");
+          cancel();
+        }
+        return;
+      }
+      // Silent with the network seemingly up: have the daemon check it.
+      if (now - lastTroubleAt >= watch.silentMs) {
+        lastTroubleAt = now;
+        state.callbacks.onNetworkTrouble?.();
+      }
+    }, watch.tickMs);
+    ticker.unref?.();
     try {
       const result = await this.acp.request<Json>("session/prompt", { sessionId: this.sessionId, prompt: content });
+      if (networkLost && !signal?.aborted) {
+        commitInterruptedRound(state);
+        throw networkLost;
+      }
       if (cancelled || signal?.aborted || result.stopReason === "cancelled") {
         commitInterruptedRound(state);
         throw createAbortError();
       }
       const finished = finishGeminiTurn(state, result);
-      this.head = state.lastMark;
       return finished;
     } catch (error) {
       if (cancelled || signal?.aborted) {
@@ -230,15 +339,39 @@ export class GeminiProcess {
       }
       // Keep what the agent did before the failure.
       commitInterruptedRound(state);
+      if (networkLost) throw networkLost;
       throw translateAcpError(error);
     } finally {
+      clearInterval(ticker);
       signal?.removeEventListener("abort", onAbort);
+      // The session holds everything up to its newest committed point, finished turn or not.
+      if (state.lastMark) this.head = state.lastMark;
+      for (const taskId of [...tasks, ...runningBackgroundTasks(state)]) state.onBackgroundEnd?.(taskId);
+      state.onBackgroundEnd = undefined;
       this.state = null;
       this.binding = null;
       this.busy = false;
       this.lastUsedAt = Date.now();
       if (!this.closed) this.scheduleIdle();
     }
+  }
+
+  /** List commands that moved to the background as the conversation's tasks. */
+  private listBackgroundTasks(state: GeminiStreamState): void {
+    let changed = false;
+    for (const command of takeBackgroundedCommands(state)) {
+      const title = command.command.replace(/\s+/g, " ").trim().slice(0, 200) || "Background command";
+      this.backgroundTasks.add(command.taskId);
+      changed = setBackgroundTaskActive(this.convId, command.taskId, true, {
+        title,
+        startedAt: command.startedAt,
+        toolName: "run_command",
+        backgroundedAt: state.now(),
+        cwd: this.key.cwd,
+        ...(command.logPath ? { outputPath: command.logPath } : {}),
+      }) || changed;
+    }
+    if (changed) hooks?.tasksChanged(this.convId);
   }
 
   private onNotification(method: string, params: Json): void {
@@ -248,6 +381,8 @@ export class GeminiProcess {
     if (!update) return;
     // Outside a prompt (a session/load replaying history): nothing to show.
     if (!this.state) return;
+    // The CLI is answering: its sign-in works, so a retry need not check it again.
+    noteGeminiSignInWorking();
     pushGeminiUpdate(this.state, update);
   }
 
@@ -265,6 +400,8 @@ export class GeminiProcess {
     if (!this.tools.some(tool => tool.name === name)) return { text: `Unknown tool: ${name}`, isError: true };
     const binding = this.binding;
     if (!binding) return { text: "No Exocortex turn is running to execute this tool.", isError: true };
+    // A chrono wait may name a background task the agent was just told about: list it first.
+    if (this.state) this.listBackgroundTasks(this.state);
     // Match the call the agent announced, so history and Tasks UI entries agree.
     const id = this.openCallFor(name, args);
     const [result] = await binding.execute([{ id, name, input: args }], binding.signal ? AbortSignal.any([binding.signal, signal]) : signal);
@@ -355,6 +492,7 @@ export class GeminiQuotaError extends Error {
 
 /** An ACP error as the error Exocortex acts on: sign-in, quota, or the CLI's own message. */
 export function translateAcpError(error: unknown): Error {
+  if (error instanceof GeminiUnreachableError) return error;
   const message = error instanceof Error ? error.message : String(error);
   if (/authentication required|not signed in|please sign in|login required|unauthenticated|invalid_grant/i.test(message)) {
     return new AuthError(`The Antigravity CLI lost its Google sign-in: ${message}. Run \`exocortexd login gemini\` in a terminal.`);
@@ -362,6 +500,7 @@ export function translateAcpError(error: unknown): Error {
   if (/quota|resource.?exhausted|rate.?limit|429|limit (?:reached|exceeded)|out of credits/i.test(message)) {
     return new GeminiQuotaError(`Gemini usage limit reached on the Google AI plan: ${message}`);
   }
+  if (isAgyUnreachableText(message)) return new GeminiUnreachableError(message);
   if (error instanceof AcpError) return new Error(`Antigravity CLI: ${message}`);
   return error instanceof Error ? error : new Error(message);
 }

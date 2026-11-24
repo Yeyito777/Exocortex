@@ -89,6 +89,8 @@ const NETWORK_MESSAGE_PATTERNS = [
   /unable to connect\. is the computer able to access the url/i,
   /\bnetwork is (?:unreachable|down)\b/i,
   /websocket connection to .* failed: failed to connect/i,
+  // Gemini's Antigravity CLI (providers/gemini/cli.ts GeminiUnreachableError).
+  /\bAntigravity CLI could not reach Google\b/,
 ];
 const MAYBE_NETWORK_MESSAGE_PATTERNS = [
   /\b(?:ECONNRESET|ECONNABORTED|EPIPE|ETIMEDOUT|ESOCKETTIMEDOUT|ConnectionClosed|UND_ERR_SOCKET)\b/,

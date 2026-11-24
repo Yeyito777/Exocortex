@@ -51,6 +51,15 @@ function str(input: Input, ...keys: string[]): string | undefined {
   return undefined;
 }
 
+/** read_file's StartLine/EndLine as read's offset/limit. */
+function lineRange(input: Input): Input {
+  const start = typeof input.StartLine === "number" ? input.StartLine : undefined;
+  const end = typeof input.EndLine === "number" ? input.EndLine : undefined;
+  if (start === undefined && end === undefined) return {};
+  const offset = start ?? 1;
+  return { offset, ...(end !== undefined && end >= offset ? { limit: end - offset + 1 } : {}) };
+}
+
 function defined(fields: Input): Input {
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
 }
@@ -64,10 +73,17 @@ export function antigravityEquivalent(name: string, input: Input): { tool: Tool;
       return { tool: bash, input: defined({ command: str(input, "CommandLine", "Command") }) };
     case "read_file":
     case "view_file":
+      return { tool: read, input: defined({ file_path: str(input, ...PATH_KEYS), ...lineRange(input) }) };
     case "list_dir":
+    case "list_directory":
       return { tool: read, input: defined({ file_path: str(input, ...PATH_KEYS) }) };
+    case "write_file":
     case "write_to_file":
       return { tool: write, input: defined({ file_path: str(input, ...PATH_KEYS), content: str(input, "CodeContent", "Content") }) };
+    case "edit_file":
+      return { tool: edit, input: defined({ path: str(input, ...PATH_KEYS), newText: str(input, "Replacement", "ReplacementContent") }) };
+    case "delete_file":
+      return { tool: write, input: defined({ file_path: str(input, ...PATH_KEYS) }) };
     case "replace_file_content":
     case "multi_replace_file_content":
     case "sed_file":
@@ -78,7 +94,8 @@ export function antigravityEquivalent(name: string, input: Input): { tool: Tool;
     case "find_by_name":
       return { tool: glob, input: defined({ pattern: str(input, "Pattern", "Query"), path: str(input, ...PATH_KEYS) }) };
     case "read_url_content":
-      return { tool: browse, input: defined({ url: str(input, "Url", "URL") }) };
+    case "read_url":
+      return { tool: browse, input: defined({ url: str(input, "Url", "URL", "url") }) };
     default:
       return null;
   }
@@ -95,6 +112,8 @@ export function exocortexNameForAntigravity(name: string): string {
 /** Labels for calls with no Exocortex counterpart. Plain strings: the tools above are an import cycle at load time. */
 const LABELS: Record<string, string> = {
   search_web: "Search",
+  manage_task: "Task",
+  delete_file: "Delete",
   generate_image: "Image",
   command_status: "Command",
   send_command_input: "Command",
@@ -111,7 +130,7 @@ function oneLine(value: unknown): string {
 
 /** The most telling string input, so a call never shows just its name. */
 function genericDetail(input: Input): string {
-  for (const key of ["toolSummary", "Query", "Url", "Prompt", "Description", "CommandId", ...PATH_KEYS]) {
+  for (const key of ["Query", "query", "Url", "Prompt", "Description", "CommandId", ...PATH_KEYS, "toolSummary"]) {
     const line = oneLine(input[key]);
     if (line) return line;
   }
@@ -132,23 +151,53 @@ export function summarizeAntigravityTool(name: string, input: Input): ToolSummar
     const [, server = "mcp", ...rest] = name.split("_");
     return { label: server, detail: [rest.join("_"), genericDetail(input)].filter(Boolean).join(" ") };
   }
+  if (name === "manage_task") {
+    // `kill d3e7…/task-77`: the task's own number is what tells it apart.
+    const task = typeof input.TaskId === "string" ? input.TaskId.split("/").at(-1) ?? input.TaskId : "";
+    return { label: "Task", detail: [oneLine(input.Action), oneLine(task)].filter(Boolean).join(" ") };
+  }
   const equivalent = antigravityEquivalent(name, input);
   if (equivalent) {
     const summary = equivalent.tool.summarize(equivalent.input);
-    return name === "list_dir" ? { ...summary, label: "List" } : summary;
+    const label = name === "list_dir" || name === "list_directory" ? "List" : LABELS[name];
+    return label ? { ...summary, label } : summary;
   }
   return { label: LABELS[name] ?? name, detail: genericDetail(input) };
 }
 
 /** TUI display entries for Antigravity tools styled like an Exocortex tool. */
+const STYLED: [string, () => Tool, string?][] = [
+  ["run_command", () => bash], ["command_status", () => bash, "Command"], ["send_command_input", () => bash, "Command"], ["manage_task", () => bash, "Task"],
+  ["read_file", () => read], ["view_file", () => read], ["list_dir", () => read, "List"], ["list_directory", () => read, "List"],
+  ["write_file", () => write], ["write_to_file", () => write], ["delete_file", () => write, "Delete"],
+  ["edit_file", () => edit], ["replace_file_content", () => edit], ["multi_replace_file_content", () => edit], ["sed_file", () => edit], ["notebook_edit", () => edit],
+  ["grep_search", () => grep], ["find_by_name", () => glob],
+  ["read_url_content", () => browse], ["read_url", () => browse], ["search_web", () => browse, "Search"],
+];
+
 export function getAntigravityToolDisplayInfo(): ToolDisplayInfo[] {
-  const styled: [string, Tool, string?][] = [
-    ["run_command", bash], ["command_status", bash, "Command"], ["send_command_input", bash, "Command"],
-    ["read_file", read], ["view_file", read], ["list_dir", read, "List"],
-    ["write_to_file", write],
-    ["replace_file_content", edit], ["multi_replace_file_content", edit], ["sed_file", edit], ["notebook_edit", edit],
-    ["grep_search", grep], ["find_by_name", glob],
-    ["read_url_content", browse], ["search_web", browse, "Search"],
-  ];
-  return styled.map(([name, tool, label]) => ({ name, label: label ?? tool.display.label, color: tool.display.color }));
+  return STYLED.map(([name, tool, label]) => ({ name, label: label ?? tool().display.label, color: tool().display.color }));
+}
+
+/** ACP tool kinds (agentclientprotocol.com) and the Exocortex tool whose look a call of that kind borrows. */
+const KIND_TOOLS: Record<string, () => Tool> = {
+  read: () => read,
+  edit: () => edit,
+  delete: () => write,
+  move: () => write,
+  search: () => grep,
+  execute: () => bash,
+  fetch: () => browse,
+};
+
+/**
+ * The look of a CLI tool Exocortex has no entry for, from its ACP `kind`:
+ * the counterpart's color under the call's own label. Null for tools with an
+ * entry (or host and MCP tools), and for kinds without a counterpart.
+ */
+export function antigravityKindStyle(name: string, kind: string | undefined): ToolDisplayInfo | null {
+  if (!kind || STYLED.some(([styled]) => styled === name) || isClaudeCodeHostTool(name) || name.startsWith("mcp_")) return null;
+  const tool = KIND_TOOLS[kind]?.();
+  if (!tool) return null;
+  return { name, label: summarizeAntigravityTool(name, {}).label, color: tool.display.color };
 }

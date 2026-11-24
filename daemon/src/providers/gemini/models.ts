@@ -10,7 +10,7 @@
 
 import { DEFAULT_MODEL_BY_PROVIDER, type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "@exocortex/shared/messages";
 import { log } from "../../log";
-import { runAgy } from "./cli";
+import { GeminiUnreachableError, isAgyUnreachableText, runAgy } from "./cli";
 
 export const GEMINI_CONTEXT_TOKENS = 1_048_576;
 
@@ -94,7 +94,11 @@ export async function listAgyModels(signal?: AbortSignal): Promise<ModelInfo[]> 
   if (/sign in/i.test(text) && !MODEL_LEVEL_RE.test(text.split("\n").find(line => line.startsWith("gemini-"))?.split("\t")[0] ?? "")) {
     throw new AgyNotSignedInError("The Antigravity CLI is not signed in to Google.");
   }
-  if (result.exitCode !== 0) throw new Error(`agy models failed (exit ${result.exitCode}): ${text.trim().slice(0, 300)}`);
+  const detail = text.replace(/^Fetching available models\.\.\.\s*/m, "").trim().slice(0, 300);
+  // Offline, the CLI gives up waiting for Google's model list: a network failure, not a sign-in one.
+  if (result.timedOut) throw new GeminiUnreachableError(`agy models did not answer in time${detail ? ` (${detail})` : ""}`);
+  if (result.exitCode !== 0 && isAgyUnreachableText(text)) throw new GeminiUnreachableError(`agy models failed (${detail})`);
+  if (result.exitCode !== 0) throw new Error(`agy models failed (exit ${result.exitCode}): ${detail}`);
   return parseAgyModels(result.stdout);
 }
 
