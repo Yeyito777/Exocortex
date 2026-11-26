@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
@@ -570,12 +570,15 @@ describe("Claude's free limit resets (cedar_ember) and the combined Fable allowa
   });
 
   test("combined over accounts: the allowances on the bars' scale with every reset, the grants together", () => {
+    // usageFromPlanRateLimits drops grants past their end by the clock: read them at NOW, not today.
+    setSystemTime(NOW);
     const main = usageFromPlanRateLimits({ ...FABLE_REPORT, cedar_ember: GRANTS })!;
     const max2 = usageFromPlanRateLimits({
       seven_day: { utilization: 34, resets_at: "2026-11-14T02:59:59.699867+00:00" },
       limits: [{ kind: "weekly_scoped", percent: 3, resets_at: "2026-11-14T02:59:59.700013+00:00", scope: { model: { display_name: "Fable" } } }],
       cedar_ember: { grants: [{ resets_left: 1, ends_at: "2026-11-25T00:00:00Z" }] },
     })!;
+    setSystemTime();
     const combined = aggregateUsage([main, max2], NOW)!;
     expect(combined.capacity).toBe(200);
     expect(combined.fable).toEqual({
