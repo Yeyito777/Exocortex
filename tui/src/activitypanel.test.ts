@@ -361,7 +361,7 @@ describe("focused conversation subscriptions", () => {
 
     const tasks = renderTaskPanel(state, 100, 20, 43_000)!.lines.map(stripAnsi);
     expect(tasks).toHaveLength(4);
-    expect(tasks[0]).toMatch(/^╭─ Tasks ─+ 2 ─╮$/);
+    expect(tasks[0]).toMatch(/^╭─ Tasks ─+ ◆ \$ 2 ─╮$/);
     expect(tasks[1]).toContain("◆ Exocortex Map daemon events");
     expect(tasks[2]).toContain("$ Bash bun test tui");
     expect(tasks.join("\n")).not.toContain("Subscriptions");
@@ -369,7 +369,7 @@ describe("focused conversation subscriptions", () => {
 
     const subscriptions = renderSubscriptionsPanel(state, 100, 20)!.lines.map(stripAnsi);
     expect(subscriptions).toHaveLength(4);
-    expect(subscriptions[0]).toMatch(/^╭─ Subscriptions ─+ 2 ─╮$/);
+    expect(subscriptions[0]).toMatch(/^╭─ Subscriptions ─+ D2 2 ─╮$/);
     expect(subscriptions[1]).toContain("Discord Design alerts");
     expect(subscriptions[1]).toContain("wake active");
     expect(subscriptions[2]).toContain("Discord Deployments");
@@ -424,7 +424,7 @@ describe("focused conversation subscriptions", () => {
     expect(layout.panel!.lines).toHaveLength(4);
     expect(stripAnsi(layout.panel!.lines[2])).toContain("▸ 7 more");
     expect(layout.subscriptions!.lines).toHaveLength(4);
-    expect(stripAnsi(layout.subscriptions!.lines[0])).toMatch(/Subscriptions ─+ 3 ─╮$/);
+    expect(stripAnsi(layout.subscriptions!.lines[0])).toMatch(/Subscriptions ─+ D3 3 ─╮$/);
     expect(layout.scratchpad!.lines).toHaveLength(4);
     expect(layout.column!.height).toBe(12);
 
@@ -442,7 +442,7 @@ describe("focused conversation subscriptions", () => {
     state.sidebar.conversations[0].integrations = [integration()];
     toggleCardFold(state, "tasks");
     const tasks = renderTaskPanel(state, 100, 20, 43_000)!;
-    expect(tasks.lines.map(stripAnsi)).toEqual([expect.stringMatching(/^╶─ Tasks ─+ 2 ─╴$/)]);
+    expect(tasks.lines.map(stripAnsi)).toEqual([expect.stringMatching(/^╶─ Tasks ─+ ◆ \$ 2 ─╴$/)]);
     expect(tasks.width).toBe(50);
     expect(tasks.toggleable).toBe(false);
     expect(tasks.links).toEqual([]);
@@ -455,6 +455,65 @@ describe("focused conversation subscriptions", () => {
     expect(state.taskPanelExpansion).toBeNull();
     toggleCardFold(state, "tasks");
     expect(renderTaskPanel(state, 100, 20, 43_000)!.lines).toHaveLength(4);
+  });
+
+  test("each header breaks its count down by kind, with the sidebar's glyphs and colours", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks = [
+      ...[1, 2, 3].map(n => ({ id: `child-${n}`, kind: "subagent" as const, title: `Child ${n}`, startedAt: 1_000 })),
+      { id: "agent:1", kind: "background", title: "JS engine core", startedAt: 1_000, toolName: "Agent" },
+      { id: "chrono:1", kind: "chrono", title: "Hourly review", startedAt: 1_000, dueAt: 90_000, chronoMode: "wake" },
+      { id: "chrono:2", kind: "chrono", title: "Nightly digest", startedAt: 1_000, dueAt: 90_000, chronoMode: "wake" },
+      { id: "bash:1", kind: "background", title: "bun test", startedAt: 1_000, toolName: "bash" },
+    ];
+    const header = renderTaskPanel(state, 100, 20, 50_000)!.lines[0];
+    // Claude Code agents count with subagents, as in the sidebar; one command shows its glyph alone.
+    expect(stripAnsi(header)).toMatch(/^╭─ Tasks ─+ ◆4 ◷2 \$ 7 ─╮$/);
+    expect(header).toContain(`${theme.accent}◆4`);
+    expect(header).toContain(`${theme.success}◷2`);
+    expect(header).toContain(`${theme.warning}$`);
+
+    state.externalToolStyles = [
+      { cmd: "discord", label: "Discord", color: "#5865f2" },
+      { cmd: "whatsapp", label: "WhatsApp", color: "#25d366" },
+      { cmd: "gmail", label: "Gmail", color: "#4ddbb7" },
+      { cmd: "google", label: "Google", color: "#4285f4" },
+    ];
+    state.sidebar.conversations[0].integrations = [
+      integration(), integration({ id: "i2", label: "Owner DMs", status: "offline" }), integration({ id: "i3", label: "Deploys" }),
+      integration({ id: "i4", toolName: "whatsapp", label: "Family" }),
+      integration({ id: "i5", toolName: "gmail", label: "Inbox", status: "disabled" }),
+      integration({ id: "i6", toolName: "google", label: "Alerts" }),
+    ];
+    const subs = renderSubscriptionsPanel(state, 100, 20)!.lines[0];
+    // Tools sharing an initial get two letters; ✗ counts sources offline or disabled.
+    expect(stripAnsi(subs)).toMatch(/^╭─ Subscriptions ─+ D3 W Gm Go ✗2 6 ─╮$/);
+    expect(subs).toContain(`${hexToAnsi("#5865f2")}D3`);
+    expect(subs).toContain(`${theme.error}✗2`);
+  });
+
+  test("a header too narrow for its breakdown keeps just the total", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks = [
+      ...[1, 2, 3].map(n => ({ id: `child-${n}`, kind: "subagent" as const, title: `Child ${n}`, startedAt: 1_000 })),
+      { id: "chrono:1", kind: "chrono", title: "Hourly review", startedAt: 1_000, dueAt: 90_000, chronoMode: "wake" },
+      { id: "bash:1", kind: "background", title: "bun test", startedAt: 1_000, toolName: "bash" },
+    ];
+    state.sidebar.conversations[0].integrations = ["a", "b", "c"].map(id => integration({ id, toolName: id, label: id, status: "offline" }));
+    for (const width of [30, 40]) {
+      const tasks = stripAnsi(renderTaskPanel(state, width, 20, 50_000)!.lines[0]);
+      expect(termWidth(tasks)).toBe(width);
+      const subs = stripAnsi(renderSubscriptionsPanel(state, width, 20)!.lines[0]);
+      expect(termWidth(subs)).toBe(width);
+      if (width === 30) {
+        expect(tasks).toMatch(/^╭─ Tasks ─+ ◆3 ◷ \$ 5 ─╮$/);
+        expect(subs).toMatch(/^╭─ Subscriptions ─+ 3 ─╮$/);
+      } else {
+        expect(subs).toMatch(/^╭─ Subscriptions ─+ A B C ✗3 3 ─╮$/);
+      }
+    }
+    toggleCardFold(state, "subscriptions");
+    expect(stripAnsi(renderSubscriptionsPanel(state, 30, 20)!.lines[0])).toMatch(/^╶─ Subscriptions ─+ 3 ─╴$/);
   });
 
   test("at most one card of the column is expanded", () => {

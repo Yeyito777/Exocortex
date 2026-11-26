@@ -24,7 +24,7 @@
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
-import { ACTIVITY_GLYPH, conversationActivityIndicator, type ConversationActivityIndicator } from "./sidebar/activityindicator";
+import { ACTIVITY_GLYPH, conversationActivityIndicator, countedActivityIndicator, type ConversationActivityIndicator } from "./sidebar/activityindicator";
 import { areConversationNotificationsMuted } from "./sidebar/folders";
 import { isGlobalIdleQueuedMessage } from "./queue";
 import { focusedConversation, type RenderState } from "./state";
@@ -531,20 +531,87 @@ function taskTime(task: TaskPanelEntry, now: number): string {
       : formatTaskElapsed(task.startedAt, now);
 }
 
+/** One counted kind in a card header's breakdown: a glyph in its colour, as the sidebar badges draw them. */
+export interface HeaderBadge {
+  glyph: string;
+  count: number;
+  color: string;
+}
+
+/** Columns the fill keeps between the title and a breakdown; narrower, the breakdown is left out and the total stays. */
+const HEADER_BREAKDOWN_MIN_FILL = 2;
+
 /**
  * A card's top row: its title on the left and `count` (when not empty) on the
- * right. Folded, the row is the whole card and its corners close it.
+ * right, with `badges` (what the card holds, by kind) just left of the count
+ * when the width allows. Folded, the row is the whole card and its corners
+ * close it.
  */
-export function cardHeader(palette: PanelPalette, innerWidth: number, title: string, count: string, folded = false): string {
+export function cardHeader(
+  palette: PanelPalette,
+  innerWidth: number,
+  title: string,
+  count: string,
+  folded = false,
+  badges: readonly HeaderBadge[] = [],
+): string {
   const left = `─ ${title} `;
   const right = count ? ` ${count} ─` : "";
-  const fill = "─".repeat(Math.max(0, innerWidth - termWidth(left) - termWidth(right)));
+  const shown = badges.filter(badge => badge.count > 0)
+    .map(badge => ({ text: countedActivityIndicator(badge.glyph, badge.count).trimEnd(), color: badge.color }));
+  const breakdownWidth = shown.reduce((sum, badge) => sum + termWidth(badge.text) + 1, 0) + (count ? 0 : shown.length > 0 ? 1 : 0);
+  const room = innerWidth - termWidth(left) - termWidth(right);
+  const withBreakdown = shown.length > 0 && room - breakdownWidth >= HEADER_BREAKDOWN_MIN_FILL;
+  const fill = "─".repeat(Math.max(0, room - (withBreakdown ? breakdownWidth : 0)));
+  const breakdown = withBreakdown
+    ? `${theme.reset} ${shown.map(badge => `${badge.color}${badge.text}`).join(" ")}${count ? "" : ` ${palette.topOutline}`}`
+    : "";
   const [open, close] = folded ? ["╶", "╴"] : ["╭", "╮"];
   return palette.withPanelBg(
     `${palette.topOutline}${open}─ ${theme.reset}${theme.muted}${title}${palette.topOutline} ${fill}`
+    + breakdown
     + (count ? `${theme.reset}${theme.muted} ${count}${palette.topOutline} ─` : "")
     + close,
   );
+}
+
+/**
+ * The Tasks header's breakdown, with the sidebar's badges: subagents (Claude
+ * Code agents too), Chrono schedules and background commands.
+ */
+export function taskHeaderBadges(tasks: readonly TaskPanelEntry[]): HeaderBadge[] {
+  const subagents = tasks.filter(task => task.kind === "subagent" || isAgentBackgroundTask(task)).length;
+  const chronos = tasks.filter(task => task.kind === "chrono").length;
+  const commands = tasks.filter(task => task.kind === "background" && !isAgentBackgroundTask(task)).length;
+  return [
+    { glyph: "◆", count: subagents, color: theme.accent },
+    { glyph: "◷", count: chronos, color: theme.success },
+    { glyph: "$", count: commands, color: theme.warning },
+  ];
+}
+
+/**
+ * The Subscriptions header's breakdown: each tool's initial (capitalised) in its colour,
+ * counted, then ✗ for subscriptions whose source is offline or disabled.
+ * Tools sharing an initial show two letters.
+ */
+export function subscriptionHeaderBadges(state: RenderState, integrations: readonly ExternalIntegrationSummary[]): HeaderBadge[] {
+  const byTool = new Map<string, { label: string; color: string; count: number }>();
+  for (const integration of integrations) {
+    const style = integrationStyle(state, integration);
+    const entry = byTool.get(integration.toolName) ?? { ...style, count: 0 };
+    entry.count++;
+    byTool.set(integration.toolName, entry);
+  }
+  const initial = (label: string, letters: number) => Array.from(label).slice(0, letters).join("");
+  const tools = [...byTool.values()];
+  const badges = tools.map(tool => {
+    const shared = tools.some(other => other !== tool && initial(other.label, 1).toLowerCase() === initial(tool.label, 1).toLowerCase());
+    const letters = initial(tool.label, shared ? 2 : 1);
+    return { glyph: letters.charAt(0).toUpperCase() + letters.slice(1), count: tool.count, color: tool.color };
+  });
+  const unhealthy = integrations.filter(integration => integration.status !== "active").length;
+  return [...badges, { glyph: "✗", count: unhealthy, color: theme.error }];
 }
 
 /** One entry of an entry card: its rows at a card width, how wide a card fits it on one row, and the conversation its rows open. */
@@ -556,6 +623,8 @@ interface CardEntry {
 
 interface EntryCardSpec {
   title: string;
+  /** The header's breakdown of what the card holds. */
+  badges: HeaderBadge[];
   /** Entries, built for this collapsed width (a subagent's label is shorter on a narrow card). */
   entries: (collapsedWidth: number) => CardEntry[];
   expansion: { scroll: number } | null;
@@ -585,7 +654,7 @@ function buildEntryCard(state: RenderState, spec: EntryCardSpec, chatWidth: numb
   const palette = panelPalette(state);
   const count = String(entries.length);
   if (spec.folded) {
-    return { width: collapsedWidth, lines: [cardHeader(palette, collapsedWidth - 2, spec.title, count, true)], scroll: 0, maxScroll: 0, toggleable: false, links: [] };
+    return { width: collapsedWidth, lines: [cardHeader(palette, collapsedWidth - 2, spec.title, count, true, spec.badges)], scroll: 0, maxScroll: 0, toggleable: false, links: [] };
   }
 
   const widestEntry = Math.max(...entries.map(entry => entry.fitWidth));
@@ -595,7 +664,7 @@ function buildEntryCard(state: RenderState, spec: EntryCardSpec, chatWidth: numb
   const innerWidth = panelWidth - 2;
   const maxContentRows = panelHeight - 2;
   const visibleCount = expanded || entries.length <= maxContentRows ? entries.length : Math.max(0, maxContentRows - 1);
-  const lines = [cardHeader(palette, innerWidth, spec.title, count)];
+  const lines = [cardHeader(palette, innerWidth, spec.title, count, false, spec.badges)];
 
   const body: string[] = [];
   // Every row of a linked entry opens its conversation, label, title and time, between the borders.
@@ -685,6 +754,7 @@ function buildTaskPanel(state: RenderState, chatWidth: number, maxHeight: number
   const palette = panelPalette(state);
   return buildEntryCard(state, {
     title: "Tasks",
+    badges: taskHeaderBadges(tasks),
     entries: collapsedWidth => {
       // Only a card at MAX_PANEL_WIDTH widens, so a subagent's label keeps its form when the card expands.
       const compactExocortex = collapsedWidth < 38;
@@ -723,6 +793,7 @@ function buildSubscriptionsPanel(state: RenderState, chatWidth: number, maxHeigh
   const palette = panelPalette(state);
   return buildEntryCard(state, {
     title: "Subscriptions",
+    badges: subscriptionHeaderBadges(state, integrations),
     entries: () => integrations.map(integration => ({
       fitWidth: entryFitWidth(integrationStyle(state, integration).label, integrationTitle(integration), INTEGRATION_STATE_WIDTH),
       rows: (innerWidth, wrap) => integrationRows(state, palette, innerWidth, integration, wrap),

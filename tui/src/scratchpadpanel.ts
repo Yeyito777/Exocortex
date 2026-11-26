@@ -30,6 +30,7 @@ import {
   renderTaskPanel,
   scrollExpansion,
   TASK_PANEL_HISTORY_GAP,
+  type HeaderBadge,
   type PanelPalette,
   type TaskPanelRender,
 } from "./activitypanel";
@@ -125,6 +126,12 @@ export function scratchpadOpenCount(lines: readonly ScratchpadLine[]): number {
 /** The header's count: open to-dos, or nothing when the file has no checkboxes. */
 export function scratchpadHeaderCount(lines: readonly ScratchpadLine[]): string {
   return lines.some(line => line.kind === "open" || line.kind === "done") ? String(scratchpadOpenCount(lines)) : "";
+}
+
+/** The header's breakdown beside its open count: done to-dos, with the card's own ✓ and its colour. */
+export function scratchpadHeaderBadges(lines: readonly ScratchpadLine[]): HeaderBadge[] {
+  const done = lines.filter(line => line.kind === "done").length;
+  return [{ glyph: "✓", count: done, color: lineStyle("done").glyphColor }];
 }
 
 let parsedFor: string | null = null;
@@ -300,7 +307,7 @@ function buildScratchpadPanel(state: RenderState, chatWidth: number, maxHeight: 
 
   const collapsedWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
   if (folded) {
-    const header = cardHeader(panelPalette(state), collapsedWidth - 2, SCRATCHPAD_TITLE, scratchpadHeaderCount(lines), true);
+    const header = cardHeader(panelPalette(state), collapsedWidth - 2, SCRATCHPAD_TITLE, scratchpadHeaderCount(lines), true, scratchpadHeaderBadges(lines));
     return { width: collapsedWidth, lines: [header], scroll: 0, maxScroll: 0, toggleable: false };
   }
   const widestLine = Math.max(...lines.map(lineFitWidth));
@@ -310,7 +317,7 @@ function buildScratchpadPanel(state: RenderState, chatWidth: number, maxHeight: 
   const innerWidth = panelWidth - 2;
   const maxContentRows = panelHeight - 2;
   const palette = panelPalette(state);
-  const header = cardHeader(palette, innerWidth, SCRATCHPAD_TITLE, scratchpadHeaderCount(lines));
+  const header = cardHeader(palette, innerWidth, SCRATCHPAD_TITLE, scratchpadHeaderCount(lines), false, scratchpadHeaderBadges(lines));
 
   if (expanded) {
     const body = lines.flatMap(line => lineRows(palette, line, innerWidth, true));

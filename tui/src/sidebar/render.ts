@@ -1,5 +1,5 @@
 import { getMarkFromTitle } from "../marks";
-import { conversationActivityIndicator, sidebarConversationActivityContext } from "./activityindicator";
+import { conversationActivityIndicator, countedActivityIndicator, sidebarConversationActivityContext } from "./activityindicator";
 import { areFolderNotificationsMuted, currentFolder } from "./folders";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
 import { SIDEBAR_WIDTH } from "./layout";
@@ -194,12 +194,6 @@ function renderNotificationBadge(count: number): { text: string; width: number }
     text: `${theme.notificationBg}${theme.notificationFg}${rawText}${theme.reset}`,
     width: termWidth(rawText),
   };
-}
-
-function countedActivityIndicator(symbol: string, count: number): string {
-  if (count <= 0) return "";
-  if (count === 1) return `${symbol} `;
-  return count > 99 ? `${symbol}99+ ` : `${symbol}${count} `;
 }
 
 function subagentIndicator(count: number): string {

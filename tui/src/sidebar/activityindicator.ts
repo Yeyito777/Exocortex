@@ -92,3 +92,14 @@ export function conversationActivityIndicator(
   const color = state === "streaming" ? theme.accent : state === "warning" ? theme.warning : theme.success;
   return { icon: `${ACTIVITY_GLYPH} `, color };
 }
+
+/**
+ * A counted activity badge, as the sidebar draws its subagent, Chrono and
+ * command icons (and the activity cards' headers reuse): the glyph alone for
+ * one, with its count for more (99+ past 99), and a trailing space.
+ */
+export function countedActivityIndicator(symbol: string, count: number): string {
+  if (count <= 0) return "";
+  if (count === 1) return `${symbol} `;
+  return count > 99 ? `${symbol}99+ ` : `${symbol}${count} `;
+}
