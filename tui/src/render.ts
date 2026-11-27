@@ -1652,8 +1652,6 @@ export function render(state: RenderState): boolean {
       activity.globalIdleConvIds,
       activity.optimisticStreamingConvId,
       state.sshRemote?.alias ?? null,
-      undefined,
-      state.toolRegistry,
     );
   }
 

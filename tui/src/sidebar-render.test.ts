@@ -5,7 +5,6 @@ import { createSidebarState, renderSidebar } from "./sidebar";
 import type { ConversationSummary } from "./messages";
 import { SIDEBAR_WIDTH } from "./sidebar/layout";
 import { theme, themes } from "./theme";
-import { toolColor } from "./toolstyles";
 import { visibleLength } from "./textwidth";
 import { sidebarHitTest } from "./sidebar/hit";
 import { sidebarListRows } from "./sidebar/rows";
@@ -404,8 +403,8 @@ describe("sidebar rendering", () => {
     expect(row).toContain(`${theme.accent}◉ `);
     expect(row).toContain(`${theme.accent}2◆ `);
     expect(row).toContain(`${theme.warning}2$ `);
-    expect(row).toContain(`${toolColor("chrono", [])}◷ `);
-    expect(row).not.toContain(`${toolColor("chrono", [])}2◷ `);
+    expect(row).toContain(`${theme.success}◷ `);
+    expect(row).not.toContain(`${theme.success}2◷ `);
     expect(row).not.toContain(`${theme.tool}◆ `);
     // Right-aligned (the default), the dot is outermost: `2$ ◷ 2◆ ◉`.
     expect(row!.indexOf("2$ ")).toBeLessThan(row!.indexOf("◷ "));
@@ -527,16 +526,16 @@ describe("sidebar rendering", () => {
     let rows = renderSidebar(sidebar, 8, true, null);
     const workRow = rows.find(row => row.includes("Work"));
     expect(workRow).toContain(`${theme.accent}3◆ `);
-    expect(workRow).toContain(`${toolColor("chrono", [])}3◷ `);
+    expect(workRow).toContain(`${theme.success}3◷ `);
     expect(workRow).not.toContain(`${theme.tool}◆ `);
 
     sidebar.currentFolderId = "work";
     rows = renderSidebar(sidebar, 8, true, null);
     expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}2◆ `);
-    expect(rows.find(row => row.includes("Nested"))).toContain(`${toolColor("chrono", [])}2◷ `);
+    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.success}2◷ `);
     expect(rows.find(row => row.includes("Nested"))).not.toContain(`${theme.tool}◆ `);
     expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.accent}◆ `);
-    expect(rows.find(row => row.includes("Paused"))).toContain(`${toolColor("chrono", [])}◷ `);
+    expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.success}◷ `);
     expect(rows.find(row => row.includes("Paused"))).not.toContain(`${theme.tool}◆ `);
     expect(rows.find(row => row.includes("Paused"))).not.toContain(`${theme.tool}◇ `);
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);

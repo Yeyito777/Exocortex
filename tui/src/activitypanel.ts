@@ -23,7 +23,7 @@
  * way while Shift is held over it, where a click folds the card.
  */
 
-import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary, ToolDisplayInfo } from "./messages";
+import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
 import { ACTIVITY_GLYPH, conversationActivityIndicator, countedActivityIndicator, type ConversationActivityIndicator } from "./sidebar/activityindicator";
 import { areConversationNotificationsMuted } from "./sidebar/folders";
 import { isGlobalIdleQueuedMessage } from "./queue";
@@ -33,7 +33,6 @@ import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisi
 import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap } from "./textwrap";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
-import { toolColor } from "./toolstyles";
 import { collapseOtherExpansions, isCardFolded, type SideCard } from "./sidecards";
 
 export const MAX_PANEL_WIDTH = 50;
@@ -55,6 +54,7 @@ const PANEL_BG_HEX = "#00050f";
 const EXOCORTEX_FALLBACK_HEX = "#1d9bf0";
 const BASH_FALLBACK_HEX = "#d19a66";
 const GOAL_FALLBACK_HEX = "#c792ea";
+const CHRONO_FALLBACK_HEX = "#4ec9b0";
 
 export interface TaskPanelEntry extends Omit<ConversationTaskSummary, "kind"> {
   kind: ConversationTaskSummary["kind"] | "goal";
@@ -297,7 +297,7 @@ function backgroundTaskName(toolName: string | undefined): string {
   return !toolName || toolName === "bash" || toolName === "exec_command" ? "Bash" : toolName;
 }
 
-function taskColor(state: RenderState, toolName: "exo" | "bash" | "goal", fallback: string): string {
+function taskColor(state: RenderState, toolName: "exo" | "bash" | "goal" | "chrono", fallback: string): string {
   const color = state.toolRegistry.find(tool => tool.name === toolName)?.color ?? fallback;
   return hexToAnsi(color);
 }
@@ -341,7 +341,7 @@ export function panelPalette(state: RenderState): PanelPalette {
     exocortex: taskColor(state, "exo", EXOCORTEX_FALLBACK_HEX),
     bash: taskColor(state, "bash", BASH_FALLBACK_HEX),
     goal: taskColor(state, "goal", GOAL_FALLBACK_HEX),
-    chrono: toolColor("chrono", state.toolRegistry),
+    chrono: taskColor(state, "chrono", CHRONO_FALLBACK_HEX),
     withPanelBg: (line: string) => {
       const persistentBg = line.replaceAll(theme.reset, `${theme.reset}${panelBg}`);
       return `${panelBg}${persistentBg}${theme.reset}`;
@@ -577,16 +577,15 @@ export function cardHeader(
 
 /**
  * The Tasks header's breakdown, with the sidebar's badges: subagents (Claude
- * Code agents too), Chrono schedules (in Chrono's tool colour, as its rows)
- * and background commands.
+ * Code agents too), Chrono schedules and background commands.
  */
-export function taskHeaderBadges(tasks: readonly TaskPanelEntry[], toolRegistry: readonly ToolDisplayInfo[]): HeaderBadge[] {
+export function taskHeaderBadges(tasks: readonly TaskPanelEntry[]): HeaderBadge[] {
   const subagents = tasks.filter(task => task.kind === "subagent" || isAgentBackgroundTask(task)).length;
   const chronos = tasks.filter(task => task.kind === "chrono").length;
   const commands = tasks.filter(task => task.kind === "background" && !isAgentBackgroundTask(task)).length;
   return [
     { glyph: "◆", count: subagents, color: theme.accent },
-    { glyph: "◷", count: chronos, color: toolColor("chrono", toolRegistry) },
+    { glyph: "◷", count: chronos, color: theme.success },
     { glyph: "$", count: commands, color: theme.warning },
   ];
 }
@@ -755,7 +754,7 @@ function buildTaskPanel(state: RenderState, chatWidth: number, maxHeight: number
   const palette = panelPalette(state);
   return buildEntryCard(state, {
     title: "Tasks",
-    badges: taskHeaderBadges(tasks, state.toolRegistry),
+    badges: taskHeaderBadges(tasks),
     entries: collapsedWidth => {
       // Only a card at MAX_PANEL_WIDTH widens, so a subagent's label keeps its form when the card expands.
       const compactExocortex = collapsedWidth < 38;
