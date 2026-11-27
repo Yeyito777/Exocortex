@@ -81,8 +81,8 @@ function fullyExpandedRows(sidebar: SidebarState): readonly DisplayRow[] {
  * Shift+L / Shift+H in the sidebar: the next or previous conversation drawn as
  * streaming (blue) or waiting (yellow: a long Chrono sleep or wait, the global
  * idle gate, a provider wait), in tree order with collapsed folders included;
- * landing inside one expands it and its ancestors. Folders and finished-unread
- * rows are skipped.
+ * landing inside one expands it and its ancestors. Folders, finished-unread
+ * rows and muted conversations (drawn without indicators) are skipped.
  */
 export function moveToActiveConversation(sidebar: SidebarState, delta: 1 | -1, inputs: SidebarActivityInputs): void {
   moveToEntry(sidebar, fullyExpandedRows(sidebar), delta, row => {
@@ -91,7 +91,10 @@ export function moveToActiveConversation(sidebar: SidebarState, delta: 1 | -1, i
     const listed = sidebar.conversations[row.convIdx ?? -1];
     const conv = listed?.id === item.id ? listed : sidebar.conversations.find(c => c.id === item.id);
     if (!conv) return false;
-    const state = conversationActivityState(conv, sidebarConversationActivityContext(sidebar, conv, inputs));
+    const context = sidebarConversationActivityContext(sidebar, conv, inputs);
+    // A muted conversation draws no indicator (sidebar/render.ts), so it is not one to land on.
+    if (context.notificationsMuted) return false;
+    const state = conversationActivityState(conv, context);
     return state === "streaming" || state === "warning";
   });
 }

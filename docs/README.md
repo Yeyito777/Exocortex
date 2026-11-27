@@ -53,8 +53,16 @@ selects another daemon without moving client-side UI operations to that host.
   them, so they stay whole. Set each kind of row with `"tui": {
   "sidebarIndicators": { "folders": "after", "conversations": "before" } }`
   in `config/config.json` and restart the TUI: `right` (default), `after`
-  (right after the name: `📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`) or `before`
-  (ahead of the name, as earlier versions did).
+  (right after the name: `📁 work/ 3 ◉ 2◆`, `build ◉ 2◆ ★`) or `before`
+  (ahead of the name, as earlier versions did). A muted conversation, muted
+  itself or through a folder, shows no activity dot (blue, yellow or green)
+  and no `◆`/`◷`/`$`, only its bell, star and mark; a muted folder shows none
+  of its conversations' activity, and a collapsed folder leaves its muted
+  conversations' activity out (its count still includes them). The Tasks
+  card still shows a muted subagent's activity. A counted glyph shows alone
+  for one and with its count first for more (`2◆`, `3◷`, `99+$` past 99), in
+  the sidebar and in the Tasks, Subscriptions and Scratchpad card headers
+  (`3D`, `2✗`, `2✓`).
 
 ## Keyboard reference
 
@@ -86,7 +94,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `{` / `}` | In chat normal mode, focus history and jump among user-message starts |
 | `[` / `]` | In chat normal mode, focus history and jump among final AI-response text blocks |
 | `[` / `]` | In sidebar normal mode, move the cursor to the previous / next folder row, wrapping around (nested folders included; a collapsed folder's contents are skipped) |
-| `Shift+H` / `Shift+L` | In sidebar normal mode, move the cursor to the previous / next conversation that is streaming (blue) or waiting (yellow: a long Chrono sleep or wait, the global idle gate, a provider wait), wrapping around; conversations in collapsed folders count too, and landing on one opens its folders; folders and green finished-unread rows are skipped |
+| `Shift+H` / `Shift+L` | In sidebar normal mode, move the cursor to the previous / next conversation that is streaming (blue) or waiting (yellow: a long Chrono sleep or wait, the global idle gate, a provider wait), wrapping around; conversations in collapsed folders count too, and landing on one opens its folders; folders, green finished-unread rows and muted conversations are skipped |
 | `;` | In history visual mode, quote selection into the draft |
 | `;` / right click | On a sidebar conversation or folder, open its actions menu (a folder's starts on Edit instructions) |
 | `g a` | In normal mode (prompt, history or sidebar), open the Accounts screen |

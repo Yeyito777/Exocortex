@@ -1,5 +1,5 @@
 import { getMarkFromTitle } from "../marks";
-import { conversationActivityIndicator, countedActivityIndicator, sidebarConversationActivityContext } from "./activityindicator";
+import { ACTIVITY_GLYPH, conversationActivityIndicator, countedActivityIndicator, sidebarConversationActivityContext } from "./activityindicator";
 import { areFolderNotificationsMuted, currentFolder } from "./folders";
 import { sidebarIndicatorPlacement, type SidebarIndicatorPlacement } from "./indicatorplacement";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
@@ -65,10 +65,10 @@ function collectFolderAggregateInputs(
   out: unknown[],
 ): void {
   out.push(optimisticStreamingConvId, sidebar.partial, sidebar.folders.length);
-  for (const folder of sidebar.folders) out.push(folder.id, folder.parentId);
+  for (const folder of sidebar.folders) out.push(folder.id, folder.parentId, folder.muted);
   out.push(sidebar.conversations.length);
   for (const conv of sidebar.conversations) {
-    out.push(conv.id, conv.folderId, conv.streaming, conv.unread, conv.tasks,
+    out.push(conv.id, conv.folderId, conv.muted, conv.streaming, conv.unread, conv.tasks,
       conv.subagentCount, conv.backgroundTaskCount, globalIdleConvIds.has(conv.id));
   }
 }
@@ -138,6 +138,7 @@ function buildFolderAggregates(
 ): Map<string, FolderAggregate> {
   const aggregates = new Map<string, FolderAggregate>();
   const parentById = new Map<string, string | null>();
+  const explicitlyMutedFolders = new Set<string>();
   for (const folder of sidebar.folders) {
     aggregates.set(folder.id, {
       count: 0,
@@ -151,10 +152,32 @@ function buildFolderAggregates(
       chronoTaskCount: 0,
     });
     parentById.set(folder.id, folder.parentId ?? null);
+    if (folder.muted === true) explicitlyMutedFolders.add(folder.id);
   }
+  // Whether a folder is muted itself or through an ancestor, as
+  // areFolderNotificationsMuted, memoized for the walk below.
+  const mutedFolders = new Map<string, boolean>();
+  const isFolderMuted = (folderId: string | null): boolean => {
+    const path: string[] = [];
+    let id = folderId;
+    let muted = false;
+    while (id && aggregates.has(id)) {
+      const known = mutedFolders.get(id);
+      if (known !== undefined) { muted = known; break; }
+      if (explicitlyMutedFolders.has(id)) { muted = true; break; }
+      if (path.includes(id)) break;
+      path.push(id);
+      id = parentById.get(id) ?? null;
+    }
+    for (const visited of path) mutedFolders.set(visited, muted);
+    return muted;
+  };
 
   const lastVisitedBy = new Map<string, object>();
   for (const conv of sidebar.conversations) {
+    // A muted conversation (itself or through a folder) counts toward its
+    // folders' totals but adds none of its activity to their indicators.
+    const muted = conv.muted === true || isFolderMuted(conv.folderId ?? null);
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
     const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
     const hasInlineSleep = inlineLongSleepStartedAt(conv) !== null;
@@ -169,6 +192,10 @@ function buildFolderAggregates(
       lastVisitedBy.set(folderId, conv);
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
+      if (muted) {
+        folderId = parentById.get(folderId) ?? null;
+        continue;
+      }
       if ((conv.streaming || hasOptimisticStreaming) && !hasInlineSleep) aggregate.streamingCount++;
       aggregate.longSleep ||= hasLongSleep;
       aggregate.globalIdle ||= hasGlobalIdle;
@@ -210,9 +237,7 @@ function chronoTaskIndicator(count: number): string {
 }
 
 function folderStreamingIndicator(count: number): string {
-  if (count <= 0) return "";
-  if (count === 1) return "◉ ";
-  return count > 99 ? "◉99+ " : `◉${count} `;
+  return countedActivityIndicator(ACTIVITY_GLYPH, count);
 }
 
 function truncateSidebarTitle(text: string, maxWidth: number): string {
@@ -385,17 +410,21 @@ export function renderSidebar(
         rawTitle = `${icon} ${folder.name}/`;
       } else {
         rawTitle = folder ? `${icon} ${folder.name}/ ${aggregate?.count ?? 0}` : `${icon} folder/`;
+      }
+      // A muted folder (itself or through an ancestor) shows none of its
+      // conversations' activity; an open one shows none anyway.
+      if (!isOpenTreeFolder && !notificationsMuted) {
         const streamingCount = aggregate?.streamingCount ?? 0;
         const hasLongSleep = aggregate?.longSleep ?? false;
         const hasGlobalIdle = aggregate?.globalIdle ?? false;
-        const hasUnread = !notificationsMuted && (aggregate?.unread ?? false);
+        const hasUnread = aggregate?.unread ?? false;
         const hasWarningActivity = hasLongSleep || hasGlobalIdle;
         streamIcon = streamingCount > 0 ? folderStreamingIndicator(streamingCount) : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
         streamIconColor = streamingCount > 0 ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
         subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
         backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
         chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
-        notificationCount = notificationsMuted ? 0 : aggregate?.unreadCount ?? 0;
+        notificationCount = aggregate?.unreadCount ?? 0;
       }
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
@@ -408,13 +437,18 @@ export function renderSidebar(
       // canonical transcript is loaded and durably appended by the daemon.
       const activityContext = sidebarConversationActivityContext(sidebar, conv, { globalIdleConvIds, optimisticStreamingConvId });
       notificationsMuted = activityContext.notificationsMuted;
-      const indicator = conversationActivityIndicator(conv, activityContext);
-      streamIcon = indicator.icon;
-      streamIconColor = indicator.color;
-      const work = conversationWorkCounts(conv);
-      subagentIcon = subagentIndicator(work.subagents);
-      backgroundTaskIcon = backgroundTaskIndicator(work.commands);
-      chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));
+      // A muted conversation (itself or through a folder) shows no activity:
+      // no streaming, waiting or unread dot, no task counts. The bell, star and
+      // mark stay; they are the owner's own settings.
+      if (!notificationsMuted) {
+        const indicator = conversationActivityIndicator(conv, activityContext);
+        streamIcon = indicator.icon;
+        streamIconColor = indicator.color;
+        const work = conversationWorkCounts(conv);
+        subagentIcon = subagentIndicator(work.subagents);
+        backgroundTaskIcon = backgroundTaskIndicator(work.commands);
+        chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));
+      }
       starIcon = conv.marked ? "★ " : "";
       const mark = getMarkFromTitle(conv.title);
       emojiIcon = mark ? mark.emoji + " " : "";

@@ -369,7 +369,7 @@ describe("focused conversation subscriptions", () => {
 
     const subscriptions = renderSubscriptionsPanel(state, 100, 20)!.lines.map(stripAnsi);
     expect(subscriptions).toHaveLength(4);
-    expect(subscriptions[0]).toMatch(/^╭─ Subscriptions ─+ D2 2 ─╮$/);
+    expect(subscriptions[0]).toMatch(/^╭─ Subscriptions ─+ 2D 2 ─╮$/);
     expect(subscriptions[1]).toContain("Discord Design alerts");
     expect(subscriptions[1]).toContain("wake active");
     expect(subscriptions[2]).toContain("Discord Deployments");
@@ -424,7 +424,7 @@ describe("focused conversation subscriptions", () => {
     expect(layout.panel!.lines).toHaveLength(4);
     expect(stripAnsi(layout.panel!.lines[2])).toContain("▸ 7 more");
     expect(layout.subscriptions!.lines).toHaveLength(4);
-    expect(stripAnsi(layout.subscriptions!.lines[0])).toMatch(/Subscriptions ─+ D3 3 ─╮$/);
+    expect(stripAnsi(layout.subscriptions!.lines[0])).toMatch(/Subscriptions ─+ 3D 3 ─╮$/);
     expect(layout.scratchpad!.lines).toHaveLength(4);
     expect(layout.column!.height).toBe(12);
 
@@ -468,9 +468,9 @@ describe("focused conversation subscriptions", () => {
     ];
     const header = renderTaskPanel(state, 100, 20, 50_000)!.lines[0];
     // Claude Code agents count with subagents, as in the sidebar; one command shows its glyph alone.
-    expect(stripAnsi(header)).toMatch(/^╭─ Tasks ─+ ◆4 ◷2 \$ 7 ─╮$/);
-    expect(header).toContain(`${theme.accent}◆4`);
-    expect(header).toContain(`${theme.success}◷2`);
+    expect(stripAnsi(header)).toMatch(/^╭─ Tasks ─+ 4◆ 2◷ \$ 7 ─╮$/);
+    expect(header).toContain(`${theme.accent}4◆`);
+    expect(header).toContain(`${theme.success}2◷`);
     expect(header).toContain(`${theme.warning}$`);
 
     state.externalToolStyles = [
@@ -487,9 +487,9 @@ describe("focused conversation subscriptions", () => {
     ];
     const subs = renderSubscriptionsPanel(state, 100, 20)!.lines[0];
     // Tools sharing an initial get two letters; ✗ counts sources offline or disabled.
-    expect(stripAnsi(subs)).toMatch(/^╭─ Subscriptions ─+ D3 W Gm Go ✗2 6 ─╮$/);
-    expect(subs).toContain(`${hexToAnsi("#5865f2")}D3`);
-    expect(subs).toContain(`${theme.error}✗2`);
+    expect(stripAnsi(subs)).toMatch(/^╭─ Subscriptions ─+ 3D W Gm Go 2✗ 6 ─╮$/);
+    expect(subs).toContain(`${hexToAnsi("#5865f2")}3D`);
+    expect(subs).toContain(`${theme.error}2✗`);
   });
 
   test("a header too narrow for its breakdown keeps just the total", () => {
@@ -506,10 +506,10 @@ describe("focused conversation subscriptions", () => {
       const subs = stripAnsi(renderSubscriptionsPanel(state, width, 20)!.lines[0]);
       expect(termWidth(subs)).toBe(width);
       if (width === 30) {
-        expect(tasks).toMatch(/^╭─ Tasks ─+ ◆3 ◷ \$ 5 ─╮$/);
+        expect(tasks).toMatch(/^╭─ Tasks ─+ 3◆ ◷ \$ 5 ─╮$/);
         expect(subs).toMatch(/^╭─ Subscriptions ─+ 3 ─╮$/);
       } else {
-        expect(subs).toMatch(/^╭─ Subscriptions ─+ A B C ✗3 3 ─╮$/);
+        expect(subs).toMatch(/^╭─ Subscriptions ─+ A B C 3✗ 3 ─╮$/);
       }
     }
     toggleCardFold(state, "subscriptions");

@@ -316,14 +316,14 @@ describe("sidebar rendering", () => {
     ];
 
     let rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.accent}◉2 `);
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.accent}2◉ `);
 
     sidebar.currentFolderId = "work";
     rows = renderSidebar(sidebar, 8, true, null);
     expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}◉ `);
-    expect(rows.find(row => row.includes("Nested"))).not.toContain("◉1 ");
+    expect(rows.find(row => row.includes("Nested"))).not.toContain("1◉ ");
     expect(rows.find(row => row.includes("Direct"))).toContain(`${theme.accent}◉ `);
-    expect(rows.find(row => row.includes("Direct"))).not.toContain("◉1 ");
+    expect(rows.find(row => row.includes("Direct"))).not.toContain("1◉ ");
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
   });
 
@@ -336,12 +336,12 @@ describe("sidebar rendering", () => {
     ];
 
     let rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.warning}$2 `);
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.warning}2$ `);
 
     sidebar.currentFolderId = "folder";
     rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}$2 `);
-    expect(rows.find(row => row.includes("Plain"))).not.toContain("$2 ");
+    expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}2$ `);
+    expect(rows.find(row => row.includes("Plain"))).not.toContain("2$ ");
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
   });
 
@@ -360,13 +360,13 @@ describe("sidebar rendering", () => {
     })];
 
     let row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Work"));
-    expect(row).toContain(`${theme.accent}◆2 `);
+    expect(row).toContain(`${theme.accent}2◆ `);
     expect(row).toContain(`${theme.warning}$ `);
-    expect(row).not.toContain("$3 ");
+    expect(row).not.toContain("3$ ");
 
     sidebar.currentFolderId = "folder";
     row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Lead"));
-    expect(row).toContain(`${theme.accent}◆2 `);
+    expect(row).toContain(`${theme.accent}2◆ `);
     expect(row).toContain(`${theme.warning}$ `);
   });
 
@@ -375,7 +375,7 @@ describe("sidebar rendering", () => {
     sidebar.conversations = [conversation("worker", 0, { title: "Worker", backgroundTaskCount: 100 })];
 
     const rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}$99+ `);
+    expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}99+$ `);
   });
 
   test("renders Chrono, subagent, and shell indicators after the streaming indicator without a goal badge", () => {
@@ -397,14 +397,14 @@ describe("sidebar rendering", () => {
 
     const row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Worker"));
     expect(row).toContain(`${theme.accent}◉ `);
-    expect(row).toContain(`${theme.accent}◆2 `);
-    expect(row).toContain(`${theme.warning}$2 `);
+    expect(row).toContain(`${theme.accent}2◆ `);
+    expect(row).toContain(`${theme.warning}2$ `);
     expect(row).toContain(`${theme.success}◷ `);
-    expect(row).not.toContain(`${theme.success}◷2 `);
+    expect(row).not.toContain(`${theme.success}2◷ `);
     expect(row).not.toContain(`${theme.tool}◆ `);
-    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◆2 "));
-    expect(row!.indexOf("◆2 ")).toBeLessThan(row!.indexOf("◷ "));
-    expect(row!.indexOf("◷ ")).toBeLessThan(row!.indexOf("$2 "));
+    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("2◆ "));
+    expect(row!.indexOf("2◆ ")).toBeLessThan(row!.indexOf("◷ "));
+    expect(row!.indexOf("◷ ")).toBeLessThan(row!.indexOf("2$ "));
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
@@ -519,14 +519,14 @@ describe("sidebar rendering", () => {
 
     let rows = renderSidebar(sidebar, 8, true, null);
     const workRow = rows.find(row => row.includes("Work"));
-    expect(workRow).toContain(`${theme.accent}◆3 `);
-    expect(workRow).toContain(`${theme.success}◷3 `);
+    expect(workRow).toContain(`${theme.accent}3◆ `);
+    expect(workRow).toContain(`${theme.success}3◷ `);
     expect(workRow).not.toContain(`${theme.tool}◆ `);
 
     sidebar.currentFolderId = "work";
     rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}◆2 `);
-    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.success}◷2 `);
+    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}2◆ `);
+    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.success}2◷ `);
     expect(rows.find(row => row.includes("Nested"))).not.toContain(`${theme.tool}◆ `);
     expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.accent}◆ `);
     expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.success}◷ `);
@@ -725,7 +725,7 @@ describe("sidebar rendering", () => {
     expect(explicitRow).toContain("🔕");
   });
 
-  test("muted folders keep live streaming indicators while replacing unread badges", () => {
+  test("muted folders hide their conversations' streaming indicators and unread badges", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.folders = [{
       id: "muted-folder",
@@ -746,7 +746,7 @@ describe("sidebar rendering", () => {
 
     const row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Muted folder"));
 
-    expect(row).toContain(`${theme.accent}◉`);
+    expect(row).not.toContain("◉");
     expect(row).toContain("🔕");
     expect(row).not.toContain(theme.notificationBg);
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);

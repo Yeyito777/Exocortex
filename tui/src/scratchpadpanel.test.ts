@@ -107,7 +107,7 @@ describe("scratchpad markdown subset", () => {
     const panel = renderScratchpadPanel(state, 50, 40)!;
     const rows = plain(panel.lines);
     // Done to-dos beside the open count, with the card's own ✓.
-    expect(rows[0]).toBe(`╭─ Scratchpad ${"─".repeat(48 - 20)} ✓2 6 ─╮`);
+    expect(rows[0]).toBe(`╭─ Scratchpad ${"─".repeat(48 - 20)} 2✓ 6 ─╮`);
     expect(rows[1]).toBe(`│ Today${" ".repeat(41)} │`);
     expect(rows[3]).toStartWith("│ ○ MAT: TQ3 prep Wed 11:00 ");
     expect(rows[5]).toStartWith("│ ✓ ECO Writing 6 ");

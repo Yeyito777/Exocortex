@@ -94,12 +94,13 @@ export function conversationActivityIndicator(
 }
 
 /**
- * A counted activity badge, as the sidebar draws its subagent, Chrono and
- * command icons (and the activity cards' headers reuse): the glyph alone for
- * one, with its count for more (99+ past 99), and a trailing space.
+ * A counted activity badge, as the sidebar draws its streaming, subagent,
+ * Chrono and command icons (and the activity cards' headers reuse): the glyph
+ * alone for one, its count first for more (`2◆`, as in 3x; 99+ past 99), and
+ * a trailing space.
  */
 export function countedActivityIndicator(symbol: string, count: number): string {
   if (count <= 0) return "";
   if (count === 1) return `${symbol} `;
-  return count > 99 ? `${symbol}99+ ` : `${symbol}${count} `;
+  return count > 99 ? `99+${symbol} ` : `${count}${symbol} `;
 }
