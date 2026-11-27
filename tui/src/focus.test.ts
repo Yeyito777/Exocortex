@@ -1523,7 +1523,7 @@ describe("sidebar folders", () => {
     state.sidebar.selectedId = "conv-a";
     state.sidebar.selectedIndex = 0;
 
-    expect(handleFocusedKey({ type: "char", char: "<" }, state)).toEqual({
+    expect(handleFocusedKey({ type: "char", char: "o" }, state)).toEqual({
       type: "move_sidebar_items",
       reqId: expect.any(String),
       items: [{ type: "conversation", id: "conv-a" }],

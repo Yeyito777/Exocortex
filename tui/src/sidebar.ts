@@ -24,6 +24,7 @@ import {
   unwrapSelectedFolder,
 } from "./sidebar/folderactions";
 import { moveSelectionToDone } from "./sidebar/doneaction";
+import { stepSidebarIndicatorPlacement } from "./sidebar/indicatorplacement";
 import { sameSidebarItem as sameItem } from "./sidebar/items";
 import { areConversationNotificationsMuted, reconcileNotificationMutes } from "./sidebar/folders";
 import { moveSelection, moveToActiveConversation, moveToFolder } from "./sidebar/navigation";
@@ -226,8 +227,12 @@ export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarK
       case "F":
         openMoveItemsPrompt(sidebar);
         return { type: "handled" };
-      case "<":
+      case "o":
         return moveSelectionOut(sidebar);
+      case "<":
+      case ">":
+        stepSidebarIndicatorPlacement(key.char === ">" ? 1 : -1);
+        return { type: "handled" };
       case "h":
         return leaveFolder(sidebar);
       case "l":

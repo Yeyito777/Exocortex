@@ -545,7 +545,7 @@ export function handleFocusedKey(
   // ── Sidebar shortcuts that would otherwise be eaten by Vim commands ──
   if (state.panelFocus === "sidebar" && state.sidebar.open && state.vim.mode === "normal"
       && !vimHasPendingInput(state)
-      && key.type === "char" && key.char && ["v", "V", "f", "F", "<", "r", "x", "."].includes(key.char)) {
+      && key.type === "char" && key.char && ["v", "V", "f", "F", "o", "<", ">", "r", "x", "."].includes(key.char)) {
     return mapSidebarResult(handleSidebarKey(key, state.sidebar));
   }
 

@@ -307,7 +307,7 @@ describe("sidebar cursor after the selected rows leave: the row below takes the 
       return sidebar;
     }
     const moveOut = (sidebar: SidebarState) =>
-      expect(handleSidebarKey({ type: "char", char: "<" } as KeyEvent, sidebar).type).toBe("move_sidebar_items");
+      expect(handleSidebarKey({ type: "char", char: "o" } as KeyEvent, sidebar).type).toBe("move_sidebar_items");
 
     test("a middle conversation: the next row; the last: the previous row", () => {
       const sidebar = insideSidebar();
@@ -332,14 +332,14 @@ describe("sidebar cursor after the selected rows leave: the row below takes the 
     });
   });
 
-  test("tree view: < keeps the row in view one level up, so the cursor follows it", () => {
+  test("tree view: o keeps the row in view one level up, so the cursor follows it", () => {
     const sidebar = createSidebarState("tree");
     updateConversationList(sidebar, [
       conversation("p-a", 1, { folderId: "proj" }),
       conversation("p-b", 2, { folderId: "proj" }),
     ], [folder("proj", 0)]);
     select(sidebar, conv("p-a"));
-    expect(handleSidebarKey({ type: "char", char: "<" } as KeyEvent, sidebar).type).toBe("move_sidebar_items");
+    expect(handleSidebarKey({ type: "char", char: "o" } as KeyEvent, sidebar).type).toBe("move_sidebar_items");
     expect(sidebar.selectedItem).toEqual(conv("p-a"));
   });
 

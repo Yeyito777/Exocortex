@@ -1,4 +1,4 @@
-import { readExocortexConfig } from "@exocortex/shared/config";
+import { readExocortexConfig, updateExocortexConfig } from "@exocortex/shared/config";
 
 /**
  * Where a sidebar row draws its activity and task indicators: before its
@@ -43,4 +43,29 @@ export function sidebarIndicatorPlacement(): SidebarIndicatorPlacement {
 /** Override the setting (tests); null re-reads config.json on next use. */
 export function setSidebarIndicatorPlacement(placement: SidebarIndicatorPlacement | null): void {
   placementSetting = placement;
+}
+
+const SIDES: readonly SidebarIndicatorSide[] = ["before", "after", "right"];
+
+/**
+ * `>` / `<` in the sidebar: move both kinds of row one step right or left
+ * through before, after, right, stopping at the ends. Settings that differ
+ * step from the conversations' one. Takes effect from the next frame and is
+ * saved to config.json `tui.sidebarIndicators`; false when nothing changed.
+ */
+export function stepSidebarIndicatorPlacement(delta: 1 | -1): boolean {
+  const current = sidebarIndicatorPlacement();
+  const index = SIDES.indexOf(current.conversations) + delta;
+  const side = SIDES[Math.max(0, Math.min(SIDES.length - 1, index))];
+  if (current.folders === side && current.conversations === side) return false;
+  const next: SidebarIndicatorPlacement = { folders: side, conversations: side };
+  placementSetting = next;
+  try {
+    updateExocortexConfig(config => {
+      config.tui = { ...(config.tui ?? {}), sidebarIndicators: { ...next } };
+    });
+  } catch {
+    // An unwritable config keeps the change for this session.
+  }
+  return true;
 }

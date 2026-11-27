@@ -246,12 +246,12 @@ describe("optimistic sidebar moves", () => {
     expect(state.sidebar.selectedIndex).toBe(1);
   });
 
-  test("a folder moved out with < leaves the view with the cursor on a neighbour", () => {
+  test("a folder moved out with o leaves the view with the cursor on a neighbour", () => {
     const state = setup("navigate");
     state.sidebar.currentFolderId = "beta";
     state.sidebar.folders.push(folder("inner", 5, { parentId: "beta" }));
     state.sidebar.selectedItem = { type: "folder", id: "inner" };
-    expect(press(state, "<")).toMatchObject({ type: "move_sidebar_items", parentId: null, reqId: expect.any(String) });
+    expect(press(state, "o")).toMatchObject({ type: "move_sidebar_items", parentId: null, reqId: expect.any(String) });
     expect(state.sidebar.folders.find(f => f.id === "inner")?.parentId).toBeNull();
     expect(state.sidebar.selectedItem).not.toEqual({ type: "folder", id: "inner" });
   });
