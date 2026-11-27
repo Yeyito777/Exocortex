@@ -309,8 +309,8 @@ export interface TuiConfig {
   clock?: "12h" | "24h";
   /** How sidebar folders open: expand in place ("tree", default) or replace the list ("navigate"). */
   sidebarFolders?: "navigate" | "tree";
-  /** Where sidebar rows draw their activity, task, star and mark icons: before or after the name (default "after" for both). */
-  sidebarIndicators?: { folders?: "before" | "after"; conversations?: "before" | "after" };
+  /** Where sidebar rows draw their activity, task, star and mark icons: before the name, after it, or right-aligned (default "after" for both). */
+  sidebarIndicators?: { folders?: "before" | "after" | "right"; conversations?: "before" | "after" | "right" };
   /** Display math: typeset images on Kitty-graphics terminals ("auto", default), always "text", or force "image". */
   math?: "auto" | "text" | "image";
   /** Scroll the message area with terminal scroll regions (DECSTBM + SU/SD) and draw only exposed rows; default true. */

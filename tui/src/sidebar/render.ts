@@ -422,15 +422,18 @@ export function renderSidebar(
       itemFg = (isSelected || isCurrent) ? theme.text : theme.muted;
     }
 
-    // Activity, task, star and mark icons go before the name, or after it
-    // (`📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`) per tui.sidebarIndicators.
+    // Activity, task, star and mark icons go before the name, right after it
+    // (`📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`), or against the row's right edge
+    // (left of the mute bell and unread badge), per tui.sidebarIndicators.
     const side = item?.type === "folder" ? placement.folders : item?.type === "conversation" ? placement.conversations : "before";
     const iconsWidth = termWidth(streamIcon) + termWidth(subagentIcon) + termWidth(chronoTaskIcon)
       + termWidth(backgroundTaskIcon) + termWidth(starIcon) + termWidth(emojiIcon);
     const iconsAfter = side === "after" && iconsWidth > 0;
-    // One column between the name and the icons that follow it.
-    const trailingIconsWidth = iconsAfter ? 1 + iconsWidth : 0;
-    const prefixWidth = termWidth(prefix) + (iconsAfter ? 0 : iconsWidth);
+    const iconsRight = side === "right" && iconsWidth > 0;
+    // One column between the name and the icons that follow it. Right-aligned
+    // icons drop the last one's trailing space, to sit flush on the edge.
+    const trailingIconsWidth = iconsAfter ? 1 + iconsWidth : iconsRight ? iconsWidth : 0;
+    const prefixWidth = termWidth(prefix) + (iconsAfter || iconsRight ? 0 : iconsWidth);
     // The bell represents this item's durable preference, not the effective
     // notification policy inherited from its folder path. Inherited muting
     // still suppresses unread indicators and badges below.
@@ -457,9 +460,13 @@ export function renderSidebar(
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
     const iconsColored = streamIconColored + subagentIconColored + chronoTaskIconColored + backgroundTaskIconColored
       + starIconColored + emojiIconColored;
+    // The last icon's trailing space; only colour escapes follow it.
+    const lastIconSpace = iconsColored.lastIndexOf(" ");
     const body = iconsAfter
       ? titleText + " " + iconsColored + " ".repeat(Math.max(0, maxTitle - termWidth(title)))
-      : iconsColored + titleText;
+      : iconsRight
+        ? titleText + " " + iconsColored.slice(0, lastIconSpace) + iconsColored.slice(lastIconSpace + 1)
+        : iconsColored + titleText;
 
     rows.push(
       theme.reset + bg + fg +

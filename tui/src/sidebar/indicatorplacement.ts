@@ -1,7 +1,10 @@
 import { readExocortexConfig } from "@exocortex/shared/config";
 
-/** Where a sidebar row draws its activity and task indicators: before or after its name. */
-export type SidebarIndicatorSide = "before" | "after";
+/**
+ * Where a sidebar row draws its activity and task indicators: before its
+ * name, right after it, or against the row's right edge.
+ */
+export type SidebarIndicatorSide = "before" | "after" | "right";
 
 export interface SidebarIndicatorPlacement {
   folders: SidebarIndicatorSide;
@@ -13,7 +16,7 @@ export const DEFAULT_SIDEBAR_INDICATOR_PLACEMENT: SidebarIndicatorPlacement = { 
 let placementSetting: SidebarIndicatorPlacement | null = null;
 
 function side(value: unknown, fallback: SidebarIndicatorSide): SidebarIndicatorSide {
-  return value === "before" || value === "after" ? value : fallback;
+  return value === "before" || value === "after" || value === "right" ? value : fallback;
 }
 
 /** config.json `tui.sidebarIndicators`; a missing or unknown value takes the default ("after"). */

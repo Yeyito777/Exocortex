@@ -51,9 +51,10 @@ selects another daemon without moving client-side UI operations to that host.
   (`📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`), and a name too long for the row is cut
   so they stay whole. The unread badge and mute bell stay at the right edge.
   Set each kind of row with `"tui": { "sidebarIndicators": { "folders":
-  "before", "conversations": "before" } }` in `config/config.json` (`before`
-  or `after`, default `after`) and restart the TUI; `before` puts them ahead
-  of the name as earlier versions did.
+  "right", "conversations": "before" } }` in `config/config.json` and restart
+  the TUI: `after` (default), `before` (ahead of the name, as earlier versions
+  did) or `right` (against the row's right edge, one space left of the unread
+  badge or mute bell; the name is cut where it would meet them).
 
 ## Keyboard reference
 
