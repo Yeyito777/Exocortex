@@ -405,6 +405,8 @@ export function renderSidebar(
     let starIcon = "";
     let emojiIcon = "";
     let rawTitle = "";
+    /** A folder row's 📁/📂 (with its space), which rawTitle starts with. */
+    let folderGlyph = "";
     let isCurrent = false;
     let itemFg = theme.muted;
     let notificationCount = 0;
@@ -423,6 +425,7 @@ export function renderSidebar(
       explicitlyMuted = folder?.muted === true;
       const isOpenTreeFolder = treeView && folder !== undefined && sidebar.expandedFolderIds.has(folder.id);
       const icon = isOpenTreeFolder ? "📂" : "📁";
+      folderGlyph = `${icon} `;
       if (isOpenTreeFolder) {
         // An open folder's children are listed right below with their own
         // badges, so its aggregate badges and count would only repeat them.
@@ -496,7 +499,10 @@ export function renderSidebar(
       + termWidth(backgroundTaskIcon) + termWidth(starIcon) + termWidth(emojiIcon);
     const iconsAfter = side === "after" && iconsWidth > 0;
     const iconsRight = side === "right" && iconsWidth > 0;
-    const prefixWidth = termWidth(prefix) + (iconsAfter || iconsRight ? 0 : iconsWidth);
+    // In before mode a folder keeps its 📁 first: `📁 ◷ name/ 1`. Only the name is cut.
+    const folderLead = side === "before" && iconsWidth > 0 && folderGlyph && rawTitle.startsWith(folderGlyph) ? folderGlyph : "";
+    if (folderLead) rawTitle = rawTitle.slice(folderLead.length);
+    const prefixWidth = termWidth(prefix) + termWidth(folderLead) + (iconsAfter || iconsRight ? 0 : iconsWidth);
     // The bell represents this item's durable preference, not the effective
     // notification policy inherited from its folder path. Inherited muting
     // still suppresses unread indicators and badges below.
@@ -540,7 +546,7 @@ export function renderSidebar(
         ? titleText + " " + (trimLastIconSpace
           ? mirroredIconsColored.slice(0, lastIconSpace) + mirroredIconsColored.slice(lastIconSpace + 1)
           : mirroredIconsColored)
-        : iconsColored + titleText;
+        : folderLead + iconsColored + titleText;
 
     rows.push(
       theme.reset + bg + fg +

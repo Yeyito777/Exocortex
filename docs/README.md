@@ -60,7 +60,8 @@ selects another daemon without moving client-side UI operations to that host.
   the sidebar: `right` (default), `after`
   (right after the name, folder dots green, blue, yellow first: `📁 work/ 6
   2◉ 3◉ ◉ 2◆`, `build ◉ 2◆ ★`) or `before` (ahead of the name, as earlier
-  versions did, with one folder dot and the red unread badge). A muted conversation, muted
+  versions did, with one folder dot and the red unread badge; a folder keeps
+  its icon first: `📁 ◷ work/ 1`). A muted conversation, muted
   itself or through a folder, shows no activity dot (blue, yellow or green)
   and no `◆`/`◷`/`$`, only its bell, star and mark; a muted folder shows none
   of its conversations' activity, and a collapsed folder leaves its muted

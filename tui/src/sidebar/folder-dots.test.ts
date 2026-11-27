@@ -63,7 +63,8 @@ function scene(): { sidebar: SidebarState; globalIdle: Set<string> } {
 function render(placement: SidebarIndicatorPlacement) {
   const { sidebar, globalIdle } = scene();
   const rows = renderSidebar(sidebar, 20, true, null, globalIdle, null, null, placement);
-  const find = (name: string) => rows.find(row => stripAnsi(row).includes(`📁 ${name}/`))!;
+  // The name, with or without indicators between it and its 📁.
+  const find = (name: string) => rows.find(row => new RegExp(`📁 (\\S+ )*${name}/`).test(stripAnsi(row)))!;
   return { rows, find, plain: (name: string) => stripAnsi(find(name)) };
 }
 
@@ -131,10 +132,10 @@ describe("collapsed folders count their children's dots by colour", () => {
 
   test("before keeps the old folder row: one dot by the busiest state and the red unread badge", () => {
     const before = render({ folders: "before", conversations: "before" });
-    expect(before.plain("busy")).toMatch(/^[▸ ] 3◉ 📁 busy\/ 5 +2 │$/);
+    expect(before.plain("busy")).toMatch(/^[▸ ] 📁 3◉ busy\/ 5 +2 │$/);
     expect(before.find("busy")).toContain(blue("3◉ "));
     expect(before.find("busy")).toContain(theme.notificationBg);
-    expect(before.plain("inbox")).toMatch(/^[▸ ] ◉ 📁 inbox\/ 2 +2 │$/);
+    expect(before.plain("inbox")).toMatch(/^[▸ ] 📁 ◉ inbox\/ 2 +2 │$/);
     expect(before.find("inbox")).toContain(green("◉ "));
     expect(before.find("inbox")).toContain(theme.notificationBg);
   });
