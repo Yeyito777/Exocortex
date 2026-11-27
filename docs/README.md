@@ -49,7 +49,8 @@ selects another daemon without moving client-side UI operations to that host.
 - Sidebar indicators: a row's activity dot (`◉`), subagent (`◆`), Chrono
   (`◷`) and command (`$`) counts, star (`★`) and mark emoji sit at the row's
   right end, one column in from the border, or one space left of the unread
-  badge or mute bell. A name too long for the row is cut where it would meet
+  badge or mute bell, in mirrored order so the dot is outermost
+  (`build  ★ $ ◷ 2◆ ◉`). A name too long for the row is cut where it would meet
   them, so they stay whole. Set each kind of row with `"tui": {
   "sidebarIndicators": { "folders": "after", "conversations": "before" } }`
   in `config/config.json` and restart the TUI: `right` (default), `after`

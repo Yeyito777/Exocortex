@@ -378,7 +378,7 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}99+$ `);
   });
 
-  test("renders Chrono, subagent, and shell indicators after the streaming indicator without a goal badge", () => {
+  test("renders Chrono, subagent, and shell indicators beside the streaming indicator, mirrored at the right edge, without a goal badge", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.conversations = [conversation("worker", 0, {
       title: "Worker",
@@ -402,9 +402,10 @@ describe("sidebar rendering", () => {
     expect(row).toContain(`${theme.success}◷ `);
     expect(row).not.toContain(`${theme.success}2◷ `);
     expect(row).not.toContain(`${theme.tool}◆ `);
-    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("2◆ "));
-    expect(row!.indexOf("2◆ ")).toBeLessThan(row!.indexOf("◷ "));
-    expect(row!.indexOf("◷ ")).toBeLessThan(row!.indexOf("2$ "));
+    // Right-aligned (the default), the dot is outermost: `2$ ◷ 2◆ ◉`.
+    expect(row!.indexOf("2$ ")).toBeLessThan(row!.indexOf("◷ "));
+    expect(row!.indexOf("◷ ")).toBeLessThan(row!.indexOf("2◆ "));
+    expect(row!.indexOf("2◆ ")).toBeLessThan(row!.indexOf("◉ "));
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 

@@ -58,7 +58,7 @@ describe("muting hides sidebar activity", () => {
     expect(quiet).toContain("🔕");
     expect(termWidth(quiet)).toBe(termWidth(rows[0]));
     // An unmuted conversation doing the same work still shows it.
-    expect(row(rows, "loud")).toMatch(/◉ 2◆ ◷ \$/);
+    expect(row(rows, "loud")).toMatch(/\$ ◷ 2◆ ◉/);
   });
 
   test("a muted conversation shows no yellow dot for a long sleep either", () => {
@@ -96,8 +96,8 @@ describe("muting hides sidebar activity", () => {
 
   test("a collapsed folder counts only its unmuted children's activity", () => {
     const rows = rowsOf(scene());
-    // muted-runner (◉ 2◆ ◷ $) is left out; live-runner (◉ ◆) is counted alone.
-    expect(row(rows, "mixed/")).toMatch(/mixed\/ 2 +◉ ◆ │$/);
+    // muted-runner ($ ◷ 2◆ ◉) is left out; live-runner (◆ ◉) is counted alone.
+    expect(row(rows, "mixed/")).toMatch(/mixed\/ 2 +◆ ◉ │$/);
   });
 
   test("a folder holding a muted subfolder leaves the subfolder's conversations out", () => {
@@ -114,7 +114,7 @@ describe("muting hides sidebar activity", () => {
     const rows = rowsOf(sidebar);
     expect(row(rows, "muted-runner")).not.toMatch(ACTIVITY);
     expect(row(rows, "muted-runner")).toContain("🔕");
-    expect(row(rows, "live-runner")).toMatch(/◉ ◆ │$/);
+    expect(row(rows, "live-runner")).toMatch(/◆ ◉ │$/);
   });
 
   test("Shift+L skips muted conversations, which no longer show as active", () => {

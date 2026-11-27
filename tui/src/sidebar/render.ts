@@ -457,7 +457,7 @@ export function renderSidebar(
     }
 
     // Activity, task, star and mark icons go before the name, right after it
-    // (`📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`), or at the row's right end (one
+    // (`📁 work/ 3 ◉ 2◆`, `build ◉ 2◆ ★`), or at the row's right end, mirrored (`★ 2◆ ◉`; one
     // column in from the border, or left of the mute bell and unread badge),
     // per tui.sidebarIndicators.
     const side = item?.type === "folder" ? placement.folders : item?.type === "conversation" ? placement.conversations : "before";
@@ -497,14 +497,17 @@ export function renderSidebar(
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
     const iconsColored = streamIconColored + subagentIconColored + chronoTaskIconColored + backgroundTaskIconColored
       + starIconColored + emojiIconColored;
+    // Right-aligned icons mirror the order, so the activity dot is outermost.
+    const mirroredIconsColored = emojiIconColored + starIconColored + backgroundTaskIconColored + chronoTaskIconColored
+      + subagentIconColored + streamIconColored;
     // The last icon's trailing space; only colour escapes follow it.
-    const lastIconSpace = iconsColored.lastIndexOf(" ");
+    const lastIconSpace = mirroredIconsColored.lastIndexOf(" ");
     const body = iconsAfter
       ? titleText + " " + iconsColored + " ".repeat(Math.max(0, maxTitle - termWidth(title)))
       : iconsRight
         ? titleText + " " + (trimLastIconSpace
-          ? iconsColored.slice(0, lastIconSpace) + iconsColored.slice(lastIconSpace + 1)
-          : iconsColored)
+          ? mirroredIconsColored.slice(0, lastIconSpace) + mirroredIconsColored.slice(lastIconSpace + 1)
+          : mirroredIconsColored)
         : iconsColored + titleText;
 
     rows.push(

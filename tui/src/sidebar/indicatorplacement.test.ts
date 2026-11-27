@@ -88,21 +88,21 @@ describe("tui.sidebarIndicators", () => {
     expect(conversationsAfter[7]).toBe("  root streaming ◉         │");
   });
 
-  test("right puts every icon at the row's right end, one column in from the border or left of the mute bell and unread badge", () => {
+  test("right puts every icon at the row's right end, mirrored so the dot is outermost, one column in from the border or left of the mute bell and unread badge", () => {
     const [collapsed, expanded] = plain(render({ folders: "right", conversations: "right" }));
     expect(collapsed.slice(2, 12)).toEqual([
-      "▸ 📁 work/ 2   ◉ 2◆ ◷ $  1 │",
+      "▸ 📁 work/ 2   $ ◷ 2◆ ◉  1 │",
       "  📂 open/                 │",
       "    child                ◉ │",
-      "  📁 a folder name… ◉ ◆  1 │",
+      "  📁 a folder name… ◆ ◉  1 │",
       "  📁 muted/ 1            🔕│",
       "  root streaming         ◉ │",
-      "  marked and star… 3◆ ★ 🔥 │",
-      "  a conversation ti… ◆ ◷ $ │",
+      "  marked and star… 🔥 ★ 3◆ │",
+      "  a conversation ti… $ ◷ ◆ │",
       "  current              ★ 🔕│",
       "  plain                    │",
     ]);
-    expect(expanded[3]).toBe("▸   busy          ◉ 2◆ ◷ $ │");
+    expect(expanded[3]).toBe("▸   busy          $ ◷ 2◆ ◉ │");
     for (const row of [...collapsed, ...expanded]) expect(termWidth(row)).toBe(termWidth(collapsed[0]));
   });
 
@@ -115,16 +115,16 @@ describe("tui.sidebarIndicators", () => {
       expect(iconsEnd(rows.find(row => row.includes(title))!)).toBe(edge - 1);
     }
     // One plain space, then the unread badge (` 1 `, padded on its red background) or the mute bell.
-    expect(rows.find(row => row.includes("work/"))).toMatch(/◷ \$ {2}1 │$/);
+    expect(rows.find(row => row.includes("work/"))).toMatch(/2◆ ◉ {2}1 │$/);
     expect(rows.find(row => row.includes("current"))).toMatch(/★ 🔕│$/);
   });
 
   test("right: a long name is cut where it would meet the icons, which stay whole", () => {
     const [rows] = plain(render({ folders: "right", conversations: "right" }));
     const long = rows.find(row => row.includes("a conversation"))!;
-    expect(long).toMatch(/a conversation ti… ◆ ◷ \$ │$/);
+    expect(long).toMatch(/a conversation ti… \$ ◷ ◆ │$/);
     const folderRow = rows.find(row => row.includes("a folder"))!;
-    expect(folderRow).toMatch(/a folder name… ◉ ◆ {2}1 │$/);
+    expect(folderRow).toMatch(/a folder name… ◆ ◉ {2}1 │$/);
   });
 
   test("config.json values: each side defaults to right; unknown values fall back", () => {
