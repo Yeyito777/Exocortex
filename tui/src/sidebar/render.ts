@@ -21,7 +21,8 @@ import { theme } from "../theme";
 import { conversationWorkCounts, hasInProgressModelWork, inlineLongSleepStartedAt, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import { sanitizeUntrustedLabel } from "../terminaltext";
-import type { ConversationSummary, ConversationTaskSummary, FolderSummary } from "../messages";
+import type { ConversationSummary, ConversationTaskSummary, FolderSummary, ToolDisplayInfo } from "../messages";
+import { toolColor } from "../toolstyles";
 import { assertNoUnversionedEdit, SIDEBAR_VERSION_CHECK, sidebarListVersion } from "./version";
 import type { DisplayUpdateStatus } from "../update-status";
 
@@ -268,8 +269,11 @@ export function renderSidebar(
   optimisticStreamingConvId: string | null = null,
   remoteAlias: string | null = null,
   placement: SidebarIndicatorPlacement = sidebarIndicatorPlacement(),
+  /** The daemon's tool styles: ◷ takes Chrono's colour from them, as history does. */
+  toolRegistry: readonly ToolDisplayInfo[] = [],
 ): string[] {
   const rows: string[] = [];
+  const chronoColor = toolColor("chrono", toolRegistry);
   const innerWidth = SIDEBAR_WIDTH - 1; // -1 for right border │
   const borderFg = focused ? theme.borderFocused : theme.borderUnfocused;
   const borderBg = theme.appBg ?? '';
@@ -492,7 +496,7 @@ export function renderSidebar(
     const streamIconColored = streamIcon ? streamIconColor + streamIcon + fg : "";
     const subagentIconColored = subagentIcon ? theme.accent + subagentIcon + fg : "";
     const backgroundTaskIconColored = backgroundTaskIcon ? theme.warning + backgroundTaskIcon + fg : "";
-    const chronoTaskIconColored = chronoTaskIcon ? theme.success + chronoTaskIcon + fg : "";
+    const chronoTaskIconColored = chronoTaskIcon ? chronoColor + chronoTaskIcon + fg : "";
     const starIconColored = starIcon ? theme.warning + starIcon + fg : "";
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
     const iconsColored = streamIconColored + subagentIconColored + chronoTaskIconColored + backgroundTaskIconColored

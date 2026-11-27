@@ -19,10 +19,11 @@ import {
 import { layoutSidePanels } from "./scratchpadpanel";
 import { toggleCardFold } from "./sidecards";
 import { stripAnsi } from "./historycursor";
-import type { ExternalIntegrationSummary } from "./messages";
+import type { ExternalIntegrationSummary, ToolDisplayInfo } from "./messages";
 import { renderSidebar } from "./sidebar/render";
 import { createInitialState } from "./state";
 import { termWidth, visibleLength } from "./textwidth";
+import { resolveToolDisplay } from "./toolstyles";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
 function integration(overrides: Partial<ExternalIntegrationSummary> = {}): ExternalIntegrationSummary {
@@ -294,14 +295,51 @@ describe("focused conversation task panel", () => {
     expect(msUntilTaskPanelEntryUpdate(running, 63_250)).toBe(750);
   });
 
-  test("uses Chrono's fallback color when it is absent from the tool registry", () => {
+  test("without Chrono in the tool registry, Chrono rows take the colour history gives it", () => {
     const state = stateWithTasks();
     state.toolRegistry = state.toolRegistry.filter(tool => tool.name !== "chrono");
     state.sidebar.conversations[0].tasks = [
       { id: "chrono:sleep", kind: "chrono", title: "Sleep", startedAt: 1_000, chronoMode: "sleep" },
     ];
 
-    expect(renderTaskPanel(state, 100, 20, 43_000)?.lines[1]).toContain(hexToAnsi("#4ec9b0"));
+    expect(renderTaskPanel(state, 100, 20, 43_000)?.lines[1]).toContain(`${resolveToolDisplay("chrono", "", state.toolRegistry).fg}◷ Chrono`);
+  });
+
+  describe("◷ has the Chrono tool's history colour everywhere", () => {
+    function chronoScene(toolRegistry: ToolDisplayInfo[]) {
+      const state = stateWithTasks();
+      state.toolRegistry = toolRegistry;
+      const wake = (n: number) => ({ id: `chrono:${n}`, kind: "chrono" as const, title: `Wake ${n}`, startedAt: 1_000, dueAt: 90_000, chronoMode: "wake" as const });
+      state.sidebar.conversations[0].tasks = [wake(1), wake(2)];
+      state.sidebar.conversations.push(
+        { ...state.sidebar.conversations[0], id: "other", title: "Other", sortOrder: 1, tasks: [wake(3)] },
+        { ...state.sidebar.conversations[0], id: "filed", title: "Filed", sortOrder: 2, folderId: "jobs", tasks: [wake(4), wake(5), wake(6)] },
+      );
+      state.sidebar.folders = [{ id: "jobs", name: "jobs", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+      return state;
+    }
+
+    for (const [name, registry] of [
+      ["a registry colour", [{ name: "chrono", label: "Chrono", color: "#a1b2c3" }]],
+      ["no registry entry", []],
+    ] as const) {
+      test(`card rows, card header and sidebar rows agree with history (${name})`, () => {
+        const state = chronoScene([...registry]);
+        const chrono = resolveToolDisplay("chrono", "", state.toolRegistry).fg;
+        if (registry.length) expect(chrono).toBe(hexToAnsi("#a1b2c3"));
+        const panel = renderTaskPanel(state, 100, 20, 50_000)!;
+        expect(panel.lines[0]).toContain(`${chrono}2◷`);
+        expect(panel.lines[1]).toContain(`${chrono}◷ Chrono`);
+        const sidebar = renderSidebar(state.sidebar, 12, true, null, new Set(), null, null, undefined, state.toolRegistry);
+        expect(sidebar.find(row => row.includes("Parent"))).toContain(`${chrono}2◷`);
+        expect(sidebar.find(row => row.includes("Other"))).toContain(`${chrono}◷`);
+        expect(sidebar.find(row => row.includes("jobs/"))).toContain(`${chrono}3◷`);
+        // No other colour is used for the glyph.
+        for (const text of [panel.lines[0], ...sidebar]) {
+          for (const match of text.matchAll(/(\x1b\[[0-9;]*m)+(\d*)◷/g)) expect(match[0]).toContain(chrono);
+        }
+      });
+    }
   });
 });
 
@@ -470,7 +508,7 @@ describe("focused conversation subscriptions", () => {
     // Claude Code agents count with subagents, as in the sidebar; one command shows its glyph alone.
     expect(stripAnsi(header)).toMatch(/^╭─ Tasks ─+ 4◆ 2◷ \$ 7 ─╮$/);
     expect(header).toContain(`${theme.accent}4◆`);
-    expect(header).toContain(`${theme.success}2◷`);
+    expect(header).toContain(`${hexToAnsi("#11ccaa")}2◷`);
     expect(header).toContain(`${theme.warning}$`);
 
     state.externalToolStyles = [

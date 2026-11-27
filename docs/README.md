@@ -63,7 +63,8 @@ selects another daemon without moving client-side UI operations to that host.
   card still shows a muted subagent's activity. A counted glyph shows alone
   for one and with its count first for more (`2◆`, `3◷`, `99+$` past 99), in
   the sidebar and in the Tasks, Subscriptions and Scratchpad card headers
-  (`3D`, `2✗`, `2✓`).
+  (`3D`, `2✗`, `2✓`). `◷` has the Chrono tool's colour from chat history
+  everywhere: sidebar rows, folder totals, the Tasks card's header and rows.
 
 ## Keyboard reference
 

@@ -423,7 +423,7 @@ function matchExternalTool(summary: string, styles: ExternalToolStyle[]): Resolv
 export function resolveToolDisplay(
   toolName: string,
   summary: string,
-  registry: ToolDisplayInfo[],
+  registry: readonly ToolDisplayInfo[],
   externalToolStyles?: ExternalToolStyle[],
 ): ResolvedToolDisplay {
   const info = registry.find(t => t.name === toolName);
@@ -437,4 +437,12 @@ export function resolveToolDisplay(
   // A call with nothing to add is summarized by its label alone.
   const detail = summary === label ? "" : summary;
   return { label, detail, fg: info ? hexToAnsi(info.color) : theme.tool };
+}
+
+/**
+ * A tool's colour as chat history draws its calls (the daemon's tool style,
+ * else theme.tool). The sidebar's and the Tasks card's ◷ use Chrono's.
+ */
+export function toolColor(toolName: string, registry: readonly ToolDisplayInfo[]): string {
+  return resolveToolDisplay(toolName, "", registry).fg;
 }
