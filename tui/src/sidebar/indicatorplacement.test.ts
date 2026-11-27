@@ -87,31 +87,31 @@ describe("tui.sidebarIndicators", () => {
     expect(conversationsAfter[7]).toBe("  root streaming ◉         │");
   });
 
-  test("right puts every icon against the right edge, left of the mute bell and unread badge", () => {
+  test("right puts every icon at the row's right end, one column in from the border or left of the mute bell and unread badge", () => {
     const [collapsed, expanded] = plain(render({ folders: "right", conversations: "right" }));
     expect(collapsed.slice(2, 12)).toEqual([
       "▸ 📁 work/ 2   ◉ ◆2 ◷ $  1 │",
       "  📂 open/                 │",
-      "    child                 ◉│",
+      "    child                ◉ │",
       "  📁 a folder name… ◉ ◆  1 │",
       "  📁 muted/ 1          ◉ 🔕│",
-      "  root streaming          ◉│",
-      "  marked and starr… ◆3 ★ 🔥│",
-      "  a conversation tit… ◆ ◷ $│",
+      "  root streaming         ◉ │",
+      "  marked and star… ◆3 ★ 🔥 │",
+      "  a conversation ti… ◆ ◷ $ │",
       "  current                🔕│",
       "  plain                    │",
     ]);
-    expect(expanded[3]).toBe("▸   busy           ◉ ◆2 ◷ $│");
+    expect(expanded[3]).toBe("▸   busy          ◉ ◆2 ◷ $ │");
     for (const row of [...collapsed, ...expanded]) expect(termWidth(row)).toBe(termWidth(collapsed[0]));
   });
 
-  test("right: rows without a badge or bell end their icons in one column; a badge or bell takes the edge, one space after them", () => {
+  test("right: rows without a badge or bell end their icons in one column, one in from the border; a badge or bell takes the edge, one space after them", () => {
     const [rows] = plain(render({ folders: "right", conversations: "right" }));
     const edge = termWidth(rows[0]) - 1; // the border's column
     const iconsEnd = (row: string) => termWidth(row.replace(/[^◉◆◷$★🔥\d]*$/u, ""));
-    // No badge or bell: the last icon sits just left of the border.
-    for (const title of ["child", "root streaming", "marked and starr", "a conversation tit"]) {
-      expect(iconsEnd(rows.find(row => row.includes(title))!)).toBe(edge);
+    // No badge or bell: one empty column between the last icon and the border.
+    for (const title of ["child", "root streaming", "marked and star", "a conversation ti"]) {
+      expect(iconsEnd(rows.find(row => row.includes(title))!)).toBe(edge - 1);
     }
     // One plain space, then the unread badge (` 1 `, padded on its red background) or the mute bell.
     expect(rows.find(row => row.includes("work/"))).toMatch(/◷ \$ {2}1 │$/);
@@ -121,22 +121,22 @@ describe("tui.sidebarIndicators", () => {
   test("right: a long name is cut where it would meet the icons, which stay whole", () => {
     const [rows] = plain(render({ folders: "right", conversations: "right" }));
     const long = rows.find(row => row.includes("a conversation"))!;
-    expect(long).toMatch(/a conversation tit… ◆ ◷ \$│$/);
+    expect(long).toMatch(/a conversation ti… ◆ ◷ \$ │$/);
     const folderRow = rows.find(row => row.includes("a folder"))!;
     expect(folderRow).toMatch(/a folder name… ◉ ◆ {2}1 │$/);
   });
 
-  test("config.json values: each side defaults to after; unknown values fall back", () => {
-    expect(resolveSidebarIndicatorPlacement(() => ({}))).toEqual({ folders: "after", conversations: "after" });
+  test("config.json values: each side defaults to right; unknown values fall back", () => {
+    expect(resolveSidebarIndicatorPlacement(() => ({}))).toEqual({ folders: "right", conversations: "right" });
     expect(resolveSidebarIndicatorPlacement(() => ({ tui: { sidebarIndicators: { folders: "before" } } })))
-      .toEqual({ folders: "before", conversations: "after" });
+      .toEqual({ folders: "before", conversations: "right" });
     expect(resolveSidebarIndicatorPlacement(() => ({ tui: { sidebarIndicators: { folders: "left", conversations: "before" } } })))
-      .toEqual({ folders: "after", conversations: "before" });
-    expect(resolveSidebarIndicatorPlacement(() => ({ tui: { sidebarIndicators: { folders: "right", conversations: "right" } } })))
-      .toEqual({ folders: "right", conversations: "right" });
+      .toEqual({ folders: "right", conversations: "before" });
+    expect(resolveSidebarIndicatorPlacement(() => ({ tui: { sidebarIndicators: { folders: "after", conversations: "after" } } })))
+      .toEqual({ folders: "after", conversations: "after" });
     expect(resolveSidebarIndicatorPlacement(() => ({ tui: { sidebarIndicators: "before" } })))
-      .toEqual({ folders: "after", conversations: "after" });
+      .toEqual({ folders: "right", conversations: "right" });
     expect(resolveSidebarIndicatorPlacement(() => { throw new Error("unreadable"); }))
-      .toEqual({ folders: "after", conversations: "after" });
+      .toEqual({ folders: "right", conversations: "right" });
   });
 });

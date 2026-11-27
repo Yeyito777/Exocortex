@@ -309,7 +309,7 @@ export interface TuiConfig {
   clock?: "12h" | "24h";
   /** How sidebar folders open: expand in place ("tree", default) or replace the list ("navigate"). */
   sidebarFolders?: "navigate" | "tree";
-  /** Where sidebar rows draw their activity, task, star and mark icons: before the name, after it, or right-aligned (default "after" for both). */
+  /** Where sidebar rows draw their activity, task, star and mark icons: before the name, after it, or right-aligned (default "right" for both). */
   sidebarIndicators?: { folders?: "before" | "after" | "right"; conversations?: "before" | "after" | "right" };
   /** Display math: typeset images on Kitty-graphics terminals ("auto", default), always "text", or force "image". */
   math?: "auto" | "text" | "image";

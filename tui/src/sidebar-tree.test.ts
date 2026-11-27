@@ -378,7 +378,7 @@ describe("sidebar tree folder view", () => {
 
     test("a collapsed tree folder keeps its aggregate badges and count", () => {
       const row = folderRow(badgeSidebar("tree"), "📁");
-      expect(row).toMatch(/📁 work\/ 1 ◉ ◆2 ◷ \$ /);
+      expect(row).toMatch(/📁 work\/ 1 +◉ ◆2 ◷ \$ /);
     });
 
     test("an open tree folder shows only its icon and name, plus its own mute bell", () => {
@@ -396,13 +396,13 @@ describe("sidebar tree folder view", () => {
       expect(row).not.toMatch(/[◉◷◆$]|work\/ \d/);
       // The child still carries its own badges.
       const lines = renderSidebar(sidebar, 12, true, null).map(line => stripAnsi(line));
-      expect(lines.find(line => line.includes("busy"))).toMatch(/busy ◉ ◆2 ◷ \$ /);
+      expect(lines.find(line => line.includes("busy"))).toMatch(/busy +◉ ◆2 ◷ \$ /);
     });
 
     test("the navigate view keeps every folder badge", () => {
       const sidebar = badgeSidebar("navigate");
       const row = folderRow(sidebar, "📁");
-      expect(row).toMatch(/📁 work\/ 1 ◉ ◆2 ◷ \$ /);
+      expect(row).toMatch(/📁 work\/ 1 +◉ ◆2 ◷ \$ /);
     });
 
     test("a long folder name truncates before the indicators after it, keeping the row's width", () => {

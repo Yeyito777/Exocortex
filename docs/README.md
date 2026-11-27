@@ -47,14 +47,14 @@ selects another daemon without moving client-side UI operations to that host.
   `"tui": { "resourcesGpu": true }` in `config/config.json` and restart the TUI
   to show it.
 - Sidebar indicators: a row's activity dot (`◉`), subagent (`◆`), Chrono
-  (`◷`) and command (`$`) counts, star (`★`) and mark emoji go after its name
-  (`📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`), and a name too long for the row is cut
-  so they stay whole. The unread badge and mute bell stay at the right edge.
-  Set each kind of row with `"tui": { "sidebarIndicators": { "folders":
-  "right", "conversations": "before" } }` in `config/config.json` and restart
-  the TUI: `after` (default), `before` (ahead of the name, as earlier versions
-  did) or `right` (against the row's right edge, one space left of the unread
-  badge or mute bell; the name is cut where it would meet them).
+  (`◷`) and command (`$`) counts, star (`★`) and mark emoji sit at the row's
+  right end, one column in from the border, or one space left of the unread
+  badge or mute bell. A name too long for the row is cut where it would meet
+  them, so they stay whole. Set each kind of row with `"tui": {
+  "sidebarIndicators": { "folders": "after", "conversations": "before" } }`
+  in `config/config.json` and restart the TUI: `right` (default), `after`
+  (right after the name: `📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`) or `before`
+  (ahead of the name, as earlier versions did).
 
 ## Keyboard reference
 

@@ -593,7 +593,7 @@ describe("sidebar rendering", () => {
 
     const folderRow = renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
 
-    expect(folderRow).toContain(`${theme.accent}◉ `);
+    expect(folderRow).toContain(`${theme.accent}◉`);
     expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
     expect(folderRow).not.toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
   });
@@ -607,7 +607,7 @@ describe("sidebar rendering", () => {
     sidebar.conversations = [queuedTurn];
 
     let folderRow = renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
-    expect(folderRow).toContain(`${theme.accent}◉ `);
+    expect(folderRow).toContain(`${theme.accent}◉`);
     expect(folderRow).not.toContain(theme.notificationBg);
 
     const finalCompletion = { ...queuedTurn, streaming: false };
@@ -631,20 +631,20 @@ describe("sidebar rendering", () => {
 
     let rows = renderSidebar(sidebar, 8, true, null);
     const subagentsRow = rows.find(row => row.includes("SubAgents"));
-    expect(subagentsRow).toContain(`${theme.success}◉ `);
+    expect(subagentsRow).toContain(`${theme.success}◉`);
     expect(subagentsRow).toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
-    expect(rows.find(row => row.includes("ordinary"))).toContain(`${theme.success}◉ `);
+    expect(rows.find(row => row.includes("ordinary"))).toContain(`${theme.success}◉`);
 
     sidebar.currentFolderId = "subagents";
     rows = renderSidebar(sidebar, 8, true, null);
     const batchRow = rows.find(row => row.includes("Batch"));
-    expect(batchRow).toContain(`${theme.success}◉ `);
+    expect(batchRow).toContain(`${theme.success}◉`);
     expect(batchRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
-    expect(rows.find(row => row.includes("direct-agent"))).toContain(`${theme.success}◉ `);
+    expect(rows.find(row => row.includes("direct-agent"))).toContain(`${theme.success}◉`);
 
     sidebar.currentFolderId = "batch";
     rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("nested-agent"))).toContain(`${theme.success}◉ `);
+    expect(rows.find(row => row.includes("nested-agent"))).toContain(`${theme.success}◉`);
   });
 
   test("renders a right-aligned mute bell instead of completion notifications", () => {
@@ -746,7 +746,7 @@ describe("sidebar rendering", () => {
 
     const row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Muted folder"));
 
-    expect(row).toContain(`${theme.accent}◉ `);
+    expect(row).toContain(`${theme.accent}◉`);
     expect(row).toContain("🔕");
     expect(row).not.toContain(theme.notificationBg);
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);

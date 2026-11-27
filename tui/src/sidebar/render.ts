@@ -423,16 +423,14 @@ export function renderSidebar(
     }
 
     // Activity, task, star and mark icons go before the name, right after it
-    // (`📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`), or against the row's right edge
-    // (left of the mute bell and unread badge), per tui.sidebarIndicators.
+    // (`📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`), or at the row's right end (one
+    // column in from the border, or left of the mute bell and unread badge),
+    // per tui.sidebarIndicators.
     const side = item?.type === "folder" ? placement.folders : item?.type === "conversation" ? placement.conversations : "before";
     const iconsWidth = termWidth(streamIcon) + termWidth(subagentIcon) + termWidth(chronoTaskIcon)
       + termWidth(backgroundTaskIcon) + termWidth(starIcon) + termWidth(emojiIcon);
     const iconsAfter = side === "after" && iconsWidth > 0;
     const iconsRight = side === "right" && iconsWidth > 0;
-    // One column between the name and the icons that follow it. Right-aligned
-    // icons drop the last one's trailing space, to sit flush on the edge.
-    const trailingIconsWidth = iconsAfter ? 1 + iconsWidth : iconsRight ? iconsWidth : 0;
     const prefixWidth = termWidth(prefix) + (iconsAfter || iconsRight ? 0 : iconsWidth);
     // The bell represents this item's durable preference, not the effective
     // notification policy inherited from its folder path. Inherited muting
@@ -442,6 +440,11 @@ export function renderSidebar(
     const badgeGap = notificationBadge ? 1 : 0;
     const badgeWidth = notificationBadge?.width ?? 0;
     const suffixWidth = termWidth(muteIcon) + badgeGap + badgeWidth;
+    // Right-aligned icons keep the last one's trailing space as the column
+    // before the border; the bell and badge bring their own leading space.
+    const trimLastIconSpace = iconsRight && suffixWidth > 0;
+    // One column between the name and the icons that follow it.
+    const trailingIconsWidth = iconsAfter || iconsRight ? 1 + iconsWidth - (trimLastIconSpace ? 1 : 0) : 0;
     // The name gives way first: icons after a truncated name stay whole.
     const maxTitle = Math.max(0, innerWidth - prefixWidth - trailingIconsWidth - suffixWidth);
     const title = truncateSidebarTitle(rawTitle, maxTitle);
@@ -465,7 +468,9 @@ export function renderSidebar(
     const body = iconsAfter
       ? titleText + " " + iconsColored + " ".repeat(Math.max(0, maxTitle - termWidth(title)))
       : iconsRight
-        ? titleText + " " + iconsColored.slice(0, lastIconSpace) + iconsColored.slice(lastIconSpace + 1)
+        ? titleText + " " + (trimLastIconSpace
+          ? iconsColored.slice(0, lastIconSpace) + iconsColored.slice(lastIconSpace + 1)
+          : iconsColored)
         : iconsColored + titleText;
 
     rows.push(
