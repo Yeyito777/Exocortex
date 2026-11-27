@@ -1,5 +1,12 @@
 import { getMarkFromTitle } from "../marks";
-import { ACTIVITY_GLYPH, conversationActivityIndicator, countedActivityIndicator, sidebarConversationActivityContext } from "./activityindicator";
+import {
+  ACTIVITY_GLYPH,
+  conversationActivityIndicator,
+  conversationActivityState,
+  countedActivityIndicator,
+  sidebarConversationActivityContext,
+  type ConversationActivityState,
+} from "./activityindicator";
 import { areFolderNotificationsMuted, currentFolder } from "./folders";
 import { sidebarIndicatorPlacement, type SidebarIndicatorPlacement } from "./indicatorplacement";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
@@ -42,6 +49,11 @@ interface FolderAggregate {
   globalIdle: boolean;
   unread: boolean;
   unreadCount: number;
+  /**
+   * Unmuted children by the dot their own row shows (activityindicator.ts):
+   * blue, yellow, green. The after and right folder rows count these.
+   */
+  dots: Record<ConversationActivityState, number>;
   subagentCount: number;
   backgroundTaskCount: number;
   chronoTaskCount: number;
@@ -69,7 +81,7 @@ function collectFolderAggregateInputs(
   for (const folder of sidebar.folders) out.push(folder.id, folder.parentId, folder.muted);
   out.push(sidebar.conversations.length);
   for (const conv of sidebar.conversations) {
-    out.push(conv.id, conv.folderId, conv.muted, conv.streaming, conv.unread, conv.tasks,
+    out.push(conv.id, conv.folderId, conv.muted, conv.streaming, conv.providerWaiting, conv.unread, conv.tasks,
       conv.subagentCount, conv.backgroundTaskCount, globalIdleConvIds.has(conv.id));
   }
 }
@@ -148,6 +160,7 @@ function buildFolderAggregates(
       globalIdle: false,
       unread: false,
       unreadCount: 0,
+      dots: { streaming: 0, warning: 0, unread: 0 },
       subagentCount: 0,
       backgroundTaskCount: 0,
       chronoTaskCount: 0,
@@ -187,6 +200,9 @@ function buildFolderAggregates(
     const hasUnread = conv.unread && !hasModelWork;
     const chronoTaskCount = countChronoTasks(conv.tasks);
     const work = conversationWorkCounts(conv);
+    const dot = muted ? null : conversationActivityState(conv, {
+      globalIdle: hasGlobalIdle, optimisticStreaming: hasOptimisticStreaming, notificationsMuted: false,
+    });
     let folderId = conv.folderId ?? null;
     // Guards against a parent cycle without allocating a set per conversation.
     while (folderId && aggregates.has(folderId) && lastVisitedBy.get(folderId) !== conv) {
@@ -202,6 +218,7 @@ function buildFolderAggregates(
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= hasUnread;
       if (hasUnread) aggregate.unreadCount++;
+      if (dot) aggregate.dots[dot]++;
       aggregate.subagentCount += work.subagents;
       aggregate.backgroundTaskCount += work.commands;
       aggregate.chronoTaskCount += chronoTaskCount;
@@ -395,6 +412,8 @@ export function renderSidebar(
     let isCurrent = false;
     let itemFg = theme.muted;
     let notificationCount = 0;
+    /** A collapsed folder's counted dots in after and right modes: green, blue, yellow (mirrored when right-aligned). */
+    let folderDots: { icon: string; color: string }[] = [];
     let notificationsMuted = false;
     let explicitlyMuted = false;
 
@@ -417,7 +436,18 @@ export function renderSidebar(
       }
       // A muted folder (itself or through an ancestor) shows none of its
       // conversations' activity; an open one shows none anyway.
-      if (!isOpenTreeFolder && !notificationsMuted) {
+      if (!isOpenTreeFolder && !notificationsMuted && placement.folders !== "before") {
+        // One counted dot per state its unmuted children show (`3◉ 2◉`); the
+        // green count replaces the red unread badge.
+        const dots = aggregate?.dots ?? { streaming: 0, warning: 0, unread: 0 };
+        folderDots = ([["unread", theme.success], ["streaming", theme.accent], ["warning", theme.warning]] as const)
+          .filter(([state]) => dots[state] > 0)
+          .map(([state, color]) => ({ icon: countedActivityIndicator(ACTIVITY_GLYPH, dots[state]), color }));
+        subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
+        backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
+        chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
+      } else if (!isOpenTreeFolder && !notificationsMuted) {
+        // before: the dot of the busiest state, and the unread count as a badge.
         const streamingCount = aggregate?.streamingCount ?? 0;
         const hasLongSleep = aggregate?.longSleep ?? false;
         const hasGlobalIdle = aggregate?.globalIdle ?? false;
@@ -465,7 +495,8 @@ export function renderSidebar(
     // column in from the border, or left of the mute bell and unread badge),
     // per tui.sidebarIndicators.
     const side = item?.type === "folder" ? placement.folders : item?.type === "conversation" ? placement.conversations : "before";
-    const iconsWidth = termWidth(streamIcon) + termWidth(subagentIcon) + termWidth(chronoTaskIcon)
+    const iconsWidth = termWidth(streamIcon) + folderDots.reduce((width, dot) => width + termWidth(dot.icon), 0)
+      + termWidth(subagentIcon) + termWidth(chronoTaskIcon)
       + termWidth(backgroundTaskIcon) + termWidth(starIcon) + termWidth(emojiIcon);
     const iconsAfter = side === "after" && iconsWidth > 0;
     const iconsRight = side === "right" && iconsWidth > 0;
@@ -499,11 +530,12 @@ export function renderSidebar(
     const chronoTaskIconColored = chronoTaskIcon ? chronoColor + chronoTaskIcon + fg : "";
     const starIconColored = starIcon ? theme.warning + starIcon + fg : "";
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
-    const iconsColored = streamIconColored + subagentIconColored + chronoTaskIconColored + backgroundTaskIconColored
-      + starIconColored + emojiIconColored;
+    const dotsColored = folderDots.map(dot => dot.color + dot.icon + fg);
+    const iconsColored = streamIconColored + dotsColored.join("") + subagentIconColored + chronoTaskIconColored
+      + backgroundTaskIconColored + starIconColored + emojiIconColored;
     // Right-aligned icons mirror the order, so the activity dot is outermost.
     const mirroredIconsColored = emojiIconColored + starIconColored + backgroundTaskIconColored + chronoTaskIconColored
-      + subagentIconColored + streamIconColored;
+      + subagentIconColored + [...dotsColored].reverse().join("") + streamIconColored;
     // The last icon's trailing space; only colour escapes follow it.
     const lastIconSpace = mirroredIconsColored.lastIndexOf(" ");
     const body = iconsAfter

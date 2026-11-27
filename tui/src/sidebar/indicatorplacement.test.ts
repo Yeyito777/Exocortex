@@ -64,10 +64,10 @@ describe("tui.sidebarIndicators", () => {
   test("after for both puts every icon after the name and keeps rows full width", () => {
     const [collapsed, expanded] = plain(render({ folders: "after", conversations: "after" }));
     expect(collapsed.slice(2, 12)).toEqual([
-      "▸ 📁 work/ 2 ◉ 2◆ ◷ $    1 │",
+      "▸ 📁 work/ 2 ◉ ◉ 2◆ ◷ $    │",
       "  📂 open/                 │",
       "    child ◉                │",
-      "  📁 a folder nam… ◉ ◆   1 │",
+      "  📁 a folder name fa… ◉ ◆ │",
       "  📁 muted/ 1            🔕│",
       "  root streaming ◉         │",
       "  marked and star… 3◆ ★ 🔥 │",
@@ -81,20 +81,20 @@ describe("tui.sidebarIndicators", () => {
 
   test("folders and conversations are set separately", () => {
     const [foldersAfter] = plain(render({ folders: "after", conversations: "before" }));
-    expect(foldersAfter[2]).toBe("▸ 📁 work/ 2 ◉ 2◆ ◷ $    1 │");
+    expect(foldersAfter[2]).toBe("▸ 📁 work/ 2 ◉ ◉ 2◆ ◷ $    │");
     expect(foldersAfter[7]).toBe("  ◉ root streaming         │");
     const [conversationsAfter] = plain(render({ folders: "before", conversations: "after" }));
     expect(conversationsAfter[2]).toBe("▸ ◉ 2◆ ◷ $ 📁 work/ 2    1 │");
     expect(conversationsAfter[7]).toBe("  root streaming ◉         │");
   });
 
-  test("right puts every icon at the row's right end, mirrored so the dot is outermost, one column in from the border or left of the mute bell and unread badge", () => {
+  test("right puts every icon at the row's right end, mirrored so the dot is outermost, one column in from the border or left of the mute bell", () => {
     const [collapsed, expanded] = plain(render({ folders: "right", conversations: "right" }));
     expect(collapsed.slice(2, 12)).toEqual([
-      "▸ 📁 work/ 2   $ ◷ 2◆ ◉  1 │",
+      "▸ 📁 work/ 2    $ ◷ 2◆ ◉ ◉ │",
       "  📂 open/                 │",
       "    child                ◉ │",
-      "  📁 a folder name… ◆ ◉  1 │",
+      "  📁 a folder name fa… ◆ ◉ │",
       "  📁 muted/ 1            🔕│",
       "  root streaming         ◉ │",
       "  marked and star… 🔥 ★ 3◆ │",
@@ -106,7 +106,7 @@ describe("tui.sidebarIndicators", () => {
     for (const row of [...collapsed, ...expanded]) expect(termWidth(row)).toBe(termWidth(collapsed[0]));
   });
 
-  test("right: rows without a badge or bell end their icons in one column, one in from the border; a badge or bell takes the edge, one space after them", () => {
+  test("right: rows without a bell end their icons in one column, one in from the border; a bell takes the edge, one space after them", () => {
     const [rows] = plain(render({ folders: "right", conversations: "right" }));
     const edge = termWidth(rows[0]) - 1; // the border's column
     const iconsEnd = (row: string) => termWidth(row.replace(/[^◉◆◷$★🔥\d]*$/u, ""));
@@ -114,8 +114,9 @@ describe("tui.sidebarIndicators", () => {
     for (const title of ["child", "root streaming", "marked and star", "a conversation ti"]) {
       expect(iconsEnd(rows.find(row => row.includes(title))!)).toBe(edge - 1);
     }
-    // One plain space, then the unread badge (` 1 `, padded on its red background) or the mute bell.
-    expect(rows.find(row => row.includes("work/"))).toMatch(/2◆ ◉ {2}1 │$/);
+    // Folder rows have no unread badge now: their green count ends one column in, like the rest.
+    expect(iconsEnd(rows.find(row => row.includes("work/"))!)).toBe(edge - 1);
+    // One plain space, then the mute bell.
     expect(rows.find(row => row.includes("current"))).toMatch(/★ 🔕│$/);
   });
 
@@ -124,7 +125,7 @@ describe("tui.sidebarIndicators", () => {
     const long = rows.find(row => row.includes("a conversation"))!;
     expect(long).toMatch(/a conversation ti… \$ ◷ ◆ │$/);
     const folderRow = rows.find(row => row.includes("a folder"))!;
-    expect(folderRow).toMatch(/a folder name… ◆ ◉ {2}1 │$/);
+    expect(folderRow).toMatch(/a folder name fa… ◆ ◉ │$/);
   });
 
   test("config.json values: each side defaults to right; unknown values fall back", () => {

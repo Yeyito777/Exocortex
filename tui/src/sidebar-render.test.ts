@@ -31,6 +31,10 @@ function conversation(id: string, sortOrder: number, overrides: Partial<Conversa
   };
 }
 
+
+/** A green (unread) dot, counted or not. theme.success can equal theme.muted, so match it on the glyph. */
+const greenDot = new RegExp(`${theme.success.replace(/[[\]]/g, "\\$&")}\\d*◉`);
+
 describe("sidebar rendering", () => {
   test("restart needed replaces the local update notice", () => {
     const sidebar = createSidebarState("navigate");
@@ -438,8 +442,9 @@ describe("sidebar rendering", () => {
     ];
 
     let rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.warning}◉ `);
-    expect(rows.find(row => row.includes("Work"))).not.toContain(`${theme.success}◉ `);
+    // Two children wait (the long sleep and the deferred wait): one yellow count.
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.warning}2◉ `);
+    expect(rows.find(row => row.includes("Work"))).not.toMatch(greenDot);
     expect(rows.find(row => row.includes("Work"))).not.toContain("◷");
     expect(rows.find(row => row.includes("Live sleep"))).toContain(`${theme.accent}◉ `);
     expect(rows.find(row => row.includes("Live sleep"))).not.toContain("◷");
@@ -537,7 +542,7 @@ describe("sidebar rendering", () => {
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
   });
 
-  test("renders a right-aligned badge counting unread conversations in a folder tree", () => {
+  test("counts unread conversations in a folder tree as a green dot; before mode keeps the red badge", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -554,11 +559,17 @@ describe("sidebar rendering", () => {
     const folderRow = rows.find(row => row.includes("Work"));
 
     expect(folderRow).toBeDefined();
-    expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
+    expect(folderRow).toContain(`${theme.success}2◉ `);
+    expect(folderRow).not.toContain(theme.notificationBg);
     expect(visibleLength(folderRow!)).toBe(SIDEBAR_WIDTH);
+
+    const beforeRow = renderSidebar(sidebar, 8, true, null, new Set(), null, null, { folders: "before", conversations: "before" })
+      .find(row => row.includes("Work"));
+    expect(beforeRow).toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
+    expect(visibleLength(beforeRow!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("folder badges follow summaries edited in place between frames", () => {
+  test("folder dots follow summaries edited in place between frames", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -567,23 +578,23 @@ describe("sidebar rendering", () => {
       conversation("a", 0, { folderId: "work", unread: true }),
       conversation("b", 1, { folderId: "work", unread: true }),
     ];
-    const badge = (count: number) => `${theme.notificationBg}${theme.notificationFg} ${count} ${theme.reset}`;
+    const green = (count: number) => `${theme.success}${count > 1 ? count : ""}◉ `;
     const folderRow = () => renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
 
-    expect(folderRow()).toContain(badge(2));
+    expect(folderRow()).toContain(green(2));
     editConversation(sidebar, sidebar.conversations[0], { unread: false });
-    expect(folderRow()).toContain(badge(1));
+    expect(folderRow()).toContain(green(1));
     editConversation(sidebar, sidebar.conversations[1], { streaming: true });
     expect(folderRow()).toContain(`${theme.accent}◉ `);
-    expect(folderRow()).not.toContain(badge(1));
+    expect(folderRow()).not.toMatch(greenDot);
     insertConversation(sidebar, sidebar.conversations.length, conversation("c", 2, { folderId: "work", unread: true }));
-    expect(folderRow()).toContain(badge(1));
-    // An edit that skips the bump fails the check instead of leaving a stale badge.
+    expect(folderRow()).toContain(green(1));
+    // An edit that skips the bump fails the check instead of leaving a stale count.
     sidebar.conversations[2].unread = false;
     expect(() => folderRow()).toThrow(/without touchSidebar/);
   });
 
-  test("does not count streaming unread conversations in folder notification badges", () => {
+  test("counts a streaming unread conversation as blue, not green, on its folder", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -595,9 +606,9 @@ describe("sidebar rendering", () => {
 
     const folderRow = renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
 
-    expect(folderRow).toContain(`${theme.accent}◉`);
-    expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
-    expect(folderRow).not.toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
+    expect(folderRow).toContain(`${theme.accent}◉ `);
+    expect(folderRow).toContain(`${theme.success}◉ `);
+    expect(folderRow).not.toContain(`${theme.success}2◉`);
   });
 
   test("keeps queued turn chains blue and shows their final unread state immediately", () => {
@@ -610,13 +621,14 @@ describe("sidebar rendering", () => {
 
     let folderRow = renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
     expect(folderRow).toContain(`${theme.accent}◉`);
-    expect(folderRow).not.toContain(theme.notificationBg);
+    expect(folderRow).not.toMatch(greenDot);
 
     const finalCompletion = { ...queuedTurn, streaming: false };
     sidebar.conversations = [finalCompletion];
 
     folderRow = renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
-    expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
+    expect(folderRow).toContain(`${theme.success}◉ `);
+    expect(folderRow).not.toContain(theme.accent + "◉");
   });
 
   test("renders canonical unread state without interpreting reserved folder names", () => {
@@ -633,15 +645,14 @@ describe("sidebar rendering", () => {
 
     let rows = renderSidebar(sidebar, 8, true, null);
     const subagentsRow = rows.find(row => row.includes("SubAgents"));
-    expect(subagentsRow).toContain(`${theme.success}◉`);
-    expect(subagentsRow).toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
+    expect(subagentsRow).toContain(`${theme.success}2◉ `);
     expect(rows.find(row => row.includes("ordinary"))).toContain(`${theme.success}◉`);
 
     sidebar.currentFolderId = "subagents";
     rows = renderSidebar(sidebar, 8, true, null);
     const batchRow = rows.find(row => row.includes("Batch"));
-    expect(batchRow).toContain(`${theme.success}◉`);
-    expect(batchRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
+    expect(batchRow).toContain(`${theme.success}◉ `);
+    expect(batchRow).not.toContain(theme.notificationBg);
     expect(rows.find(row => row.includes("direct-agent"))).toContain(`${theme.success}◉`);
 
     sidebar.currentFolderId = "batch";

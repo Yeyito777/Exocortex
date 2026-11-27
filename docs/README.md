@@ -48,14 +48,18 @@ selects another daemon without moving client-side UI operations to that host.
   to show it.
 - Sidebar indicators: a row's activity dot (`◉`), subagent (`◆`), Chrono
   (`◷`) and command (`$`) counts, star (`★`) and mark emoji sit at the row's
-  right end, one column in from the border, or one space left of the unread
-  badge or mute bell, in mirrored order so the dot is outermost
-  (`build  ★ $ ◷ 2◆ ◉`). A name too long for the row is cut where it would meet
+  right end, one column in from the border, or one space left of the mute
+  bell, in mirrored order so the dot is outermost (`build  ★ $ ◷ 2◆ ◉`). A
+  collapsed folder counts its children by the dot each row shows: blue for
+  streaming, yellow for waiting, green for unread (`📁 work/ 6  2◆ ◉ 3◉
+  2◉`: yellow, blue, green, green outermost); the green count replaces the
+  red unread badge. A name too long for the row is cut where it would meet
   them, so they stay whole. Set each kind of row with `"tui": {
   "sidebarIndicators": { "folders": "after", "conversations": "before" } }`
   in `config/config.json` and restart the TUI: `right` (default), `after`
-  (right after the name: `📁 work/ 3 ◉ 2◆`, `build ◉ 2◆ ★`) or `before`
-  (ahead of the name, as earlier versions did). A muted conversation, muted
+  (right after the name, folder dots green, blue, yellow first: `📁 work/ 6
+  2◉ 3◉ ◉ 2◆`, `build ◉ 2◆ ★`) or `before` (ahead of the name, as earlier
+  versions did, with one folder dot and the red unread badge). A muted conversation, muted
   itself or through a folder, shows no activity dot (blue, yellow or green)
   and no `◆`/`◷`/`$`, only its bell, star and mark; a muted folder shows none
   of its conversations' activity, and a collapsed folder leaves its muted

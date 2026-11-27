@@ -414,7 +414,7 @@ describe("sidebar tree folder view", () => {
       ], [folder("long", 1, { name: "a folder name far too long for the sidebar" })]);
       const lines = renderSidebar(sidebar, 12, true, null).map(line => stripAnsi(line));
       const row = lines.find(line => line.includes("📁 a folder"))!;
-      expect(row).toMatch(/📁 a folder.*… 2◆ ◉ +1 │$/);
+      expect(row).toMatch(/📁 a folder.*… 2◆ ◉ ◉ │$/);
       expect(termWidth(row)).toBe(termWidth(lines[0]));
     });
   });
