@@ -1,8 +1,11 @@
 /**
  * Accounts screen: every Claude, OpenAI and Gemini account as one row of a small
  * table on a card drawn over the chat, opened with /accounts or `g a` in
- * normal mode. A row is a state dot, the account, and its 5-hour and weekly
- * usage with the time to each reset; a short word replaces the bars when the
+ * normal mode. Providers with a subscription come first (a Claude plan, a
+ * ChatGPT plan, a Google AI plan), then those used only through API keys or
+ * credits; otherwise Claude, OpenAI, Gemini. Every section shares the table's
+ * columns, its headings' labels included. A row is a state dot, the account,
+ * and its 5-hour and weekly usage with the time to each reset; a short word replaces the bars when the
  * account cannot be used. A Fable column follows while some Claude account
  * reports a Fable allowance (the share of its weekly limit Fable models draw
  * on), and a Resets column while one has free limit resets left (how many,
@@ -453,60 +456,94 @@ function geminiRows(info: GeminiAccountInfo, hideSensitive: boolean, now: number
   ];
 }
 
+/** A ChatGPT plan's name, not an API key's login or the free tier. */
+function openAISubscribed(plan: string | null): boolean {
+  return !!plan && plan !== "api_key" && !/free/i.test(plan);
+}
+
+/** A Google AI plan the CLI is signed in with, not the free tier. */
+function geminiSubscribed(info: GeminiAccountInfo): boolean {
+  return info.signedIn && !!info.plan && !/free/i.test(info.plan);
+}
+
+/** One provider's lines; `subscribed` sections come first. */
+interface Section {
+  subscribed: boolean;
+  heading: Extract<ScreenLine, { kind: "heading" }>;
+  /** The heading can carry the usage columns' labels (it heads a table). */
+  table: boolean;
+  body: ScreenLine[];
+}
+
 /** Everything the screen shows, top to bottom (no chrome). */
 export function accountsScreenLines(state: RenderState, screen: AccountsScreenState, now = Date.now()): ScreenLine[] {
   if (!screen.snapshot) return [{ kind: "text", segments: [[theme.muted, "Loading accounts…"]] }];
   const { claude, openai } = screen.snapshot;
-  const claudeTable = !claude.proxied && claude.accounts.length > 0;
-  const lines: ScreenLine[] = [];
+  const sections: Section[] = [];
   const notes: Segment[][] = [];
 
+  // Claude accounts are subscriptions (an account that turns out not to be one says so in its row).
   if (claude.proxied) {
-    lines.push({ kind: "heading", label: "Claude", columns: false });
-    lines.push({ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] });
-  } else if (claudeTable) {
-    const heading = { kind: "heading" as const, label: "Claude", columns: true, resets: false, credits: false };
-    lines.push(heading);
+    sections.push({
+      subscribed: true, table: false,
+      heading: { kind: "heading", label: "Claude", columns: false },
+      body: [{ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] }],
+    });
+  } else if (claude.accounts.length > 0) {
+    const heading = { kind: "heading" as const, label: "Claude", columns: false, resets: false, credits: false };
+    const body: ScreenLine[] = [];
     for (const account of claude.accounts) {
       const row = claudeRow(account, claude, now);
       if (row.resets) heading.resets = true;
       if (row.credits) heading.credits = true;
-      lines.push({ kind: "row", row });
+      body.push({ kind: "row", row });
       if (account.loginCommand) notes.push([[theme.muted, `sign in ${account.id}${claude.remote ? ` on ${claude.remote.alias}` : ""}: `], [theme.command, account.loginCommand]]);
     }
     if (claude.remote) notes.unshift(proxyNote(claude.remote));
+    sections.push({ subscribed: claude.accounts.some(account => account.state !== "not_subscription"), table: true, heading, body });
   }
 
-  /** Some heading above already carries the usage columns' labels. */
-  let labelled = claudeTable;
   if (openai.accounts.length > 0) {
-    if (lines.length > 0) lines.push({ kind: "blank" });
-    const heading = { kind: "heading" as const, label: "OpenAI", columns: !labelled, credits: false };
-    labelled = true;
-    lines.push(heading);
-    if (openai.proxied) lines.push({ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] });
+    const heading = { kind: "heading" as const, label: "OpenAI", columns: false, credits: false };
+    const body: ScreenLine[] = [];
+    if (openai.proxied) body.push({ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] });
     const usage = state.usageByProvider.openai ?? null;
     for (const account of openai.accounts) {
       const name = maybeCensorEmail(account.email, state.hideSensitiveInfo) ?? account.displayName ?? `account ${account.index}`;
-      lines.push({
+      const credits = account.current ? creditCell(openAICredits(usage?.apiKey?.credit), now) : null;
+      if (credits) heading.credits = true;
+      body.push({
         kind: "row",
         row: {
           dot: account.current ? theme.success : theme.muted,
           name: [account.current ? theme.bold + theme.accent : theme.text, name],
           windows: account.current ? usageCells(usage, now) : undefined,
-          credits: account.current ? creditCell(openAICredits(usage?.apiKey?.credit), now) : null,
+          credits,
         },
       });
-      if (account.current && creditCell(openAICredits(usage?.apiKey?.credit), now)) heading.credits = true;
     }
+    sections.push({ subscribed: openai.accounts.some(account => openAISubscribed(account.plan)), table: true, heading, body });
   }
 
   const gemini = screen.snapshot.gemini;
   if (gemini) {
-    if (lines.length > 0) lines.push({ kind: "blank" });
-    lines.push({ kind: "heading", label: "Gemini", columns: !labelled });
-    for (const row of geminiRows(gemini, state.hideSensitiveInfo, now)) lines.push({ kind: "row", row });
+    sections.push({
+      subscribed: geminiSubscribed(gemini), table: true,
+      heading: { kind: "heading", label: "Gemini", columns: false },
+      body: geminiRows(gemini, state.hideSensitiveInfo, now).map(row => ({ kind: "row", row })),
+    });
     if (!gemini.signedIn) notes.push([[theme.muted, "sign in Gemini: "], [theme.command, GEMINI_LOGIN_COMMAND]]);
+  }
+
+  // Subscriptions first, then credit- and API-only providers; otherwise Claude, OpenAI, Gemini (a stable sort).
+  sections.sort((a, b) => Number(b.subscribed) - Number(a.subscribed));
+  const lines: ScreenLine[] = [];
+  // The first table's heading carries the usage columns' labels.
+  const labelled = sections.find(section => section.table);
+  if (labelled) labelled.heading.columns = true;
+  for (const section of sections) {
+    if (lines.length > 0) lines.push({ kind: "blank" });
+    lines.push(section.heading, ...section.body);
   }
 
   if (notes.length > 0) {
@@ -647,7 +684,8 @@ function lineSegments(line: ScreenLine, columns: Columns): Segment[] {
     case "heading": {
       const label: Segment = [theme.bold + theme.text, line.label.padEnd(DOT_WIDTH + columns.name)];
       const after = trailing(
-        line.resets ? [[theme.muted, RESETS_LABEL]] : null, termWidth(RESETS_LABEL),
+        // A heading without the Resets label pads its whole column, as a row without a Resets cell does.
+        line.resets ? [[theme.muted, RESETS_LABEL]] : null, line.resets ? termWidth(RESETS_LABEL) : 0,
         line.credits ? [[theme.muted, CREDITS_LABEL]] : null,
       );
       if (!line.columns) return after.length > 0 ? [label, [theme.boldOff, ""], gap, blankCells, ...after] : [label, [theme.boldOff, ""]];

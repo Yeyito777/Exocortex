@@ -854,3 +854,87 @@ test("Gemini alone below a /proxy Claude takes the column labels; hidden sensiti
   expect(text).not.toContain("gem@example.com");
   expect(text).toContain("g**@example.com");
 });
+
+/** The owner's screen: Claude with resets and credits, OpenAI on an API key's credit grant, Gemini on a plan. */
+function mixedProviders(openaiPlan: string | null = "api_key", geminiInfo: GeminiAccountInfo = gemini()) {
+  const credits = (balanceUsd: number, expiresIn: number[]) => ({ balanceUsd, grantedUsd: 700, expiresAt: expiresIn.map(ms => NOW + ms), active: false });
+  const usage = { fiveHour: null, sevenDay: { utilization: 100, resetsAt: NOW + 15 * H }, noFiveHourLimit: true, fable: { utilization: 9, resetsAt: NOW + 15 * H } };
+  const snap = snapshot({ gemini: geminiInfo }, [
+    claude("main", { state: "limited", usage: { ...usage, resetCredits: { availableCount: 1, nextExpiresAt: NOW + 13 * 24 * H + H } }, credits: credits(525, [13 * 24 * H + H, 141 * 24 * H + H, 343 * 24 * H + H]) }),
+    claude("max2", { state: "limited", usage, credits: credits(200, [20 * 24 * H + H]) }),
+  ]);
+  snap.openai.accounts = [{ index: 1, email: "owner@example.com", displayName: null, plan: openaiPlan, current: true }];
+  const { state } = openScreen(snap);
+  state.usageByProvider.openai = {
+    fiveHour: null, sevenDay: null,
+    apiKey: {
+      label: "sk-…abcd",
+      today: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0, estimatedCostUsd: 0, unpricedRequests: 0 },
+      month: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0, estimatedCostUsd: 0, unpricedRequests: 0 },
+      credit: { amountUsd: 1000, since: "2026-10-20", expires: "2099-10-20", asOf: "2026-10-29", usedUsd: 66, firstTrackedDay: "2026-10-20", paceUsd: 0, paceDays: 0 },
+    },
+  };
+  return state;
+}
+
+test("every section's Credits and Resets headers sit over their values, at every width", () => {
+  const state = mixedProviders();
+  for (const cols of [200, 150, 120, 100, 80, 60]) {
+    const rows = screenText(state, 40, cols);
+    const at = (needle: string, text: string) => rows.find(row => row.includes(needle))!.indexOf(text);
+    const claudeCredits = at("Claude", "Credits");
+    const openaiCredits = at("OpenAI", "Credits");
+    if (cols >= 150) {
+      expect(claudeCredits).toBeGreaterThan(0);
+      expect(at("Claude", "Resets")).toBeGreaterThan(0);
+    }
+    // Both headings show the label, or the card cuts both off.
+    expect(openaiCredits).toBe(claudeCredits);
+    if (claudeCredits < 0) continue;
+    for (const [row, value] of [["● main", "$525"], ["● max2", "$200"], ["owner@example.com", "≈$934"]] as const) {
+      const index = at(row, value);
+      if (index >= 0) expect([cols, row, index]).toEqual([cols, row, claudeCredits]);
+    }
+    const resets = at("Claude", "Resets");
+    if (resets >= 0) expect(at("● main", "1 13d")).toBe(resets);
+    // The usage columns line up across providers too: Claude's first percent (5-hour is n/a) and Gemini's second are both weekly.
+    const percentEnd = (needle: string, nth: number) => {
+      const hit = [...rows.find(row => row.includes(needle))!.matchAll(/\d+%/g)][nth];
+      return hit ? hit.index! + hit[0].length : -1;
+    };
+    if (percentEnd("● main", 0) >= 0) expect(percentEnd("gem@example.com", 1)).toBe(percentEnd("● main", 0));
+  }
+});
+
+test("subscribed providers come first, then credit- and API-only ones", () => {
+  const order = (state: ReturnType<typeof createInitialState>) => {
+    const rows = screenText(state);
+    return ["Claude", "OpenAI", "Gemini"]
+      .map(label => ({ label, at: rows.findIndex(row => new RegExp(`│ {2}${label}\\b`).test(row)) }))
+      .filter(entry => entry.at >= 0).sort((a, b) => a.at - b.at).map(entry => entry.label);
+  };
+  // OpenAI on an API key: Gemini's plan goes above it.
+  let state = mixedProviders("api_key");
+  expect(order(state)).toEqual(["Claude", "Gemini", "OpenAI"]);
+  // Claude's heading keeps the usage columns' labels; Gemini's and OpenAI's lines stay in them.
+  const rows = screenText(state);
+  expect(rows.find(row => row.includes("Claude"))).toContain("5-Hour");
+  expect(rows.find(row => row.includes("Gemini"))).not.toContain("5-Hour");
+  // A ChatGPT plan is a subscription: the usual order stays.
+  expect(order(mixedProviders("plus"))).toEqual(["Claude", "OpenAI", "Gemini"]);
+  expect(order(mixedProviders("free"))).toEqual(["Claude", "Gemini", "OpenAI"]);
+  // Gemini signed out has no plan: below a subscribed OpenAI, still above none.
+  const signedOut = gemini({ signedIn: false, email: null, plan: null, shared: null, argon: null });
+  expect(order(mixedProviders("pro", signedOut))).toEqual(["Claude", "OpenAI", "Gemini"]);
+  expect(order(mixedProviders(null, signedOut))).toEqual(["Claude", "OpenAI", "Gemini"]);
+  // Only the remote's Claude login: still a subscription, and the first table below it takes the labels.
+  state = mixedProviders("api_key");
+  state.accountsScreen!.snapshot!.claude.proxied = true;
+  expect(order(state)).toEqual(["Claude", "Gemini", "OpenAI"]);
+  expect(screenText(state).find(row => row.includes("Gemini"))).toContain("5-Hour");
+  // Claude accounts that are not subscriptions go below Gemini's plan, which then carries the labels.
+  state = mixedProviders("api_key");
+  for (const account of state.accountsScreen!.snapshot!.claude.accounts) account.state = "not_subscription";
+  expect(order(state)).toEqual(["Gemini", "Claude", "OpenAI"]);
+  expect(screenText(state).find(row => row.includes("Gemini"))).toContain("5-Hour");
+});
