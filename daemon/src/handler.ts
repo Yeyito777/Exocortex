@@ -2380,6 +2380,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           messages: [],
           subagentPolicy: cmd.subagent ? { parentConversationId: null, allowEdits: false, parentSystemInstructions: "" } : null,
           goal: goalObjective ? { status: "active", objective: goalObjective } : null,
+          folderAgents: convStore.currentFolderAgents(id, { folderId }),
         }) : [];
         if (initialMessage) {
           convStore.createWithInitialUserMessage(

@@ -8,7 +8,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { buildDisplayData, type BuildDisplayOptions } from "./display";
-import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, GOAL_NOTICE_KIND, LEGACY_CALL_STATUS_KIND, PROVIDER_NOTICE_KIND, createModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
+import { CLIENT_HOST_NOTICE_KIND, FOLDER_AGENTS_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, GOAL_NOTICE_KIND, LEGACY_CALL_STATUS_KIND, PROVIDER_NOTICE_KIND, createModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { MessageMetadata } from "./messages";
 import type { ToolSummarizerFn } from "./display";
 
@@ -642,6 +642,19 @@ describe("tool-result folding", () => {
     ]);
 
     expect(entries.map(entry => entry.type)).toEqual(["ai", "user"]);
+  });
+
+  test("the folder agents notice is a muted system entry with its kind, never a user entry", () => {
+    const notice = createModelVisibleSystemNotice("[info] There are other agents working in this project: {b: Peer}", "gpt-5.5", FOLDER_AGENTS_NOTICE_KIND, 1_000);
+    notice.metadata.folderAgents = [{ id: "b", title: "Peer" }];
+    const { entries } = build([
+      notice,
+      { role: "user", content: "hello", metadata: { startedAt: 1_000, endedAt: 1_000, model: "gpt-5.5", tokens: 0 } },
+    ]);
+
+    expect(entries.map(entry => entry.type)).toEqual(["system", "user"]);
+    expect(entries[0]).toEqual({ type: "system", text: notice.content, color: "muted", metadata: notice.metadata });
+    expect(userEntry(entries[1]).text).toBe("hello");
   });
 
   test("automated model-visible system notice → forwards automation metadata", () => {

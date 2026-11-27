@@ -713,13 +713,13 @@ async function orchestrateAdmittedAssistantTurn(
       const cancelled = handoffCancelled();
       if (cancelled) return cancelled;
       // Tell the model about state that changed since it was last told (the
-      // client machine, the goal). Clients do not show these notices. They
+      // client machine, the goal, the agents in its folder). Clients do not show these notices. They
       // precede the message's checkpoint, so unwinding the message keeps what
       // was true when it was sent.
       const conversationById = await loadClientOriginAncestors(conv, id => convStore.getAsync(id));
       const cancelledAfterAncestors = handoffCancelled();
       if (cancelledAfterAncestors) return cancelledAfterAncestors;
-      const notices = pendingTurnNotices({ ...conv, conversationById });
+      const notices = pendingTurnNotices({ ...conv, conversationById, folderAgents: convStore.currentFolderAgents(convId) });
       if (notices.length > 0) {
         convStore.appendMessages(convId, turnNoticeMessages(notices, conv.model, startedAt));
         await prepareArchiveHashes(conv.messages);

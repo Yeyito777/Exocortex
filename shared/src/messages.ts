@@ -314,6 +314,22 @@ export const CLIENT_HOST_NOTICE_KIND = "client_host";
 export const REMOTE_HOST_NOTICE_KIND = "remote_host";
 export const GOAL_NOTICE_KIND = "conversation_goal";
 export const MODEL_ONLY_NOTICE_KINDS: readonly string[] = [CLIENT_HOST_NOTICE_KIND, REMOTE_HOST_NOTICE_KIND, GOAL_NOTICE_KIND];
+/**
+ * The other agents working in a conversation's folder (daemon/src/folder-agents.ts),
+ * told to the model before a turn-starting message. Clients fold it away like an
+ * informational notice; Ctrl+O shows it as automated text, never as the user's.
+ */
+export const FOLDER_AGENTS_NOTICE_KIND = "folder_agents";
+
+/** One agent in a folder_agents notice: the set it left the model with. */
+export interface FolderAgentRef {
+  id: string;
+  title: string;
+  /** How it relates to the conversation told. */
+  relation?: "parent" | "subagent";
+  /** Where its turns run, only when that differs from the told conversation's. */
+  cwd?: string;
+}
 
 /**
  * Transcript notices that only report what happened and needed nothing from
@@ -325,7 +341,7 @@ export const MODEL_ONLY_NOTICE_KINDS: readonly string[] = [CLIENT_HOST_NOTICE_KI
  */
 export function isInformationalNotice(notice: { text: string; metadata?: Pick<MessageMetadata, "kind"> | null }): boolean {
   const kind = notice.metadata?.kind;
-  if (kind === CONTEXT_COMPACTION_FINISHED_KIND || kind === PROVIDER_NOTICE_KIND) return true;
+  if (kind === CONTEXT_COMPACTION_FINISHED_KIND || kind === PROVIDER_NOTICE_KIND || kind === FOLDER_AGENTS_NOTICE_KIND) return true;
   const text = notice.text;
   return text === CONTEXT_COMPACTION_FINISHED_TEXT
     || text === "✗ Daemon restarted"
@@ -544,6 +560,8 @@ export interface MessageMetadata {
   defaultHost?: string;
   /** On a client_host notice: the machine (user@hostname) the user last wrote from. */
   clientOrigin?: string;
+  /** On a folder_agents notice: the agents the model knows are working in its folder after it. */
+  folderAgents?: FolderAgentRef[];
   /** Set when the turn ran on API credits instead of a Claude subscription. */
   billing?: MessageBilling;
 }

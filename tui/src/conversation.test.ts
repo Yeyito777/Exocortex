@@ -5,7 +5,7 @@ import { visibleLength } from "./textwidth";
 import { createInitialState } from "./state";
 import { noteImmediateQueuedDeliveries } from "./queue";
 import { handleEvent } from "./events";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, FOLDER_AGENTS_NOTICE_KIND, createPendingAI } from "./messages";
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -235,6 +235,45 @@ describe("automated user-message provenance", () => {
       ]);
       expect(openRows.map(row => open.lineAnchors[row].segment)).toEqual(["user_content", "automation_label"]);
       expect(open.lines[openRows[0]]).toContain(theme.automatedUserBg);
+    }
+  });
+
+  test("the folder agents block is hidden in the chat and shown under Ctrl+O as automated text, never the owner's", () => {
+    const text = "[info] There are other agents working in this project: {1795737888601-33vb1t: Fix the sidebar}";
+    const saved = { userBg: theme.userBg, automatedUserBg: theme.automatedUserBg };
+    Object.assign(theme, { userBg: "\x1b[48;2;9;13;53m", automatedUserBg: "\x1b[48;2;14;31;44m" });
+    try {
+      for (const first of [true, false]) {
+        const state = createInitialState();
+        const before = { role: "user" as const, text: "earlier", metadata: null };
+        const notice = {
+          role: "system" as const,
+          text,
+          color: theme.muted,
+          metadata: { startedAt: 2_000, endedAt: 2_000, model: state.model, tokens: 0, system: true, kind: FOLDER_AGENTS_NOTICE_KIND },
+        };
+        const human = { role: "user" as const, text: "I wrote this", metadata: null };
+        state.messages.push(...(first ? [] : [before, { role: "assistant" as const, blocks: [{ type: "text" as const, text: "ok" }], metadata: null }]), notice, human);
+
+        const folded = buildMessageLines(state, 100);
+        expect(folded.lineAnchors.some(anchor => anchor.owner === notice)).toBe(false);
+        expect(folded.lines.some(line => stripAnsi(line).includes("[info]"))).toBe(false);
+        const humanLine = folded.lines[folded.lineAnchors.findIndex(anchor => anchor.owner === human && anchor.segment === "user_content")];
+        expect(stripAnsi(humanLine).trim()).toBe("I wrote this");
+
+        for (const detail of ["showTurnWork", "showToolOutput"] as const) {
+          state.showTurnWork = detail === "showTurnWork";
+          state.showToolOutput = detail === "showToolOutput";
+          const open = buildMessageLines(state, 120);
+          const rows = open.lineAnchors.flatMap((anchor, row) => anchor.owner === notice && !anchor.segment.includes("margin") ? [row] : []);
+          expect(rows.map(row => stripAnsi(open.lines[row]).trim())).toEqual([text, "⚙ Agents in this folder"]);
+          expect(open.lines[rows[0]]).toContain(theme.automatedUserBg);
+          expect(open.lines[rows[0]]).not.toContain(theme.userBg);
+          expect(open.lineAnchors[rows[0]].segment).not.toBe("user_content");
+        }
+      }
+    } finally {
+      Object.assign(theme, saved);
     }
   });
 

@@ -125,6 +125,23 @@ whole daemon at any depth. Finished subagents stop counting.
   its parent's prompts in view. Clients tell a child by the
   `parentConversationId` of its conversation summary.
 
+- **Agents in the same folder.** A conversation in a project folder (not the
+  top level, not the default `subagents` folder) is told which other
+  conversations there are working: streaming, or active within
+  `FOLDER_AGENT_WORKING_WINDOW_MS` (30 min). Its first turn-starting message
+  (a prompt or an automated wake, never a tool result) that has any gets
+  `[info] There are other agents working in this project: {<id>: <title>, ...}`,
+  marking `(your parent)`/`(your subagent)`, and an app's working directory
+  when it differs; later ones get who joined and who finished, only when the
+  set changed. It is a turn notice (`daemon/src/turn-notices.ts`,
+  `daemon/src/folder-agents.ts`): a stored model-visible notice of kind
+  `folder_agents` just before the message, whose `metadata.folderAgents` is
+  the set it left the model with, repeated in full after a compaction. Every
+  provider gets it as text before the message. Clients fold it like an
+  informational notice; the TUI's `Ctrl+O`/`Ctrl+I` show it as an automated
+  bubble labelled `⚙ Agents in this folder`. The exo hint asks agents to
+  coordinate with them before shared-state actions.
+
 Administration goes through the external `exo` CLI where it has a command,
 otherwise directly through [daemon IPC](daemon-ipc.md).
 

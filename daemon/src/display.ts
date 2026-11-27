@@ -7,7 +7,7 @@ import type { FastMode } from "@exocortex/shared/messages";
  * reach into the tool layer.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, MODEL_ONLY_NOTICE_KINDS, LEGACY_CALL_STATUS_KIND, PROVIDER_NOTICE_KIND, combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, FOLDER_AGENTS_NOTICE_KIND, MODEL_ONLY_NOTICE_KINDS, LEGACY_CALL_STATUS_KIND, PROVIDER_NOTICE_KIND, combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
 import { isModelVisibleSystemNotice, isReplayHistoryMessage, userMessageUnwindFingerprints, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
@@ -175,13 +175,16 @@ export function buildDisplayData(
             .filter((c) => c.type === "text")
             .map((c) => (c as { type: "text"; text: string }).text)
             .join("\n") || JSON.stringify(msg.content);
+      // The folder agents notice is shown only under Ctrl+O; clients fold it by its kind.
+      const folderAgents = msg.metadata?.kind === FOLDER_AGENTS_NOTICE_KIND;
       entries.push({
         type: "system",
         text,
+        ...(folderAgents ? { color: "muted" } : {}),
         // Ordinary model-visible notices historically had no display metadata.
         // Preserve that projection while exposing the automation tag when one
         // is present so clients can distinguish externally generated notices.
-        ...(msg.metadata?.automation ? { metadata: msg.metadata } : {}),
+        ...(msg.metadata?.automation || folderAgents ? { metadata: msg.metadata } : {}),
       });
       continue;
     }

@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, convDisplayName, ownerRelayedText, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, FOLDER_AGENTS_NOTICE_KIND, combineMessageMetadata, convDisplayName, ownerRelayedText, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import {
   fitImageBox,
   historyImageLimits,
@@ -79,6 +79,9 @@ function rightAlignedProvenanceLabel(label: string, availableWidth: number): str
   const padding = " ".repeat(Math.max(0, width - termWidth(text)));
   return `${padding}${theme.muted}${theme.italic}${text}${theme.reset}`;
 }
+
+/** The line under a folder agents notice shown in full (Ctrl+O). */
+const FOLDER_AGENTS_PROVENANCE = "⚙ Agents in this folder";
 
 function automationProvenance(automation: UserMessageAutomation | undefined): string | null {
   return automation ? `⚙ ${automationLabel(automation)}` : null;
@@ -1031,6 +1034,16 @@ export function buildMessageLines(
       for (let i = 0; i < metadataLines.length; i++) {
         pushLine(metadataLines[i], msg, "assistant_metadata", i);
       }
+      pushMessageBound(msg.role, start, contentStart, contentEnd);
+    } else if (msg.role === "system" && msg.metadata?.kind === FOLDER_AGENTS_NOTICE_KIND) {
+      // The agents working in this folder, as told to the model: folded away
+      // (an informational notice), and under Ctrl+O an automated bubble, never the user's.
+      if (userMessageNeedsTopMargin(state.messages, messageIndex) && !followsBubble()) pushLine("", msg, "user_margin_top");
+      const contentStart = lines.length;
+      pushBlock(msg, "system_message", renderUserMessageCached(msg, msg.text, availableWidth, undefined, theme.automatedUserBg));
+      const contentEnd = lines.length;
+      pushLine(rightAlignedProvenanceLabel(FOLDER_AGENTS_PROVENANCE, availableWidth), msg, "automation_label");
+      pushLine("", msg, "user_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system" && msg.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND) {
       pushLine("", msg, "compaction_margin_top");

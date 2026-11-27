@@ -5,15 +5,18 @@
  * Code a new process, so state that changes during a conversation reaches the
  * model as a notice before its next message instead, once per change: the
  * machines client_bash and remote_bash reach (and which one the user last
- * wrote from) and the conversation goal. A compaction can summarize a notice
+ * wrote from), the conversation goal and the other agents working in its folder
+ * (folder-agents.ts). A compaction can summarize a notice
  * away, so one still in effect is repeated after it. Clients do not show these
- * notices (MODEL_ONLY_NOTICE_KINDS).
+ * notices (MODEL_ONLY_NOTICE_KINDS); the folder agents one only under Ctrl+O.
  */
 
 import {
-  CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, GOAL_NOTICE_KIND, REMOTE_HOST_NOTICE_KIND, createModelVisibleSystemNotice,
-  isModelVisibleSystemNotice, type ConversationGoal, type MessageMetadata, type ModelId, type StoredMessage, type SubagentPolicy,
+  CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, FOLDER_AGENTS_NOTICE_KIND, GOAL_NOTICE_KIND, REMOTE_HOST_NOTICE_KIND,
+  createModelVisibleSystemNotice, isModelVisibleSystemNotice, type ConversationGoal, type FolderAgentRef, type MessageMetadata, type ModelId,
+  type StoredMessage, type SubagentPolicy,
 } from "./messages";
+import { folderAgentsNotice } from "./folder-agents";
 import { CLIENT_HOST_DETACHED_NOTICE, clientHostNotice, userWroteFrom, type ClientOrigin } from "./client-hosts";
 import { log } from "./log";
 import { activeProviderProxyManager } from "./provider-proxy/manager";
@@ -35,7 +38,7 @@ function goalNoticeText(goal: Pick<ConversationGoal, "status" | "objective" | "r
   ].join(" ");
 }
 
-type NoticeMetadata = Pick<MessageMetadata, "defaultHost" | "clientOrigin">;
+type NoticeMetadata = Pick<MessageMetadata, "defaultHost" | "clientOrigin" | "folderAgents">;
 
 export interface TurnNotice {
   kind: string;
@@ -55,6 +58,8 @@ export interface TurnNoticeState {
   provider?: string;
   /** Other conversations, for a subagent to learn where the user last wrote to the one that started it. */
   conversationById?: ConversationLookup;
+  /** The other agents working in its folder now (folder-agents.ts); null or absent where nothing is said. */
+  folderAgents?: readonly FolderAgentRef[] | null;
 }
 
 /** The stored form of turn notices, as the model sees them before a message. */
@@ -170,6 +175,12 @@ function remoteNotice(provider: string | undefined): { text: string; metadata?: 
   return { text: notice.text, ...(notice.defaultHost ? { metadata: { defaultHost: notice.defaultHost } } : {}) };
 }
 
+/** The folder agents the model was last told of; null when never told, or only before the latest compaction. */
+function toldFolderAgents(messages: readonly StoredMessage[]): FolderAgentRef[] | null {
+  const latest = latestNotice(messages, FOLDER_AGENTS_NOTICE_KIND);
+  return latest ? latest.metadata?.folderAgents ?? [] : null;
+}
+
 /** Notices to add before a conversation's next message, in order. */
 export function pendingTurnNotices(conv: TurnNoticeState): TurnNotice[] {
   const notices = [
@@ -177,6 +188,7 @@ export function pendingTurnNotices(conv: TurnNoticeState): TurnNotice[] {
     changedNotice(conv.messages, CLIENT_HOST_NOTICE_KIND, clientNotice(conv), CLIENT_HOST_DETACHED_NOTICE),
     changedNotice(conv.messages, REMOTE_HOST_NOTICE_KIND, remoteNotice(conv.provider), REMOTE_HOST_DETACHED_NOTICE),
     changedNotice(conv.messages, GOAL_NOTICE_KIND, conv.goal ? { text: goalNoticeText(conv.goal) } : null, GOAL_CLEARED_NOTICE),
+    folderAgentsNotice(toldFolderAgents(conv.messages), conv.folderAgents ?? null),
   ];
   return notices.filter((notice): notice is TurnNotice => notice !== null);
 }

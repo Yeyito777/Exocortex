@@ -8,8 +8,8 @@ import { performanceProfilingEnabled } from "@exocortex/shared/config";
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, UserMessageAutomation } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, isQueuedObligation, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, UserMessageAutomation, FolderAgentRef } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, SUBAGENTS_FOLDER_NAME, isQueuedObligation, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import { applyGoalStatus } from "@exocortex/shared/goals";
 import type { MoveSidebarItemsOptions, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo, TurnCatchupEvent } from "./protocol";
@@ -34,6 +34,7 @@ import type { HistoryWindowOptions } from "./history-pagination";
 import { scheduleDisplayIndex } from "./display-index-backfill";
 import { loadConversationOffThread, prepareArchiveHashes, releaseArchiveWindow } from "./conversation-loader";
 import { archiveWindow, forgetFullArchiveWindow, inheritArchiveHashProof, isArchivedMessage, storedMessageCount, archivedUserCount, systemInstructionMessages } from "./conversation-window";
+import { workingFolderAgents, type FolderAgentCandidate } from "./folder-agents";
 import { appWorkingDirectory, ephemeralConversationsSurviveRestart, isAppConversation, isEphemeralConversation, isHiddenConversation } from "./app-registry";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
@@ -2827,6 +2828,40 @@ export function moveSidebarItemWithUpdates(item: SidebarItemRef, direction: "up"
 
 export function moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"): boolean {
   return moveSidebarItemWithUpdates(item, direction) !== null;
+}
+
+/**
+ * The other agents working in a conversation's folder now (folder-agents.ts);
+ * null where nothing is said: a catch-all place, an app conversation (its
+ * prompts are the app's), or an unknown conversation.
+ */
+export function currentFolderAgents(
+  id: string,
+  /** For a conversation not created yet: where it will be. */
+  placement?: { folderId: string | null; parentConversationId?: string | null },
+  now = Date.now(),
+): FolderAgentRef[] | null {
+  const self = placement ?? summaries.get(id);
+  if (!self || isAppConversation(id)) return null;
+  const candidates: FolderAgentCandidate[] = [];
+  for (const summary of summaries.values()) {
+    if (isHiddenConversation(summary.id)) continue;
+    candidates.push({
+      id: summary.id,
+      title: summary.title,
+      folderId: summary.folderId ?? null,
+      parentConversationId: summary.parentConversationId ?? null,
+      streaming: streaming.isStreaming(summary.id),
+      lastActivityAt: summary.updatedAt,
+      cwd: appWorkingDirectory(summary.id) ?? null,
+    });
+  }
+  return workingFolderAgents(
+    { id, folderId: self.folderId ?? null, parentConversationId: self.parentConversationId ?? null, cwd: null },
+    candidates,
+    findTopLevelFolderByName(SUBAGENTS_FOLDER_NAME)?.id ?? null,
+    now,
+  );
 }
 
 export function listFolderConversationIds(folderId: string): string[] {
