@@ -13,6 +13,7 @@ import {
 import type { KeyEvent } from "./input";
 import type { ConversationSummary, FolderSummary } from "./messages";
 import { stripAnsi } from "./historycursor";
+import { termWidth } from "./textwidth";
 import { loadSidebarFolderViewPreference, setSidebarFolderView } from "./sidebar/folderview";
 import type { SidebarState } from "./sidebar/state";
 import { newConversationFolderId } from "./sidebar/tree";
@@ -377,7 +378,7 @@ describe("sidebar tree folder view", () => {
 
     test("a collapsed tree folder keeps its aggregate badges and count", () => {
       const row = folderRow(badgeSidebar("tree"), "📁");
-      expect(row).toMatch(/◉ ◆2 ◷ \$ 📁 work\/ 1/);
+      expect(row).toMatch(/📁 work\/ 1 ◉ ◆2 ◷ \$ /);
     });
 
     test("an open tree folder shows only its icon and name, plus its own mute bell", () => {
@@ -401,7 +402,22 @@ describe("sidebar tree folder view", () => {
     test("the navigate view keeps every folder badge", () => {
       const sidebar = badgeSidebar("navigate");
       const row = folderRow(sidebar, "📁");
-      expect(row).toMatch(/◉ ◆2 ◷ \$ 📁 work\/ 1/);
+      expect(row).toMatch(/📁 work\/ 1 ◉ ◆2 ◷ \$ /);
+    });
+
+    test("a long folder name truncates before the indicators after it, keeping the row's width", () => {
+      const sidebar = createSidebarState("tree");
+      updateConversationList(sidebar, [
+        conversation("busy", 2, { folderId: "long", streaming: true, subagentCount: 2 }),
+        conversation("waiting", 3, { folderId: "long", unread: true }),
+        conversation("root-a", 4),
+      ], [folder("long", 1, { name: "a folder name far too long for the sidebar" })]);
+      const lines = renderSidebar(sidebar, 12, true, null).map(line => stripAnsi(line));
+      const row = lines.find(line => line.includes("📁 a folder"))!;
+      expect(row).toMatch(/📁 a folder.*… ◉ ◆2 +1 │$/);
+      expect(termWidth(row)).toBe(termWidth(lines[0]));
+      // Conversation rows keep their indicators before the title.
+      expect(lines.find(line => line.includes("root-a"))).toMatch(/^ {2}root-a/);
     });
   });
 });

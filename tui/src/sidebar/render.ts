@@ -420,9 +420,15 @@ export function renderSidebar(
       itemFg = (isSelected || isCurrent) ? theme.text : theme.muted;
     }
 
-    const iconsWidth = termWidth(chronoTaskIcon) + termWidth(subagentIcon) + termWidth(backgroundTaskIcon)
+    // Folder rows put their activity after the name (`📁 work/ 3 ◉ ◆2`);
+    // conversation rows keep theirs before the title.
+    const activityAfterTitle = item?.type === "folder";
+    const activityWidth = termWidth(streamIcon) + termWidth(subagentIcon) + termWidth(chronoTaskIcon)
+      + termWidth(backgroundTaskIcon);
+    // One column between the name and the indicators that follow it.
+    const trailingActivityWidth = activityAfterTitle && activityWidth > 0 ? 1 + activityWidth : 0;
+    const prefixWidth = termWidth(prefix) + (activityAfterTitle ? 0 : activityWidth)
       + termWidth(starIcon) + termWidth(emojiIcon);
-    const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
     // The bell represents this item's durable preference, not the effective
     // notification policy inherited from its folder path. Inherited muting
     // still suppresses unread indicators and badges below.
@@ -431,11 +437,12 @@ export function renderSidebar(
     const badgeGap = notificationBadge ? 1 : 0;
     const badgeWidth = notificationBadge?.width ?? 0;
     const suffixWidth = termWidth(muteIcon) + badgeGap + badgeWidth;
-    const maxTitle = Math.max(0, innerWidth - prefixWidth - suffixWidth);
+    // The name gives way first: the indicators stay whole after a truncated name.
+    const maxTitle = Math.max(0, innerWidth - prefixWidth - trailingActivityWidth - suffixWidth);
     const title = truncateSidebarTitle(rawTitle, maxTitle);
     const bg = isSelected ? theme.sidebarSelBg : isVisual ? theme.sidebarSelBg : theme.sidebarBg;
     const fg = isPendingDelete ? theme.error : itemFg;
-    const paddedTitle = padRightToWidth(title, maxTitle);
+    const paddedTitle = trailingActivityWidth > 0 ? title : padRightToWidth(title, maxTitle);
     const titleText = isCurrent && !isPendingDelete ? theme.bold + paddedTitle + theme.boldOff : paddedTitle;
     const prefixText = isVisual && !isSelected && !isPendingDelete
       ? theme.muted + prefix + fg
@@ -446,10 +453,14 @@ export function renderSidebar(
     const chronoTaskIconColored = chronoTaskIcon ? theme.success + chronoTaskIcon + fg : "";
     const starIconColored = starIcon ? theme.warning + starIcon + fg : "";
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
+    const activityColored = streamIconColored + subagentIconColored + chronoTaskIconColored + backgroundTaskIconColored;
+    const body = trailingActivityWidth > 0
+      ? titleText + " " + activityColored + " ".repeat(Math.max(0, maxTitle - termWidth(title)))
+      : activityColored + starIconColored + emojiIconColored + titleText;
 
     rows.push(
       theme.reset + bg + fg +
-      prefixText + streamIconColored + subagentIconColored + chronoTaskIconColored + backgroundTaskIconColored + starIconColored + emojiIconColored + titleText +
+      prefixText + body +
       muteIcon +
       (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
