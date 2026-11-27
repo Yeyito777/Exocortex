@@ -396,7 +396,7 @@ describe("sidebar tree folder view", () => {
       expect(row).not.toMatch(/[◉◷◆$]|work\/ \d/);
       // The child still carries its own badges.
       const lines = renderSidebar(sidebar, 12, true, null).map(line => stripAnsi(line));
-      expect(lines.find(line => line.includes("busy"))).toMatch(/◉ ◆2 ◷ \$ busy/);
+      expect(lines.find(line => line.includes("busy"))).toMatch(/busy ◉ ◆2 ◷ \$ /);
     });
 
     test("the navigate view keeps every folder badge", () => {
@@ -416,8 +416,6 @@ describe("sidebar tree folder view", () => {
       const row = lines.find(line => line.includes("📁 a folder"))!;
       expect(row).toMatch(/📁 a folder.*… ◉ ◆2 +1 │$/);
       expect(termWidth(row)).toBe(termWidth(lines[0]));
-      // Conversation rows keep their indicators before the title.
-      expect(lines.find(line => line.includes("root-a"))).toMatch(/^ {2}root-a/);
     });
   });
 });

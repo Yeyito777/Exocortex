@@ -1,6 +1,7 @@
 import { getMarkFromTitle } from "../marks";
 import { conversationActivityIndicator, countedActivityIndicator, sidebarConversationActivityContext } from "./activityindicator";
 import { areFolderNotificationsMuted, currentFolder } from "./folders";
+import { sidebarIndicatorPlacement, type SidebarIndicatorPlacement } from "./indicatorplacement";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
 import { SIDEBAR_WIDTH } from "./layout";
 import {
@@ -241,6 +242,7 @@ export function renderSidebar(
   globalIdleConvIds: ReadonlySet<string> = new Set(),
   optimisticStreamingConvId: string | null = null,
   remoteAlias: string | null = null,
+  placement: SidebarIndicatorPlacement = sidebarIndicatorPlacement(),
 ): string[] {
   const rows: string[] = [];
   const innerWidth = SIDEBAR_WIDTH - 1; // -1 for right border │
@@ -420,15 +422,15 @@ export function renderSidebar(
       itemFg = (isSelected || isCurrent) ? theme.text : theme.muted;
     }
 
-    // Folder rows put their activity after the name (`📁 work/ 3 ◉ ◆2`);
-    // conversation rows keep theirs before the title.
-    const activityAfterTitle = item?.type === "folder";
-    const activityWidth = termWidth(streamIcon) + termWidth(subagentIcon) + termWidth(chronoTaskIcon)
-      + termWidth(backgroundTaskIcon);
-    // One column between the name and the indicators that follow it.
-    const trailingActivityWidth = activityAfterTitle && activityWidth > 0 ? 1 + activityWidth : 0;
-    const prefixWidth = termWidth(prefix) + (activityAfterTitle ? 0 : activityWidth)
-      + termWidth(starIcon) + termWidth(emojiIcon);
+    // Activity, task, star and mark icons go before the name, or after it
+    // (`📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`) per tui.sidebarIndicators.
+    const side = item?.type === "folder" ? placement.folders : item?.type === "conversation" ? placement.conversations : "before";
+    const iconsWidth = termWidth(streamIcon) + termWidth(subagentIcon) + termWidth(chronoTaskIcon)
+      + termWidth(backgroundTaskIcon) + termWidth(starIcon) + termWidth(emojiIcon);
+    const iconsAfter = side === "after" && iconsWidth > 0;
+    // One column between the name and the icons that follow it.
+    const trailingIconsWidth = iconsAfter ? 1 + iconsWidth : 0;
+    const prefixWidth = termWidth(prefix) + (iconsAfter ? 0 : iconsWidth);
     // The bell represents this item's durable preference, not the effective
     // notification policy inherited from its folder path. Inherited muting
     // still suppresses unread indicators and badges below.
@@ -437,12 +439,12 @@ export function renderSidebar(
     const badgeGap = notificationBadge ? 1 : 0;
     const badgeWidth = notificationBadge?.width ?? 0;
     const suffixWidth = termWidth(muteIcon) + badgeGap + badgeWidth;
-    // The name gives way first: the indicators stay whole after a truncated name.
-    const maxTitle = Math.max(0, innerWidth - prefixWidth - trailingActivityWidth - suffixWidth);
+    // The name gives way first: icons after a truncated name stay whole.
+    const maxTitle = Math.max(0, innerWidth - prefixWidth - trailingIconsWidth - suffixWidth);
     const title = truncateSidebarTitle(rawTitle, maxTitle);
     const bg = isSelected ? theme.sidebarSelBg : isVisual ? theme.sidebarSelBg : theme.sidebarBg;
     const fg = isPendingDelete ? theme.error : itemFg;
-    const paddedTitle = trailingActivityWidth > 0 ? title : padRightToWidth(title, maxTitle);
+    const paddedTitle = iconsAfter ? title : padRightToWidth(title, maxTitle);
     const titleText = isCurrent && !isPendingDelete ? theme.bold + paddedTitle + theme.boldOff : paddedTitle;
     const prefixText = isVisual && !isSelected && !isPendingDelete
       ? theme.muted + prefix + fg
@@ -453,10 +455,11 @@ export function renderSidebar(
     const chronoTaskIconColored = chronoTaskIcon ? theme.success + chronoTaskIcon + fg : "";
     const starIconColored = starIcon ? theme.warning + starIcon + fg : "";
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
-    const activityColored = streamIconColored + subagentIconColored + chronoTaskIconColored + backgroundTaskIconColored;
-    const body = trailingActivityWidth > 0
-      ? titleText + " " + activityColored + " ".repeat(Math.max(0, maxTitle - termWidth(title)))
-      : activityColored + starIconColored + emojiIconColored + titleText;
+    const iconsColored = streamIconColored + subagentIconColored + chronoTaskIconColored + backgroundTaskIconColored
+      + starIconColored + emojiIconColored;
+    const body = iconsAfter
+      ? titleText + " " + iconsColored + " ".repeat(Math.max(0, maxTitle - termWidth(title)))
+      : iconsColored + titleText;
 
     rows.push(
       theme.reset + bg + fg +

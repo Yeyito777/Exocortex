@@ -46,6 +46,14 @@ selects another daemon without moving client-side UI operations to that host.
   daemon. Its GPU and VRAM column is off by default; set
   `"tui": { "resourcesGpu": true }` in `config/config.json` and restart the TUI
   to show it.
+- Sidebar indicators: a row's activity dot (`◉`), subagent (`◆`), Chrono
+  (`◷`) and command (`$`) counts, star (`★`) and mark emoji go after its name
+  (`📁 work/ 3 ◉ ◆2`, `build ◉ ◆2 ★`), and a name too long for the row is cut
+  so they stay whole. The unread badge and mute bell stay at the right edge.
+  Set each kind of row with `"tui": { "sidebarIndicators": { "folders":
+  "before", "conversations": "before" } }` in `config/config.json` (`before`
+  or `after`, default `after`) and restart the TUI; `before` puts them ahead
+  of the name as earlier versions did.
 
 ## Keyboard reference
 
