@@ -31,6 +31,7 @@ import { agyModelLevel } from "./models";
 import { buildGeminiHelperPrompt, buildGeminiPromptContent, planGeminiPrompt } from "./prompt";
 import { fingerprintOf, getGeminiProcess, openGeminiProcess, translateAcpError } from "./session";
 import { createGeminiStreamState } from "./stream";
+import { GeminiQuotaError, geminiQuotaError, isGeminiQuotaText, noteGeminiQuotaRefusal } from "./usage";
 
 /** Conversation turns carry Exocortex's tool surface; helper calls do not. */
 function isAgentTurn(options: StreamOptions): boolean {
@@ -47,11 +48,17 @@ export async function streamMessage(
   await requireGeminiAuth(signal);
   if (signal?.aborted) throw createAbortError();
   const convId = options.tracking?.conversationId;
-  const result = convId && isAgentTurn(options)
-    ? await runAgentTurn(convId, messages, model, callbacks, options)
-    : await runHelper(messages, model, callbacks, options);
-  noteGeminiSignInWorking();
-  return result;
+  try {
+    const result = convId && isAgentTurn(options)
+      ? await runAgentTurn(convId, messages, model, callbacks, options)
+      : await runHelper(messages, model, callbacks, options);
+    noteGeminiSignInWorking();
+    return result;
+  } catch (error) {
+    // Hold Gemini turns until the reset, and show the limit.
+    if (error instanceof GeminiQuotaError) noteGeminiQuotaRefusal(model, error.resetAt);
+    throw error;
+  }
 }
 
 async function runAgentTurn(convId: string, messages: ApiMessage[], model: ModelId, callbacks: StreamCallbacks, options: StreamOptions): Promise<StreamResult> {
@@ -138,6 +145,9 @@ async function runHelper(messages: ApiMessage[], model: ModelId, callbacks: Stre
     if (signal?.aborted) throw createAbortError();
     const usage = (result.usage ?? {}) as Record<string, number>;
     const text = output.trim();
+    // The plan's refusal comes as the reply's only text (stream.ts): never a title or a summary.
+    const refusal = /^⚠ ([^\n]+)$/.exec(text);
+    if (refusal && isGeminiQuotaText(refusal[1])) throw geminiQuotaError(refusal[1]);
     return {
       text,
       thinking: "",

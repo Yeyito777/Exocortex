@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"SESSION","update":{"sessionUpdate":"usage_update","used":0,"size":1048576}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"SESSION","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h11m33s.\n"}}}}
+{"jsonrpc":"2.0","result":{"stopReason":"end_turn"},"id":"PROMPT"}

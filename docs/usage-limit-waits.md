@@ -42,6 +42,11 @@ remote pool can be probed by a provider request.
 
 ## Scope and verification
 
+Gemini turns use the same wait: the plan's refusal (a text chunk from the
+Antigravity CLI, not an error) becomes a `GeminiQuotaError`, and
+`geminiUsageAvailability` holds turns until its reset. See
+[gemini.md](gemini.md#limits).
+
 OpenAI is unchanged: its existing `retryOnUsageLimitReset` opt-in remains.
 Weekly/model-specific resets rely on machine rate-limit metadata; arbitrary
 human-readable dated reset formats are not parsed.

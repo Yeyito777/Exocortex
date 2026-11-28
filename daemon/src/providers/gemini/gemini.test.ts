@@ -19,9 +19,11 @@ import { antigravityKindStyle, getAntigravityToolDisplayInfo, summarizeAntigravi
 import { summarizeTool } from "../../tools/registry";
 import { buildGeminiPromptContent, planGeminiPrompt, resetSessionHeadsForTest, setSessionHead } from "./prompt";
 import { closeAllGeminiProcesses, configureGeminiSessions, fingerprintOf, geminiToolDenial, openGeminiProcess, setGeminiPromptWatchForTest, translateAcpError } from "./session";
-import { createGeminiStreamState, diffText, pushGeminiUpdate } from "./stream";
+import { createGeminiStreamState, diffText, pushGeminiUpdate, takeGeminiQuotaRefusal } from "./stream";
 import type { AgyTranscriptReader } from "./transcript";
-import { geminiQuotaLimits, geminiUsageAvailability, parseUsageScreen, setGeminiQuotaForTest } from "./usage";
+import { streamMessage } from "./api";
+import { clearUsage, GeminiQuotaError, geminiQuotaLimits, geminiResetIn, geminiUsageAvailability, getLastUsage, lastGeminiQuota, noteGeminiQuotaRefusal, parseUsageScreen, reloadGeminiQuotaRefusalForTest, setGeminiQuotaForTest } from "./usage";
+import { isUsageLimitError } from "../../usage-limit-wait";
 
 const FAKE_AGY = join(import.meta.dir, "test-fixtures", "fake-agy.ts");
 let dir: string;
@@ -42,6 +44,8 @@ afterEach(() => {
   configureGeminiSessions(null);
   delete process.env.FAKE_AGY_MODELS_TIMEOUT;
   delete process.env.FAKE_AGY_OFFLINE;
+  delete process.env.FAKE_AGY_QUOTA_FILE;
+  clearUsage();
 });
 
 async function until(check: () => boolean, ms = 3000): Promise<void> {
@@ -265,6 +269,119 @@ describe("MCP bridge", () => {
   });
 });
 
+describe("quota refusal", () => {
+  // `agy acp` 1.5.19 at the plan's limit, recorded Nov 28 2026: no ACP error, a text chunk and end_turn.
+  const recorded = readFileSync(join(import.meta.dir, "test-fixtures", "quota-refusal.acp.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  const updates = recorded.filter(m => m.method === "session/update").map(m => m.params.update);
+  const refusalText = updates.find(u => u.sessionUpdate === "agent_message_chunk").content.text as string;
+
+  test("the CLI's recorded refusal is held back from the stream and ends the prompt as a usage limit with its reset", () => {
+    const text: string[] = [];
+    const now = 5_000_000;
+    const state = createGeminiStreamState(callbacks([], text), dir, "SESSION", { transcript: null, now: () => now });
+    for (const update of updates) pushGeminiUpdate(state, update);
+    expect(text).toEqual([]);
+    const error = takeGeminiQuotaRefusal(state)!;
+    expect(error).toBeInstanceOf(GeminiQuotaError);
+    expect(isUsageLimitError(error)).toBe(true);
+    expect(error.message).toContain("Individual quota reached");
+    expect(error.resetAt).toBe(now + (4 * 3600 + 11 * 60 + 33) * 1000);
+    expect(takeGeminiQuotaRefusal(state)).toBeNull();
+  });
+
+  test("the same line followed by more output was the agent's own text, not a refusal", () => {
+    const text: string[] = [];
+    const state = createGeminiStreamState(callbacks([], text), dir, "SESSION", { transcript: null });
+    pushGeminiUpdate(state, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: refusalText } });
+    pushGeminiUpdate(state, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "That is the message you saw." } });
+    expect(text.join("")).toBe(`${refusalText}That is the message you saw.`);
+    expect(takeGeminiQuotaRefusal(state)).toBeNull();
+    // Ordinary warnings are not limits either.
+    const other = createGeminiStreamState(callbacks([], text), dir, "SESSION", { transcript: null });
+    pushGeminiUpdate(other, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\n⚠ Settings Error\n" } });
+    expect(takeGeminiQuotaRefusal(other)).toBeNull();
+  });
+
+  test("reset durations as the CLI and the real conversations wrote them", () => {
+    expect(geminiResetIn("Resets in 4h16m56s.")).toBe((4 * 3600 + 16 * 60 + 56) * 1000);
+    expect(geminiResetIn("Resets in 1h10m33s.")).toBe((3600 + 10 * 60 + 33) * 1000);
+    expect(geminiResetIn("Resets in 2d 3h.")).toBe((2 * 24 + 3) * 3_600_000);
+    expect(geminiResetIn("Your quota will reset after 45s.")).toBe(45_000);
+    expect(geminiResetIn("Individual quota reached.")).toBeNull();
+  });
+
+  test("an ACP error for the quota carries its reset too", () => {
+    const error = translateAcpError(new Error("RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 10m.")) as GeminiQuotaError;
+    expect(error.name).toBe("GeminiQuotaError");
+    expect(error.resetAt! - Date.now()).toBeGreaterThan(599_000);
+    expect(error.resetAt! - Date.now()).toBeLessThanOrEqual(600_000);
+  });
+
+  const unspent = [
+    "└ Models & Quota",
+    "  Account: someone@example.com",
+    "GEMINI MODELS",
+    "  Weekly Limit Remaining",
+    "[██████████] 97.42%",
+    "Refreshes in 167h 41m",
+    "  Five Hour Limit Remaining",
+    "[██████████] 40.00%",
+    "Refreshes in 2h 5m",
+  ].join("\r\n");
+
+  test("a refusal holds Gemini turns until its reset, shows on the usage bars and Accounts rows, and outlives a restart", () => {
+    const now = Date.now();
+    const resetAt = now + 3 * 3_600_000;
+    setGeminiQuotaForTest(parseUsageScreen(unspent, now));
+    expect(geminiUsageAvailability("gemini-4-neon", now).ready).toBe(true);
+    noteGeminiQuotaRefusal("gemini-4-neon", resetAt, { now, refresh: false });
+    expect(geminiUsageAvailability("gemini-4-neon", now)).toEqual({ ready: false, resetAt });
+    // The five-hour window, whose reset is nearest the refusal's, is the spent one.
+    expect(geminiQuotaLimits(lastGeminiQuota()!).shared!.fiveHour).toEqual({ utilization: 100, resetsAt: resetAt });
+    expect(getLastUsage()!.fiveHour).toEqual({ utilization: 100, resetsAt: resetAt });
+    expect(geminiQuotaLimits(lastGeminiQuota()!).shared!.weekly!.utilization).toBe(2.58);
+    // A daemon restart forgets the screen read but not the refusal.
+    setGeminiQuotaForTest(null);
+    reloadGeminiQuotaRefusalForTest();
+    expect(geminiUsageAvailability("gemini-4-neon", now)).toEqual({ ready: false, resetAt });
+    expect(geminiQuotaLimits(lastGeminiQuota()!).shared!.fiveHour).toEqual({ utilization: 100, resetsAt: resetAt });
+    expect(geminiUsageAvailability("gemini-4-neon", resetAt + 1).ready).toBe(true);
+  });
+
+  test("a later /usage read that says the window is spent until later wins; one that is behind does not undo the refusal", () => {
+    const now = Date.now();
+    const resetAt = now + 3_600_000;
+    noteGeminiQuotaRefusal("gemini-4-neon", resetAt, { now, refresh: false });
+    setGeminiQuotaForTest(parseUsageScreen(unspent.replace("40.00%", "0.00%").replace("2h 5m", "1h 30m"), now));
+    expect(geminiUsageAvailability("gemini-4-neon", now)).toEqual({ ready: false, resetAt: now + 90 * 60_000 });
+    setGeminiQuotaForTest(parseUsageScreen(unspent, now));
+    expect(geminiUsageAvailability("gemini-4-neon", now)).toEqual({ ready: false, resetAt });
+  });
+
+  test("a helper request the plan refuses fails as the limit, and /usage is read again for the rows", async () => {
+    const quotaFile = join(dir, "quota-helper.json");
+    writeFileSync(quotaFile, JSON.stringify({ resetAt: Date.now() + 2 * 3_600_000 }));
+    process.env.FAKE_AGY_QUOTA_FILE = quotaFile;
+    const text: string[] = [];
+    const error = await streamMessage([{ role: "user", content: "title this" }], "gemini-4-neon", callbacks([], text), {}).then(() => null, e => e as Error);
+    expect(error?.name).toBe("GeminiQuotaError");
+    expect(geminiUsageAvailability("gemini-4-neon").ready).toBe(false);
+    // The fake CLI's /usage screen: five-hour spent, weekly at 80% left.
+    await until(() => lastGeminiQuota()?.account === "someone@example.com", 8000);
+    const shared = geminiQuotaLimits(lastGeminiQuota()!).shared!;
+    expect(shared.fiveHour!.utilization).toBe(100);
+    expect(shared.weekly!.utilization).toBe(20);
+  }, 12_000);
+
+  test("a refusal without a reset time is checked again after a minute", () => {
+    const now = Date.now();
+    noteGeminiQuotaRefusal("gemini-4-neon", null, { now, refresh: false });
+    expect(geminiUsageAvailability("gemini-4-neon", now)).toEqual({ ready: false, resetAt: null });
+    expect(geminiUsageAvailability("gemini-4-neon", now + 59_000).ready).toBe(false);
+    expect(geminiUsageAvailability("gemini-4-neon", now + 61_000).ready).toBe(true);
+  });
+});
+
 describe("errors", () => {
   test("quota and sign-in failures become the errors Exocortex acts on", () => {
     expect(translateAcpError(new Error("RESOURCE_EXHAUSTED: quota exceeded")).name).toBe("GeminiQuotaError");
@@ -364,6 +481,35 @@ describe("Antigravity process", () => {
     second.abort();
     await expect(steered).rejects.toThrow();
     expect(proc.closed).toBe(false);
+  });
+
+  test("a prompt the plan refuses keeps what ran with a resume point, and throws the limit with its reset", async () => {
+    resetSessionHeadsForTest();
+    const quotaFile = join(dir, "quota-c-refused.json");
+    const resetAt = Date.now() + 2 * 3_600_000;
+    writeFileSync(quotaFile, JSON.stringify({ resetAt }));
+    process.env.FAKE_AGY_QUOTA_FILE = quotaFile;
+    const proc = openGeminiProcess("c-refused", key(), "sys", []);
+    await proc.initialize();
+    await proc.openSession(null);
+    const rounds: ProviderRound[] = [];
+    const text: string[] = [];
+    const state = createGeminiStreamState(callbacks(rounds, text), cwd(), proc.sessionId!);
+    const error = await proc.prompt(state, [{ type: "text", text: "quota-work please" }], undefined, undefined).then(() => null, e => e as GeminiQuotaError);
+    expect(error?.name).toBe("GeminiQuotaError");
+    expect(isUsageLimitError(error)).toBe(true);
+    expect(Math.abs(error!.resetAt! - resetAt)).toBeLessThan(3_000);
+    expect(text.join("")).toBe("Before the limit.");
+    // The tool round, then the text written before the refusal; never the refusal itself.
+    expect(rounds).toHaveLength(2);
+    expect(rounds[1].messages).toEqual([{ role: "assistant", content: [{ type: "text", text: "Before the limit." }], providerData: expect.anything() }]);
+    expect(JSON.stringify(rounds)).not.toContain("quota reached");
+    // The session holds all of it: the next turn continues it and sends only the continue prompt.
+    const mark = rounds[1].messages[0].providerData!.gemini!.mark;
+    expect(proc.head).toBe(mark);
+    const plan = planGeminiPrompt([{ role: "user", content: "quota-work please" }, ...rounds.flatMap(r => r.messages)], cwd());
+    expect(plan.resume?.mark).toBe(mark);
+    expect(plan.pending).toEqual([]);
   });
 
   test("a session the CLI no longer has starts a new one", async () => {

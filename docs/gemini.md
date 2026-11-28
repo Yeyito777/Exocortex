@@ -68,8 +68,38 @@ Exocortex still follows if the screen lists it again. Exocortex reads that scree
 in a pseudo-terminal at most every three minutes, after turns, and shows the
 shared Gemini windows as the usage bars. The Accounts screen (`/accounts`)
 shows the same read: the signed-in Google account and plan with the shared
-limits, and a row for Argon's own when there is one. A turn the plan refuses waits for the
-reset, like a Claude turn at a limit.
+limits, and a row for Argon's own when there is one.
+
+A turn the plan refuses waits for the reset, like a Claude turn at a limit
+([usage-limit-waits.md](usage-limit-waits.md)). The CLI (1.5.19) sends no ACP
+error for it: it writes the refusal as the prompt's last text chunk,
+`"\n⚠ Individual quota reached. Please upgrade your subscription to increase
+your limits. Resets in 4h16m56s.\n"`, and ends the prompt `end_turn` with no
+usage (recorded in `daemon/src/providers/gemini/test-fixtures/quota-refusal.acp.jsonl`).
+A chunk worded like that is held back from the stream; if more output follows
+it was the agent's own text, and if the prompt ends there it is the refusal
+(`stream.ts`). Then:
+
+- what the turn did before it stays: finished rounds are already committed,
+  and text written before the refusal is committed as a round with a resume
+  mark, as the CLI's session holds it;
+- the turn stays running and waits (yellow, "Waiting for usage limit · resets
+  …"), and once the quota resets continues the same session with the
+  interrupted-turn prompt. Steering and Stop work during the wait;
+- the refusal holds every Gemini turn until its reset, so new turns wait
+  before sending anything. Its reset comes from the refusal's "Resets in"; the
+  `/usage` screen is read again at once (the CLI's only machine-readable quota)
+  and wins where it says the window stays spent longer; a refusal that names
+  no reset is checked again after a minute. It is kept in
+  `gemini-quota-refusal.json` (data directory), so a daemon restart waits
+  without a request;
+- the usage bars and the Accounts rows show the window spent until the reset
+  at once (the refused group's window whose reset is nearest the refusal's),
+  over whatever the last screen read said.
+
+A helper request (title, summary) the plan refuses fails as the limit instead
+of returning the refusal as its text. A refusal that does come as an ACP error
+(RESOURCE_EXHAUSTED, quota) is the same limit.
 
 ## How a turn runs
 

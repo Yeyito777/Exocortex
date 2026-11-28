@@ -101,6 +101,7 @@ import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions, getClaudeCodeSession } from "./providers/anthropic/session";
 import { configureGeminiSessions } from "./providers/gemini/session";
+import { setGeminiUsageListener } from "./providers/gemini/usage";
 import { abandonAppCreate, announceAppConversation, appConversationInfo, appConversationOwner, appTurnSentByAnother, noteAppTurnSender, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, endAppSession, ensureAppFolder, finishAppRun, holdAppCommandUntilReady, listAppConversations, markAppApiReady, parseAppCreate, registerAppCreate, registerTurnAwait, repeatedTurnResult, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
 import { getAppRecord, isAppConversation, isEphemeralConversation, isHiddenConversation, touchAppConversation } from "./app-registry";
 import { appToolBroker } from "./app-tools";
@@ -412,6 +413,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     // Gemini's limits show on the Accounts screen too (Claude's push through the account events).
     if (provider === "gemini") accountsWatch.changed();
   };
+  // A turn the plan refused shows on the usage bars and Accounts screen at once, and again after the /usage read it starts.
+  setGeminiUsageListener((usage) => broadcastUsage("gemini", usage));
   // An API key's spend changes with every response, image and transcription:
   // push it as each one is counted, and again when the local day rolls over
   // (Today restarts at 0). Clients never ask; unchanged payloads aren't resent.

@@ -15,12 +15,21 @@
  *   Exocortex has no entry for.
  * - anything else: thinks, then echoes it back.
  *
+ * FAKE_AGY_QUOTA_FILE: a file holding `{"resetAt": <epoch ms>}`. Until then
+ * every prompt is refused as the real CLI refuses it at the plan's limit
+ * (test-fixtures/quota-refusal.acp.jsonl, recorded Nov 28 2026): one
+ * "\n⚠ … Resets in XhYmZs.\n" text chunk and `end_turn` with no usage. A
+ * prompt containing "quota-work" first runs a tool round and writes a line.
+ * `"duration": false` leaves the reset time out of the message; `"hold": true`
+ * keeps refusing past `resetAt` until the file goes (tests release it). Run with no
+ * arguments (in a terminal) it shows the `/usage` screen, spent while refused.
  * FAKE_AGY_MODELS_TIMEOUT: `agy models` gives up as it does offline.
  * FAKE_AGY_OFFLINE: sessions come up without a model list, as offline.
  * EXOCORTEX_AGY_STATE_DIR: where session transcripts are written.
+ * FAKE_AGY_PROMPT_LOG: each prompt's text is appended there, one JSON line each.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export {};
@@ -43,6 +52,45 @@ if (process.argv.includes("models")) {
 }
 
 type Json = Record<string, unknown>;
+
+/** The refusal in force, if any. */
+function quotaRefusal(): { resetAt: number; duration: boolean } | null {
+  const file = process.env.FAKE_AGY_QUOTA_FILE;
+  if (!file) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { resetAt?: number; duration?: boolean; hold?: boolean };
+    if (typeof parsed.resetAt !== "number" || (parsed.resetAt <= Date.now() && !parsed.hold)) return null;
+    return { resetAt: parsed.resetAt, duration: parsed.duration !== false };
+  } catch {
+    return null;
+  }
+}
+
+/** "4h11m33s", as the CLI writes it. */
+function hms(ms: number): string {
+  const total = Math.max(1, Math.ceil(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  return `${h ? `${h}h` : ""}${h || m ? `${m}m` : ""}${sec}s`;
+}
+
+if (process.argv.length <= 2) {
+  // Interactive: enough of the CLI's screen for usage.ts to read /usage.
+  process.stdout.write("Antigravity CLI\r\n? for shortcuts\r\n");
+  let typed = "";
+  for await (const chunk of Bun.stdin.stream()) {
+    typed += new TextDecoder().decode(chunk);
+    if (!/\/usage[\r\n]/.test(typed)) continue;
+    const refused = quotaRefusal();
+    const left = refused ? Math.max(0, refused.resetAt - Date.now()) : 0;
+    const five = refused ? `[          ] 0.00%\r\nRefreshes in ${Math.floor(left / 3_600_000)}h ${Math.floor((left % 3_600_000) / 60_000)}m` : "[██████████] 100.00%\r\nQuota available";
+    process.stdout.write(["└ Models & Quota", "  Account: someone@example.com", "GEMINI MODELS", "  Weekly Limit Remaining", "[██████████] 80.00%", "Refreshes in 100h 5m", "  Five Hour Limit Remaining", five, ""].join("\r\n"));
+    typed = "";
+  }
+  process.exit(0);
+}
+
 const out = (message: Json) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const update = (sessionId: string, body: Json) => out({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: body } });
 
@@ -107,7 +155,21 @@ async function prompt(id: unknown, params: Json): Promise<void> {
   const session = sessions.get(sessionId)!;
   const text = ((params.prompt as Json[]).find(b => b.type === "text")?.text as string | undefined) ?? "";
   const images = (params.prompt as Json[]).filter(b => b.type === "image").length;
+  if (process.env.FAKE_AGY_PROMPT_LOG) appendFileSync(process.env.FAKE_AGY_PROMPT_LOG, `${JSON.stringify({ at: new Date().toISOString(), sessionId, text })}\n`);
   const done = (stopReason = "end_turn") => out({ jsonrpc: "2.0", id, result: { stopReason, usage: { inputTokens: 100, outputTokens: 7, cachedReadTokens: 50, thoughtTokens: 3 } } });
+  const refused = quotaRefusal();
+  if (refused) {
+    if (text.includes("quota-work")) {
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId: "call_q_1", name: "run_command", rawInput: { CommandLine: "echo before", toolSummary: "Echo" }, status: "in_progress", kind: "execute" });
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "call_q_1", name: "run_command", status: "completed", rawOutput: { output: "before\n", exit_code: 0 }, content: [{ type: "content", content: { type: "text", text: "before\n" } }] });
+      update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Before the limit." } });
+    }
+    update(sessionId, { sessionUpdate: "usage_update", used: 0, size: 1048576 });
+    const resets = refused.duration ? ` Resets in ${hms(refused.resetAt - Date.now())}.` : "";
+    update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits.${resets}\n` } });
+    out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+    return;
+  }
   if (text.startsWith("host ")) {
     const [, tool, json] = /^host (\S+) (.*)$/s.exec(text) ?? [];
     const args = JSON.parse(json || "{}") as Json;

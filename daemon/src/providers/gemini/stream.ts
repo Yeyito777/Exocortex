@@ -8,6 +8,13 @@
  * tool_use → tool_result message pair, and a round is handed to the agent
  * loop (onProviderRound) as soon as its last open call finishes, carrying the
  * session's resume mark (prompt.ts).
+ *
+ * At the plan's limit the CLI sends no ACP error: it writes the refusal as
+ * one last text chunk ("\n⚠ Individual quota reached. ... Resets in
+ * 4h16m56s.\n") and ends the prompt `end_turn`
+ * (test-fixtures/quota-refusal.acp.jsonl). Such a chunk is held back; if the
+ * prompt then ends, the turn ended at the limit (takeGeminiQuotaRefusal),
+ * and if more output follows it was the agent's own text after all.
  */
 
 import { randomUUID } from "node:crypto";
@@ -20,6 +27,7 @@ import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from 
 import { setSessionHead } from "./prompt";
 import { AgyTranscriptReader, agyTranscriptPath, backgroundTaskOf, modelCallTokens, stepStartedAt, type AgyBackgroundTask } from "./transcript";
 import type { GeminiAssistantProviderData } from "./types";
+import { geminiQuotaError, isGeminiQuotaText, type GeminiQuotaError } from "./usage";
 
 type Json = Record<string, unknown>;
 
@@ -65,6 +73,8 @@ export interface GeminiStreamState {
   cancelling: boolean;
   /** A call that ran as a background task finished. */
   onBackgroundEnd?: (taskId: string) => void;
+  /** A text chunk worded as the CLI words a quota refusal, held back until it is known to be the turn's last output. */
+  heldRefusal: string | null;
 }
 
 /** A model call from the CLI's log: its tokens and, to the second, when it started and ended. */
@@ -124,6 +134,7 @@ export function createGeminiStreamState(callbacks: StreamCallbacks, cwd: string,
     announcedTasks: [],
     loggedCalls: [],
     cancelling: false,
+    heldRefusal: null,
   };
 }
 
@@ -384,18 +395,68 @@ export function runningBackgroundTasks(state: GeminiStreamState): string[] {
   return [...state.commands.values()].flatMap(command => command.taskId ? [command.taskId] : []);
 }
 
+/** The CLI's error line: "\n⚠ <message>\n", alone in its chunk. */
+const CLI_ERROR_RE = /^\n?⚠ ([^\n]+)\n?$/;
+
+function streamText(state: GeminiStreamState, text: string): void {
+  if (state.pendingThinking) flushPending(state);
+  if (!state.pendingText) state.callbacks.onBlockStart?.("text");
+  state.pendingText += text;
+  state.callbacks.onText(text);
+}
+
+/** More output came after a held chunk: it was the agent's own text. */
+function releaseHeldRefusal(state: GeminiStreamState): void {
+  const held = state.heldRefusal;
+  if (held === null) return;
+  state.heldRefusal = null;
+  streamText(state, held);
+}
+
+/**
+ * The prompt ended: whether its last output was the plan's quota refusal, as
+ * the error the usage-limit wait acts on (its reset parsed from the text).
+ * The refusal never reaches the record.
+ */
+export function takeGeminiQuotaRefusal(state: GeminiStreamState): GeminiQuotaError | null {
+  const held = state.heldRefusal;
+  if (held === null) return null;
+  state.heldRefusal = null;
+  return geminiQuotaError(CLI_ERROR_RE.exec(held)![1].trim(), state.now());
+}
+
+/**
+ * Keep what a refused prompt did. Its finished rounds are already committed;
+ * text written before the refusal is committed as a round with a resume mark,
+ * since the CLI's session holds it, so the turn continues that session once
+ * the quota resets.
+ */
+export function commitRefusedRound(state: GeminiStreamState): void {
+  commitInterruptedRound(state);
+  commitRound(state);
+}
+
 /** Feed one session/update into the turn. */
 export function pushGeminiUpdate(state: GeminiStreamState, update: Json): void {
   const cb = state.callbacks;
   state.lastUpdateAt = state.now();
-  switch (update.sessionUpdate) {
+  const kind = update.sessionUpdate;
+  if (kind === "agent_message_chunk" || kind === "agent_thought_chunk" || kind === "tool_call" || kind === "tool_call_update") {
+    const text = kind === "agent_message_chunk" ? str(asRecord(update.content)?.text) : undefined;
+    const error = text ? CLI_ERROR_RE.exec(text) : null;
+    if (error && isGeminiQuotaText(error[1])) {
+      releaseHeldRefusal(state);
+      state.heldRefusal = text!;
+      cb.onActivity?.();
+      return;
+    }
+    releaseHeldRefusal(state);
+  }
+  switch (kind) {
     case "agent_message_chunk": {
       const text = str(asRecord(update.content)?.text);
       if (!text) return;
-      if (state.pendingThinking) flushPending(state);
-      if (!state.pendingText) cb.onBlockStart?.("text");
-      state.pendingText += text;
-      cb.onText(text);
+      streamText(state, text);
       return;
     }
     case "agent_thought_chunk": {

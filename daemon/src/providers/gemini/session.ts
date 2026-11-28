@@ -33,7 +33,8 @@ import { agyBinary, agyEnv, GeminiUnreachableError, isAgyUnreachableText } from 
 import { ensureExocortexHook } from "./hooks";
 import { agyModelLevel } from "./models";
 import type { AcpContentBlock } from "./prompt";
-import { commitInterruptedRound, finishGeminiTurn, pushGeminiUpdate, runningBackgroundTasks, takeBackgroundedCommands, type GeminiStreamState } from "./stream";
+import { commitInterruptedRound, commitRefusedRound, finishGeminiTurn, pushGeminiUpdate, runningBackgroundTasks, takeBackgroundedCommands, takeGeminiQuotaRefusal, type GeminiStreamState } from "./stream";
+import { GeminiQuotaError, geminiQuotaError } from "./usage";
 import type { StreamResult } from "../types";
 
 const IDLE_CLOSE_MS = 30 * 60_000;
@@ -335,6 +336,13 @@ export class GeminiProcess {
         commitInterruptedRound(state);
         throw createAbortError();
       }
+      // The plan refused the model call: the turn waits for the reset (usage-limit-wait.ts).
+      const refused = takeGeminiQuotaRefusal(state);
+      if (refused) {
+        log("info", `gemini: the plan refused ${this.convId}'s turn: ${refused.message}`);
+        commitRefusedRound(state);
+        throw refused;
+      }
       const finished = finishGeminiTurn(state, result);
       return finished;
     } catch (error) {
@@ -494,19 +502,15 @@ export function closeAllGeminiProcesses(reason: string): void {
   for (const process of [...processes.values()]) process.close(reason);
 }
 
-export class GeminiQuotaError extends Error {
-  override readonly name = "GeminiQuotaError";
-}
-
 /** An ACP error as the error Exocortex acts on: sign-in, quota, or the CLI's own message. */
 export function translateAcpError(error: unknown): Error {
-  if (error instanceof GeminiUnreachableError) return error;
+  if (error instanceof GeminiUnreachableError || error instanceof GeminiQuotaError) return error;
   const message = error instanceof Error ? error.message : String(error);
   if (/authentication required|not signed in|please sign in|login required|unauthenticated|invalid_grant/i.test(message)) {
     return new AuthError(`The Antigravity CLI lost its Google sign-in: ${message}. Run \`exocortexd login gemini\` in a terminal.`);
   }
   if (/quota|resource.?exhausted|rate.?limit|429|limit (?:reached|exceeded)|out of credits/i.test(message)) {
-    return new GeminiQuotaError(`Gemini usage limit reached on the Google AI plan: ${message}`);
+    return geminiQuotaError(message);
   }
   if (isAgyUnreachableText(message)) return new GeminiUnreachableError(message);
   if (error instanceof AcpError) return new Error(`Antigravity CLI: ${message}`);
