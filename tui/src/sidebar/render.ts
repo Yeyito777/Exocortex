@@ -25,7 +25,7 @@ import {
   getSidebarSearchBarViewport,
 } from "../sidebarsearch";
 import { theme } from "../theme";
-import { conversationWorkCounts, hasInProgressModelWork, inlineLongSleepStartedAt, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
+import { conversationWorkCounts, shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import { sanitizeUntrustedLabel } from "../terminaltext";
 import type { ConversationSummary, ConversationTaskSummary, FolderSummary } from "../messages";
@@ -43,14 +43,9 @@ const UPDATE_LABELS: Record<DisplayUpdateStatus, string> = {
 
 interface FolderAggregate {
   count: number;
-  streamingCount: number;
-  longSleep: boolean;
-  globalIdle: boolean;
-  unread: boolean;
-  unreadCount: number;
   /**
    * Unmuted children by the dot their own row shows (activityindicator.ts):
-   * blue, yellow, green. The after and right folder rows count these.
+   * blue, yellow, green. Collapsed folder rows count these.
    */
   dots: Record<ConversationActivityState, number>;
   subagentCount: number;
@@ -154,11 +149,6 @@ function buildFolderAggregates(
   for (const folder of sidebar.folders) {
     aggregates.set(folder.id, {
       count: 0,
-      streamingCount: 0,
-      longSleep: false,
-      globalIdle: false,
-      unread: false,
-      unreadCount: 0,
       dots: { streaming: 0, warning: 0, unread: 0 },
       subagentCount: 0,
       backgroundTaskCount: 0,
@@ -193,10 +183,6 @@ function buildFolderAggregates(
     const muted = conv.muted === true || isFolderMuted(conv.folderId ?? null);
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
     const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
-    const hasInlineSleep = inlineLongSleepStartedAt(conv) !== null;
-    const hasLongSleep = hasInlineSleep || isDurablySleeping(conv);
-    const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
-    const hasUnread = conv.unread && !hasModelWork;
     const chronoTaskCount = countChronoTasks(conv.tasks);
     const work = conversationWorkCounts(conv);
     const dot = muted ? null : conversationActivityState(conv, {
@@ -212,11 +198,6 @@ function buildFolderAggregates(
         folderId = parentById.get(folderId) ?? null;
         continue;
       }
-      if ((conv.streaming || hasOptimisticStreaming) && !hasInlineSleep) aggregate.streamingCount++;
-      aggregate.longSleep ||= hasLongSleep;
-      aggregate.globalIdle ||= hasGlobalIdle;
-      aggregate.unread ||= hasUnread;
-      if (hasUnread) aggregate.unreadCount++;
       if (dot) aggregate.dots[dot]++;
       aggregate.subagentCount += work.subagents;
       aggregate.backgroundTaskCount += work.commands;
@@ -231,16 +212,6 @@ function buildFolderAggregates(
   return aggregates;
 }
 
-function renderNotificationBadge(count: number): { text: string; width: number } | null {
-  if (count <= 0) return null;
-  const label = count > 99 ? "99+" : String(count);
-  const rawText = ` ${label} `;
-  return {
-    text: `${theme.notificationBg}${theme.notificationFg}${rawText}${theme.reset}`,
-    width: termWidth(rawText),
-  };
-}
-
 function subagentIndicator(count: number): string {
   return countedActivityIndicator("◆", count);
 }
@@ -251,10 +222,6 @@ function backgroundTaskIndicator(count: number): string {
 
 function chronoTaskIndicator(count: number): string {
   return countedActivityIndicator("◷", count);
-}
-
-function folderStreamingIndicator(count: number): string {
-  return countedActivityIndicator(ACTIVITY_GLYPH, count);
 }
 
 function truncateSidebarTitle(text: string, maxWidth: number): string {
@@ -409,8 +376,7 @@ export function renderSidebar(
     let folderGlyph = "";
     let isCurrent = false;
     let itemFg = theme.muted;
-    let notificationCount = 0;
-    /** A collapsed folder's counted dots in after and right modes: green, blue, yellow (mirrored when right-aligned). */
+    /** A collapsed folder's counted dots: green, blue, yellow (mirrored when right-aligned). */
     let folderDots: { icon: string; color: string }[] = [];
     let notificationsMuted = false;
     let explicitlyMuted = false;
@@ -435,9 +401,9 @@ export function renderSidebar(
       }
       // A muted folder (itself or through an ancestor) shows none of its
       // conversations' activity; an open one shows none anyway.
-      if (!isOpenTreeFolder && !notificationsMuted && placement.folders !== "before") {
+      if (!isOpenTreeFolder && !notificationsMuted) {
         // One counted dot per state its unmuted children show (`3◉ 2◉`); the
-        // green count replaces the red unread badge.
+        // green count stands for their unread conversations (no red badge).
         const dots = aggregate?.dots ?? { streaming: 0, warning: 0, unread: 0 };
         folderDots = ([["unread", theme.success], ["streaming", theme.accent], ["warning", theme.warning]] as const)
           .filter(([state]) => dots[state] > 0)
@@ -445,19 +411,6 @@ export function renderSidebar(
         subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
         backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
         chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
-      } else if (!isOpenTreeFolder && !notificationsMuted) {
-        // before: the dot of the busiest state, and the unread count as a badge.
-        const streamingCount = aggregate?.streamingCount ?? 0;
-        const hasLongSleep = aggregate?.longSleep ?? false;
-        const hasGlobalIdle = aggregate?.globalIdle ?? false;
-        const hasUnread = aggregate?.unread ?? false;
-        const hasWarningActivity = hasLongSleep || hasGlobalIdle;
-        streamIcon = streamingCount > 0 ? folderStreamingIndicator(streamingCount) : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
-        streamIconColor = streamingCount > 0 ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
-        subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
-        backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
-        chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
-        notificationCount = aggregate?.unreadCount ?? 0;
       }
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
@@ -505,14 +458,11 @@ export function renderSidebar(
     const prefixWidth = termWidth(prefix) + termWidth(folderLead) + (iconsAfter || iconsRight ? 0 : iconsWidth);
     // The bell represents this item's durable preference, not the effective
     // notification policy inherited from its folder path. Inherited muting
-    // still suppresses unread indicators and badges below.
+    // still suppresses the unread indicators above.
     const muteIcon = explicitlyMuted ? " 🔕" : "";
-    const notificationBadge = notificationsMuted ? null : renderNotificationBadge(notificationCount);
-    const badgeGap = notificationBadge ? 1 : 0;
-    const badgeWidth = notificationBadge?.width ?? 0;
-    const suffixWidth = termWidth(muteIcon) + badgeGap + badgeWidth;
+    const suffixWidth = termWidth(muteIcon);
     // Right-aligned icons keep the last one's trailing space as the column
-    // before the border; the bell and badge bring their own leading space.
+    // before the border; the bell brings its own leading space.
     const trimLastIconSpace = iconsRight && suffixWidth > 0;
     // One column between the name and the icons that follow it.
     const trailingIconsWidth = iconsAfter || iconsRight ? 1 + iconsWidth - (trimLastIconSpace ? 1 : 0) : 0;
@@ -552,7 +502,6 @@ export function renderSidebar(
       theme.reset + bg + fg +
       prefixText + body +
       muteIcon +
-      (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   }

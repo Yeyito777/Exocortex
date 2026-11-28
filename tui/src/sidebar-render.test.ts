@@ -541,7 +541,7 @@ describe("sidebar rendering", () => {
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
   });
 
-  test("counts unread conversations in a folder tree as a green dot; before mode keeps the red badge", () => {
+  test("counts unread conversations in a folder tree as a green dot, with no red badge in any mode", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -564,7 +564,8 @@ describe("sidebar rendering", () => {
 
     const beforeRow = renderSidebar(sidebar, 8, true, null, new Set(), null, null, { folders: "before", conversations: "before" })
       .find(row => row.includes("Work"));
-    expect(beforeRow).toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
+    expect(beforeRow).toContain(`${theme.success}2◉ `);
+    expect(beforeRow).not.toContain(theme.notificationBg);
     expect(visibleLength(beforeRow!)).toBe(SIDEBAR_WIDTH);
   });
 

@@ -130,13 +130,19 @@ describe("collapsed folders count their children's dots by colour", () => {
     expect(stripAnsi(rows.find(row => stripAnsi(row).includes("📂 busy/"))!)).not.toMatch(/◉/);
   });
 
-  test("before keeps the old folder row: one dot by the busiest state and the red unread badge", () => {
+  test("before: the same dots after the 📁, in after's order (green, blue, yellow, then the tasks), and no badge", () => {
     const before = render({ folders: "before", conversations: "before" });
-    expect(before.plain("busy")).toMatch(/^[▸ ] 📁 3◉ busy\/ 5 +2 │$/);
-    expect(before.find("busy")).toContain(blue("3◉ "));
-    expect(before.find("busy")).toContain(theme.notificationBg);
-    expect(before.plain("inbox")).toMatch(/^[▸ ] 📁 ◉ inbox\/ 2 +2 │$/);
-    expect(before.find("inbox")).toContain(green("◉ "));
-    expect(before.find("inbox")).toContain(theme.notificationBg);
+    expect(before.plain("busy")).toMatch(/^[▸ ] 📁 2◉ 3◉ busy\/ 5 +│$/);
+    expect(before.find("busy").indexOf(green("2◉ "))).toBeLessThan(before.find("busy").indexOf(blue("3◉ ")));
+    expect(before.plain("waits")).toMatch(/^ {2}📁 ◉ 2◉ waits\/ 3 +│$/);
+    expect(before.find("waits").indexOf(blue("◉ "))).toBeLessThan(before.find("waits").indexOf(yellow("2◉ ")));
+    expect(before.plain("inbox")).toMatch(/^ {2}📁 2◉ inbox\/ 2 +│$/);
+    expect(before.plain("tasks")).toMatch(/^ {2}📁 ◉ ◉ 2◆ ◷ \$ tasks\/ 3 +│$/);
+    expect(before.plain("hush")).toMatch(/^ {2}📁 ◉ hush\/ 3 +│$/);
+    expect(before.plain("quiet")).toMatch(/^ {2}📁 quiet\/ 2 +🔕│$/);
+    for (const row of before.rows) {
+      expect(row).not.toContain(theme.notificationBg);
+      expect(termWidth(stripAnsi(row))).toBe(termWidth(stripAnsi(before.rows[0])));
+    }
   });
 });
