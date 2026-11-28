@@ -36,7 +36,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "path";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { externalToolsDir, runtimeDir } from "@exocortex/shared/paths";
-import { resolveAnthropicApiPricing } from "@exocortex/shared/token-pricing";
+import { claudeRequestCostUsd, type ClaudeRequestUsage } from "@exocortex/shared/token-pricing";
 import type { ApiCreditGrantLeft, ApiCreditPool, ApiCreditsUsage } from "../../messages";
 import type { AccountCredits } from "@exocortex/shared/protocol";
 import { log } from "../../log";
@@ -475,24 +475,12 @@ export function noteApiCreditFailure(key: ApiCreditKey, error: unknown, now = Da
 
 // ── Spend ───────────────────────────────────────────────────────────
 
-export interface ClaudeRequestUsage {
-  inputTokens: number;
-  cacheReadTokens: number;
-  cacheWrite5mTokens: number;
-  cacheWrite1hTokens: number;
-  outputTokens: number;
-}
+export type { ClaudeRequestUsage };
 
 /** List-price cost of one Claude API request; null for a model without published rates here. */
-export function estimateClaudeRequestCostUsd(model: string, usage: ClaudeRequestUsage): number | null {
-  const prompt = usage.inputTokens + usage.cacheReadTokens + usage.cacheWrite5mTokens + usage.cacheWrite1hTokens;
-  const pricing = resolveAnthropicApiPricing(model, prompt);
-  if (!pricing) return null;
-  return (usage.inputTokens * pricing.inputUsdPerMillion
-    + usage.cacheReadTokens * pricing.cacheReadUsdPerMillion
-    + usage.cacheWrite5mTokens * pricing.cacheWrite5mUsdPerMillion
-    + usage.cacheWrite1hTokens * pricing.cacheWrite1hUsdPerMillion
-    + usage.outputTokens * pricing.outputUsdPerMillion) / 1_000_000;
+export function estimateClaudeRequestCostUsd(model: string, usage: ClaudeRequestUsage, speed: "standard" | "fast" = "standard"): number | null {
+  const cost = claudeRequestCostUsd(model, usage, speed);
+  return cost ? cost.inputUsd + cost.outputUsd : null;
 }
 
 function count(value: unknown): number {
@@ -534,7 +522,7 @@ export class ApiCreditUsageMeter {
       const usage = record(data.usage);
       if (!open || !usage) return;
       // The final usage repeats every count; keep the start's cache split when it does not.
-      for (const [name, value] of Object.entries(usage)) if (typeof value === "number") open.usage[name] = value;
+      for (const [name, value] of Object.entries(usage)) if (typeof value === "number" || name === "speed") open.usage[name] = value;
       this.flush(slot);
     }
   }
@@ -548,7 +536,7 @@ export class ApiCreditUsageMeter {
     const open = this.open.get(slot);
     if (!open) return;
     this.open.delete(slot);
-    recordApiCreditRequest(this.key, open.model, usageFromApi(open.usage));
+    recordApiCreditRequest(this.key, open.model, usageFromApi(open.usage), Date.now(), open.usage.speed === "fast" ? "fast" : "standard");
   }
 }
 
@@ -618,7 +606,7 @@ function usageFromApi(usage: JsonRecord): ClaudeRequestUsage {
   };
 }
 
-export function recordApiCreditRequest(key: ApiCreditKey, model: string, usage: ClaudeRequestUsage, timestamp = Date.now()): void {
+export function recordApiCreditRequest(key: ApiCreditKey, model: string, usage: ClaudeRequestUsage, timestamp = Date.now(), speed: "standard" | "fast" = "standard"): void {
   const prompt = usage.inputTokens + usage.cacheReadTokens + usage.cacheWrite5mTokens + usage.cacheWrite1hTokens;
   if (prompt === 0 && usage.outputTokens === 0) return;
   recordApiKeyUsage(API_CREDIT_ACCOUNT_KEY_PREFIX + key.id, {
@@ -627,7 +615,7 @@ export function recordApiCreditRequest(key: ApiCreditKey, model: string, usage: 
     cachedInputTokens: usage.cacheReadTokens,
     outputTokens: usage.outputTokens,
     timestamp,
-    estimatedCostUsd: estimateClaudeRequestCostUsd(model, usage),
+    estimatedCostUsd: estimateClaudeRequestCostUsd(model, usage, speed),
   });
 }
 

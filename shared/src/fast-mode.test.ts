@@ -35,7 +35,8 @@ describe("service tiers", () => {
       rateClass: "ultrafast-long", inputUsdPerMillion: 120,
       cachedInputUsdPerMillion: 12, cacheMissInputUsdPerMillion: 150, outputUsdPerMillion: 450,
     });
-    expect(resolveModelTokenPricing("gpt-6.1-sol", { serviceTier: "ultrafast" })).toBeNull();
+    // Published since (6x Standard, developers.openai.com/api/docs/models/gpt-6.1-sol, 2026-11-27).
+    expect(resolveModelTokenPricing("gpt-6.1-sol", { serviceTier: "ultrafast" })).toMatchObject({ inputUsdPerMillion: 12, outputUsdPerMillion: 60 });
     expect(resolveModelTokenPricing("gpt-5.6-sol", { serviceTier: "ultrafast" })).toBeNull();
   });
 });

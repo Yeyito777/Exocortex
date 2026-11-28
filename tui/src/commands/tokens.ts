@@ -4,7 +4,7 @@ import { contextMeter } from "../statusblocks/context";
 import { apiCreditPickSummary, usageSummary } from "../statusblocks/usage";
 import { terminalColorLevel, theme } from "../theme";
 import { ansiColorToRgb, rgbToAnsi as terminalRgbToAnsi } from "../terminalcolors";
-import { resolveModelTokenPricing } from "@exocortex/shared/token-pricing";
+import { estimateUncapturedCost, pricedModelProvider } from "@exocortex/shared/token-pricing";
 import {
   createTokenUsageTotals,
   formatModelDisplayName,
@@ -56,28 +56,8 @@ const TOKEN_SOURCES_ARG: CompletionItem = {
 
 const TOKEN_COST_ARG: CompletionItem = {
   name: "cost",
-  desc: "Show API-cost estimates captured from exact published request rates",
+  desc: "Show what usage would cost at API list prices, by period, provider and model",
 };
-
-interface CostTotals {
-  inputUsd: number;
-  outputUsd: number;
-  totalUsd: number;
-  cachedInputTokens: number;
-  cacheMissInputTokens: number;
-  uncachedInputTokens: number;
-  unmeasuredInputTokens: number;
-  pricedInputTokens: number;
-  pricedOutputTokens: number;
-  inputTokens: number;
-  outputTokens: number;
-}
-
-interface ModelCostRow extends CostTotals {
-  provider: ProviderId;
-  model: ModelId;
-  pricingBasisModel: ModelId;
-}
 
 function formatTokenCount(n: number): string {
   return n.toLocaleString("en-US");
@@ -93,16 +73,6 @@ function accentTokenCount(n: number): string {
 
 function accentText(text: string): string {
   return accentSpan(text);
-}
-
-function formatUsd(amount: number): string {
-  if (amount === 0) return "$0.00";
-  const decimals = amount >= 1 ? 2 : amount >= 0.01 ? 4 : 6;
-  return `$${amount.toFixed(decimals)}`;
-}
-
-function accentUsd(amount: number): string {
-  return accentText(formatUsd(amount));
 }
 
 function parseAnsiForeground(ansi: string): RgbColor | null {
@@ -275,55 +245,6 @@ function aggregateByRange<T extends string>(
   return { range, totals };
 }
 
-function capturedCost(usageTotals: TokenUsageTotals): CostTotals {
-  const inputUsd = Math.max(0, usageTotals.estimatedInputCostUsd);
-  const outputUsd = Math.max(0, usageTotals.estimatedOutputCostUsd);
-  return {
-    inputUsd,
-    outputUsd,
-    totalUsd: inputUsd + outputUsd,
-    cachedInputTokens: Math.max(0, usageTotals.cachedInputTokens),
-    cacheMissInputTokens: Math.max(0, usageTotals.cacheMissInputTokens),
-    uncachedInputTokens: Math.max(0, usageTotals.uncachedInputTokens),
-    unmeasuredInputTokens: Math.max(0, usageTotals.unmeasuredInputTokens),
-    pricedInputTokens: Math.min(usageTotals.inputTokens, Math.max(0, usageTotals.pricedInputTokens)),
-    pricedOutputTokens: Math.min(usageTotals.outputTokens, Math.max(0, usageTotals.pricedOutputTokens)),
-    inputTokens: Math.max(0, usageTotals.inputTokens),
-    outputTokens: Math.max(0, usageTotals.outputTokens),
-  };
-}
-
-function computeCostTotals(entries: Iterable<[ModelId, TokenUsageTotals]>): CostTotals {
-  const totals: CostTotals = {
-    inputUsd: 0,
-    outputUsd: 0,
-    totalUsd: 0,
-    cachedInputTokens: 0,
-    cacheMissInputTokens: 0,
-    uncachedInputTokens: 0,
-    unmeasuredInputTokens: 0,
-    pricedInputTokens: 0,
-    pricedOutputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-  };
-  for (const [, usageTotals] of entries) {
-    const captured = capturedCost(usageTotals);
-    totals.inputUsd += captured.inputUsd;
-    totals.outputUsd += captured.outputUsd;
-    totals.cachedInputTokens += captured.cachedInputTokens;
-    totals.cacheMissInputTokens += captured.cacheMissInputTokens;
-    totals.uncachedInputTokens += captured.uncachedInputTokens;
-    totals.unmeasuredInputTokens += captured.unmeasuredInputTokens;
-    totals.pricedInputTokens += captured.pricedInputTokens;
-    totals.pricedOutputTokens += captured.pricedOutputTokens;
-    totals.inputTokens += captured.inputTokens;
-    totals.outputTokens += captured.outputTokens;
-  }
-  totals.totalUsd = totals.inputUsd + totals.outputUsd;
-  return totals;
-}
-
 function buildModelBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number): string {
   const { range, totals } = aggregateByRange(stats, dayCount, (day) => day.byModel);
 
@@ -422,95 +343,235 @@ function buildSourceBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number
   return lines.join("\n");
 }
 
+// ── /tokens cost ────────────────────────────────────────────────────
+
+type CostPeriod = "today" | "week" | "lifetime";
+const COST_PERIODS: readonly CostPeriod[] = ["today", "week", "lifetime"];
+const COST_PERIOD_LABELS: Record<CostPeriod, string> = { today: "Today", week: "Week", lifetime: "Lifetime" };
+
+/** What one model, provider or period would have cost at API list prices. */
+interface CostCell {
+  /** Priced per request when it ran, at its exact rate. */
+  measuredUsd: number;
+  /** Bounds for tokens recorded without a per-request cost, priced from stored totals. */
+  estimatedLowUsd: number;
+  estimatedHighUsd: number;
+  measuredTokens: number;
+  estimatedTokens: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+type CostCells = Record<CostPeriod, CostCell>;
+
+function createCostCell(): CostCell {
+  return { measuredUsd: 0, estimatedLowUsd: 0, estimatedHighUsd: 0, measuredTokens: 0, estimatedTokens: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0 };
+}
+
+function createCostCells(): CostCells {
+  return { today: createCostCell(), week: createCostCell(), lifetime: createCostCell() };
+}
+
+function addCost(cell: CostCell, model: ModelId, usage: TokenUsageTotals, timestamp: number): void {
+  const inputTokens = Math.max(0, usage.inputTokens);
+  const outputTokens = Math.max(0, usage.outputTokens);
+  cell.measuredUsd += Math.max(0, usage.estimatedInputCostUsd) + Math.max(0, usage.estimatedOutputCostUsd);
+  cell.measuredTokens += Math.min(inputTokens, Math.max(0, usage.pricedInputTokens)) + Math.min(outputTokens, Math.max(0, usage.pricedOutputTokens));
+  const estimate = estimateUncapturedCost(model, usage, timestamp);
+  if (estimate) {
+    cell.estimatedLowUsd += estimate.lowUsd;
+    cell.estimatedHighUsd += estimate.highUsd;
+    cell.estimatedTokens += estimate.inputTokens + estimate.outputTokens;
+  }
+  cell.totalTokens += inputTokens + outputTokens;
+  cell.inputTokens += inputTokens;
+  cell.outputTokens += outputTokens;
+}
+
+function unpricedTokens(cell: CostCell): number {
+  return Math.max(0, cell.totalTokens - cell.measuredTokens - cell.estimatedTokens);
+}
+
+/** Group label for a model no price list has; display only. */
+function guessCostProvider(model: ModelId): ProviderId | null {
+  if (model.includes("/")) return "openrouter";
+  if (model.startsWith("claude-")) return "anthropic";
+  if (model.startsWith("gemini-")) return "gemini";
+  if (model.startsWith("deepseek")) return "deepseek";
+  if (model.startsWith("gpt-") || model.startsWith("codex")) return "openai";
+  return null;
+}
+
+function costModelLabel(model: ModelId): string {
+  const claude = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/.exec(model);
+  if (claude) return `Claude ${capitalize(claude[1])} ${claude[2]}${claude[3] ? `.${claude[3]}` : ""}`;
+  if (model.startsWith("gpt-")) {
+    const [version, ...rest] = model.slice(4).split("-");
+    return [`GPT-${version}`, ...rest.map(capitalize)].join(" ");
+  }
+  return formatModelDisplayName(model);
+}
+
+function capitalize(text: string): string {
+  return text ? text[0].toUpperCase() + text.slice(1) : text;
+}
+
+function unpricedReason(model: ModelId, provider: ProviderId | null, cell: CostCell): string {
+  if (cell.measuredTokens + cell.estimatedTokens > 0) return "some token types have no published rate";
+  if (provider === "openrouter") return "OpenRouter rates depend on the upstream; not cataloged";
+  if (model === "deepseek-reasoner" || model === "deepseek-chat") return "retired name, not on DeepSeek's price list";
+  if (provider === "openai") return "not on OpenAI's API price list";
+  return "no published API price";
+}
+
+function formatCostUsd(amount: number): string {
+  if (amount === 0) return "$0";
+  if (amount < 0.01) return "<$0.01";
+  if (amount < 1000) return `$${amount.toFixed(2)}`;
+  return `$${Math.round(amount).toLocaleString("en-US")}`;
+}
+
+function formatCompactTokens(n: number): string {
+  if (n < 1000) return String(n);
+  const [divisor, suffix] = n >= 1e9 ? [1e9, "B"] : n >= 1e6 ? [1e6, "M"] : [1e3, "K"];
+  return `${(n / divisor).toFixed(1)}${suffix}`;
+}
+
+function formatShare(part: number, whole: number): string {
+  const percent = whole > 0 ? part / whole * 100 : 0;
+  if (percent === 0) return "0%";
+  if (percent < 0.1) return "<0.1%";
+  if (percent > 99.9 && percent < 100) return ">99.9%";
+  return `${Number(percent.toFixed(1))}%`;
+}
+
+/** Measured plus estimated: one figure when exact, low–high otherwise; ~ marks estimates. */
+function formatCostTotal(cell: CostCell): string {
+  if (cell.totalTokens === 0) return "—";
+  if (cell.measuredTokens + cell.estimatedTokens === 0) return "unpriced";
+  const low = cell.measuredUsd + cell.estimatedLowUsd;
+  const high = cell.measuredUsd + cell.estimatedHighUsd;
+  const prefix = cell.estimatedTokens > 0 ? "~" : "";
+  const lowText = formatCostUsd(low);
+  const highText = formatCostUsd(high);
+  return lowText === highText ? `${prefix}${lowText}` : `${prefix}${lowText}–${highText}`;
+}
+
+function formatEstimate(cell: CostCell): string {
+  if (cell.estimatedTokens === 0) return "—";
+  const lowText = formatCostUsd(cell.estimatedLowUsd);
+  const highText = formatCostUsd(cell.estimatedHighUsd);
+  return lowText === highText ? lowText : `${lowText}–${highText}`;
+}
+
+function formatCoverage(cell: CostCell): string {
+  if (cell.totalTokens === 0) return "—";
+  return [cell.measuredTokens, cell.estimatedTokens, unpricedTokens(cell)].map((part) => formatShare(part, cell.totalTokens)).join(" / ");
+}
+
+/** Rows of plain cells, padded into columns; accent marks the money columns. */
+function costTable(rows: string[][], accentColumns: ReadonlySet<number>): string[] {
+  const widths: number[] = [];
+  for (const row of rows) row.forEach((cell, i) => { widths[i] = Math.max(widths[i] ?? 0, cell.length); });
+  return rows.map((row, rowIndex) => row.map((cell, i) => {
+    const padded = i === row.length - 1 ? cell : cell.padEnd(widths[i]);
+    if (rowIndex === 0 || !accentColumns.has(i) || cell === "—" || cell === "") return padded;
+    return `${accentText(cell)}${" ".repeat(padded.length - cell.length)}`;
+  }).join("  ").trimEnd());
+}
+
 function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
-  const lifetimeRows: ModelCostRow[] = [];
-  const excludedRows: Array<{ model: ModelId; usageTotals: TokenUsageTotals }> = [];
-
-  for (const [model, usageTotals] of Object.entries(stats.lifetime.byModel) as Array<[ModelId, TokenUsageTotals]>) {
-    const pricing = resolveModelTokenPricing(model);
-    const captured = capturedCost(usageTotals);
-    if (pricing) {
-      lifetimeRows.push({
-        provider: pricing.provider,
-        model,
-        pricingBasisModel: pricing.basisModel,
-        ...captured,
-      });
-    }
-    if (!pricing
-        || captured.pricedInputTokens < captured.inputTokens
-        || captured.pricedOutputTokens < captured.outputTokens) {
-      excludedRows.push({ model, usageTotals });
-    }
+  if (stats.lifetime.requests === 0 && stats.lifetime.totalTokens === 0) {
+    return "API cost at list prices (USD):\nNo token usage recorded yet.";
   }
 
-  const todayCost = computeCostTotals(Object.entries(stats.today.byModel) as Array<[ModelId, TokenUsageTotals]>);
-  const weekCost = computeCostTotals(aggregateByRange(stats, 7, (day) => day.byModel).totals.entries());
-  const lifetimeCost = computeCostTotals(Object.entries(stats.lifetime.byModel) as Array<[ModelId, TokenUsageTotals]>);
-
-  const grouped = new Map<ProviderId, Array<typeof lifetimeRows[number]>>();
-  for (const row of lifetimeRows) {
-    const rows = grouped.get(row.provider) ?? [];
-    rows.push(row);
-    grouped.set(row.provider, rows);
-  }
-
-  const providerOrder: ProviderId[] = ["openai", "anthropic", "gemini", "deepseek", "opencode", "openrouter"];
-  const sortedProviders = [...grouped.keys()].sort((a, b) => {
-    const aIndex = providerOrder.indexOf(a);
-    const bIndex = providerOrder.indexOf(b);
-    if (aIndex !== -1 || bIndex !== -1) {
-      return (aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex) - (bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex);
+  const week = getTokenDateRange(7);
+  const weekStart = localDayKey(week.start);
+  const todayKey = localDayKey(new Date());
+  const totals = createCostCells();
+  const byModel = new Map<ModelId, CostCells>();
+  for (const day of stats.days) {
+    const periods = COST_PERIODS.filter((period) => period === "lifetime"
+      || (period === "week" && day.day >= weekStart && day.day <= todayKey)
+      || (period === "today" && day.day === todayKey));
+    // Dated rate changes: price a day's totals at that day's rates.
+    const timestamp = new Date(`${day.day}T12:00:00`).getTime();
+    for (const [model, usage] of Object.entries(day.byModel) as Array<[ModelId, TokenUsageTotals]>) {
+      const cells = byModel.get(model) ?? createCostCells();
+      byModel.set(model, cells);
+      for (const period of periods) {
+        addCost(cells[period], model, usage, timestamp);
+        addCost(totals[period], model, usage, timestamp);
+      }
     }
-    return a.localeCompare(b);
-  });
-  for (const provider of sortedProviders) {
-    grouped.get(provider)?.sort((a, b) => b.totalUsd - a.totalUsd || a.model.localeCompare(b.model));
   }
 
   const lines = [
-    "API-cost estimate (captured per request; no cache assumptions):",
-    `Today: ${accentUsd(todayCost.inputUsd)}/${accentUsd(todayCost.outputUsd)}`,
-    `Week: ${accentUsd(weekCost.inputUsd)}/${accentUsd(weekCost.outputUsd)}`,
-    `Lifetime: ${accentUsd(lifetimeCost.inputUsd)}/${accentUsd(lifetimeCost.outputUsd)}`,
-    `Input hit/miss-write/no-cache/unknown: ${accentTokenCount(lifetimeCost.cachedInputTokens)}/${accentTokenCount(lifetimeCost.cacheMissInputTokens)}/${accentTokenCount(lifetimeCost.uncachedInputTokens)}/${accentTokenCount(lifetimeCost.unmeasuredInputTokens)}`,
-    `Cost coverage: ${accentTokenCount(lifetimeCost.pricedInputTokens)}/${accentTokenCount(lifetimeCost.inputTokens)} input • ${accentTokenCount(lifetimeCost.pricedOutputTokens)}/${accentTokenCount(lifetimeCost.outputTokens)} output`,
+    "API cost at list prices (USD):",
+    ...costTable([
+      ["", "Measured", "Estimated", "Total", "Tokens measured/est./unpriced"],
+      ...COST_PERIODS.map((period) => {
+        const cell = totals[period];
+        return [`  ${COST_PERIOD_LABELS[period]}`, cell.totalTokens === 0 ? "—" : formatCostUsd(cell.measuredUsd), formatEstimate(cell), formatCostTotal(cell), formatCoverage(cell)];
+      }),
+    ], new Set([1, 2, 3])),
   ];
 
-  if (stats.lifetime.requests === 0) {
-    lines.push("", "No token usage recorded yet.");
-  } else {
-    for (const provider of sortedProviders) {
-      lines.push("", `${formatProviderLabel(provider)}:`);
-      for (const row of grouped.get(provider) ?? []) {
-        lines.push(
-          `    ${formatModelDisplayName(row.model)}: ${accentUsd(row.inputUsd)}/${accentUsd(row.outputUsd)}`,
-          `      hit/miss-write/no-cache/unknown: ${accentTokenCount(row.cachedInputTokens)}/${accentTokenCount(row.cacheMissInputTokens)}/${accentTokenCount(row.uncachedInputTokens)}/${accentTokenCount(row.unmeasuredInputTokens)}`,
-        );
-      }
-    }
-
-    const documentedAliases = lifetimeRows
-      .filter((row) => row.model !== row.pricingBasisModel)
-      .sort((a, b) => a.model.localeCompare(b.model));
-    if (documentedAliases.length > 0) {
-      lines.push("", "Documented pricing aliases:");
-      for (const row of documentedAliases) {
-        lines.push(`    ${formatModelDisplayName(row.model)} → ${formatModelDisplayName(row.pricingBasisModel)} rates`);
-      }
-    }
-
-    if (excludedRows.length > 0) {
-      excludedRows.sort((a, b) => b.usageTotals.totalTokens - a.usageTotals.totalTokens || a.model.localeCompare(b.model));
-      lines.push("", "Unpriced or unclassified tokens (excluded from cost):");
-      for (const row of excludedRows) {
-        const excludedInput = Math.max(0, row.usageTotals.inputTokens - row.usageTotals.pricedInputTokens);
-        const excludedOutput = Math.max(0, row.usageTotals.outputTokens - row.usageTotals.pricedOutputTokens);
-        lines.push(`    ${formatModelDisplayName(row.model)}: ${accentTokenCount(excludedInput)}/${accentTokenCount(excludedOutput)}`);
-      }
+  const byProvider = new Map<string, { label: string; cells: CostCells; models: ModelId[] }>();
+  const unpriced: Array<{ model: ModelId; provider: ProviderId | null; cell: CostCell }> = [];
+  for (const [model, cells] of byModel) {
+    const provider = pricedModelProvider(model) ?? guessCostProvider(model);
+    if (unpricedTokens(cells.lifetime) > 0) unpriced.push({ model, provider, cell: cells.lifetime });
+    if (cells.lifetime.measuredTokens + cells.lifetime.estimatedTokens === 0) continue;
+    const key = provider ?? "other";
+    const group = byProvider.get(key) ?? { label: provider ? formatProviderLabel(provider) : "Other", cells: createCostCells(), models: [] };
+    byProvider.set(key, group);
+    group.models.push(model);
+    for (const period of COST_PERIODS) {
+      const from = cells[period];
+      const into = group.cells[period];
+      into.measuredUsd += from.measuredUsd;
+      into.estimatedLowUsd += from.estimatedLowUsd;
+      into.estimatedHighUsd += from.estimatedHighUsd;
+      into.measuredTokens += from.measuredTokens;
+      into.estimatedTokens += from.estimatedTokens;
+      into.totalTokens += from.totalTokens;
+      into.inputTokens += from.inputTokens;
+      into.outputTokens += from.outputTokens;
     }
   }
 
+  const lifetimeHigh = (cells: CostCells) => cells.lifetime.measuredUsd + cells.lifetime.estimatedHighUsd;
+  const providerRows: string[][] = [["", "Today", "Week", "Lifetime", "Tokens in/out"]];
+  for (const group of [...byProvider.values()].sort((a, b) => lifetimeHigh(b.cells) - lifetimeHigh(a.cells) || a.label.localeCompare(b.label))) {
+    providerRows.push([`  ${group.label}`, ...COST_PERIODS.map((period) => formatCostTotal(group.cells[period])), ""]);
+    group.models.sort((a, b) => lifetimeHigh(byModel.get(b)!) - lifetimeHigh(byModel.get(a)!) || a.localeCompare(b));
+    for (const model of group.models) {
+      const cells = byModel.get(model)!;
+      providerRows.push([
+        `    ${costModelLabel(model)}`,
+        ...COST_PERIODS.map((period) => formatCostTotal(cells[period])),
+        `${formatCompactTokens(cells.lifetime.inputTokens)}/${formatCompactTokens(cells.lifetime.outputTokens)}`,
+      ]);
+    }
+  }
+  if (providerRows.length > 1) lines.push("", "By provider and model:", ...costTable(providerRows, new Set([1, 2, 3])));
+
+  if (unpriced.length > 0) {
+    unpriced.sort((a, b) => unpricedTokens(b.cell) - unpricedTokens(a.cell) || a.model.localeCompare(b.model));
+    lines.push("", "Unpriced (left out of every total):", ...costTable(unpriced.map(({ model, provider, cell }) => [
+      `    ${costModelLabel(model)}`,
+      formatCompactTokens(unpricedTokens(cell)),
+      unpricedReason(model, provider, cell),
+    ]), new Set()));
+  }
+
+  lines.push("", "Measured: priced per request when it ran (speed, cache writes, long context).");
+  if (totals.lifetime.estimatedTokens > 0) {
+    lines.push("~: includes usage recorded without a per-request cost, estimated from stored token totals at standard-speed, short-context list rates; a range covers what the totals don't record (cache-write TTL, cache write vs fresh input, DeepSeek peak hours).");
+  }
+  lines.push("Rates: Claude, OpenAI, Gemini and DeepSeek list prices, checked 2026-11-27.");
   return lines.join("\n");
 }
 

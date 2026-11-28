@@ -65,6 +65,19 @@ export interface AccountedTokenUsage {
   cacheMissInputTokens: number;
   outputTokens: number;
   requests: number;
+  /**
+   * List-price cost the provider priced per request, where the totals alone
+   * cannot say it (Claude: cache-write TTLs, per-request long-context rates).
+   */
+  cost?: AccountedTokenCost;
+}
+
+export interface AccountedTokenCost {
+  inputUsd: number;
+  outputUsd: number;
+  /** Input and output tokens the cost covers; the rest had no published rate. */
+  pricedInputTokens: number;
+  pricedOutputTokens: number;
 }
 
 export interface ModelRequestDiagnostics {

@@ -22,7 +22,8 @@ import { chronoCallPresentation } from "../../tools/chrono";
 import { AuthError } from "../errors";
 import { isUsageLimitError } from "../../usage-limit-wait";
 import { ApiCreditExhaustedError, isApiCreditRefusalText } from "./api-credits";
-import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
+import type { AccountedTokenCost, ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
+import { claudeRequestCostUsd, type ClaudeRequestUsage } from "@exocortex/shared/token-pricing";
 import { REPLAYED_FIELD } from "./relay-protocol";
 import { takeHostToolAttachments } from "./host-tool-attachments";
 import type { AnthropicAssistantProviderData } from "./types";
@@ -118,6 +119,12 @@ export interface ClaudeStreamState {
   cacheMissInputTokens?: number;
   /** Input summed over every main-thread API call of the turn, for token accounting. */
   accounted: { inputTokens: number; cachedInputTokens: number; cacheMissInputTokens: number; requests: number };
+  /** The turn's model, for pricing calls whose message_start does not name one. */
+  model: string | null;
+  /** The main-thread API call now streaming, priced once its output is final. */
+  openCall: OpenClaudeCall | null;
+  /** List-price cost of the turn's finished calls. */
+  cost: AccountedTokenCost;
   outputTokens: number;
   /** Output tokens of the API call currently streaming. */
   currentCallOutputTokens: number;
@@ -125,6 +132,49 @@ export interface ClaudeStreamState {
   thinkingStartPending: boolean;
   done: boolean;
   stopReason: string;
+}
+
+interface OpenClaudeCall {
+  model: string | null;
+  usage: ClaudeRequestUsage;
+  /** The cache writes' 5-minute/1-hour split was reported. */
+  writeSplitKnown: boolean;
+  speed: "standard" | "fast";
+  /** `inference_geo: "us"` bills every category at 1.1×. */
+  usOnly: boolean;
+}
+
+/** Published 1.1× for US-only inference (platform.claude.com/docs/en/about-claude/pricing, 2026-11-27). */
+const US_INFERENCE_MULTIPLIER = 1.1;
+
+function noteCallUsage(call: OpenClaudeCall, usage: SdkRecord): void {
+  const split = asRecord(usage.cache_creation);
+  if (split) {
+    const writes = call.usage.cacheWrite5mTokens + call.usage.cacheWrite1hTokens;
+    const oneHour = Math.min(writes, num(split.ephemeral_1h_input_tokens));
+    call.usage.cacheWrite1hTokens = oneHour;
+    call.usage.cacheWrite5mTokens = writes - oneHour;
+    call.writeSplitKnown = true;
+  }
+  if (usage.speed === "fast") call.speed = "fast";
+  if (usage.inference_geo === "us") call.usOnly = true;
+}
+
+/** Price the call that just finished at Claude API list rates; a call without a published rate adds tokens to neither side. */
+function settleCallCost(state: ClaudeStreamState): void {
+  const call = state.openCall;
+  state.openCall = null;
+  if (!call?.model) return;
+  const cost = claudeRequestCostUsd(call.model, call.usage, call.speed);
+  if (!cost) return;
+  const multiplier = call.usOnly ? US_INFERENCE_MULTIPLIER : 1;
+  const writes = call.usage.cacheWrite5mTokens + call.usage.cacheWrite1hTokens;
+  if (call.writeSplitKnown || writes === 0) {
+    state.cost.inputUsd += cost.inputUsd * multiplier;
+    state.cost.pricedInputTokens += call.usage.inputTokens + call.usage.cacheReadTokens + writes;
+  }
+  state.cost.outputUsd += cost.outputUsd * multiplier;
+  state.cost.pricedOutputTokens += call.usage.outputTokens;
 }
 
 export function createClaudeStreamState(
@@ -160,6 +210,9 @@ export function createClaudeStreamState(
     lastChainUuid: null,
     outputTokens: 0,
     accounted: { inputTokens: 0, cachedInputTokens: 0, cacheMissInputTokens: 0, requests: 0 },
+    model: null,
+    openCall: null,
+    cost: { inputUsd: 0, outputUsd: 0, pricedInputTokens: 0, pricedOutputTokens: 0 },
     currentCallOutputTokens: 0,
     thinkingStartPending: false,
     done: false,
@@ -208,7 +261,9 @@ function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
   const cb = state.callbacks;
   switch (event.type) {
     case "message_start": {
-      const usage = asRecord(asRecord(event.message)?.usage);
+      settleCallCost(state);
+      const message = asRecord(event.message);
+      const usage = asRecord(message?.usage);
       if (usage) {
         const fresh = num(usage.input_tokens);
         const cacheRead = num(usage.cache_read_input_tokens);
@@ -218,8 +273,18 @@ function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
         state.cacheMissInputTokens = fresh + cacheWrite;
         state.accounted.inputTokens += state.inputTokens;
         state.accounted.cachedInputTokens += cacheRead;
-        state.accounted.cacheMissInputTokens += fresh + cacheWrite;
+        // Token stats keep cache writes as misses; fresh input is the
+        // residual, which they record as ordinary (no-cache) input.
+        state.accounted.cacheMissInputTokens += cacheWrite;
         state.accounted.requests += 1;
+        state.openCall = {
+          model: str(message?.model) ?? state.model,
+          usage: { inputTokens: fresh, cacheReadTokens: cacheRead, cacheWrite5mTokens: cacheWrite, cacheWrite1hTokens: 0, outputTokens: 0 },
+          writeSplitKnown: false,
+          speed: "standard",
+          usOnly: false,
+        };
+        noteCallUsage(state.openCall, usage);
       }
       state.currentCallOutputTokens = 0;
       state.callStartedAt = state.requestedAt ?? state.now();
@@ -265,6 +330,10 @@ function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
         // message_delta carries the cumulative output count for this API call.
         state.outputTokens += usage.output_tokens - state.currentCallOutputTokens;
         state.currentCallOutputTokens = usage.output_tokens;
+      }
+      if (usage && state.openCall) {
+        if (typeof usage.output_tokens === "number") state.openCall.usage.outputTokens = usage.output_tokens;
+        noteCallUsage(state.openCall, usage);
       }
       reportCallRate(state);
       return;
@@ -642,6 +711,11 @@ function pushMessage(state: ClaudeStreamState, message: SdkRecord): void {
   }
 }
 
+function settledCost(state: ClaudeStreamState): AccountedTokenCost {
+  settleCallCost(state);
+  return { ...state.cost };
+}
+
 export function finalizeClaudeStream(state: ClaudeStreamState): StreamResult {
   if (!state.done) throw new Error("Claude Code exited before finishing the turn.");
   const text = state.blocks.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n\n");
@@ -666,7 +740,7 @@ export function finalizeClaudeStream(state: ClaudeStreamState): StreamResult {
     cachedInputTokens: state.cachedInputTokens,
     cacheMissInputTokens: state.cacheMissInputTokens,
     outputTokens: state.outputTokens,
-    ...(state.accounted.requests > 0 ? { accountedUsage: { ...state.accounted, outputTokens: state.outputTokens } } : {}),
+    ...(state.accounted.requests > 0 ? { accountedUsage: { ...state.accounted, outputTokens: state.outputTokens, cost: settledCost(state) } } : {}),
     ...(final.providerData ? { assistantProviderData: final.providerData } : {}),
   };
 }

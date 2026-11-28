@@ -244,13 +244,53 @@ describe("Claude Code stream translation", () => {
     // The context meter shows the prompt of the call that produced the answer.
     expect(result.inputTokens).toBe(2 + 2067 + 20933);
     // Token stats get both calls: the tool round's prompt was billed too.
-    expect(result.accountedUsage).toEqual({
+    // Cache writes are the misses; fresh input is left as the ordinary residual.
+    expect(result.accountedUsage).toMatchObject({
       inputTokens: (2 + 20933) + (2 + 2067 + 20933),
       cachedInputTokens: 20933,
-      cacheMissInputTokens: (2 + 20933) + (2 + 2067),
+      cacheMissInputTokens: 20933 + 2067,
       outputTokens: 70,
       requests: 2,
     });
+  });
+
+  test("prices each API call at Claude API list rates with its own cache-write TTLs", () => {
+    const { callbacks } = recorder();
+    const state = createClaudeStreamState(callbacks, "/work");
+    state.model = "claude-opus-5-5";
+    const start = (usage: Record<string, unknown>, model?: string) => se({ type: "message_start", message: { ...(model ? { model } : {}), usage } });
+    pushClaudeMessage(state, start({ input_tokens: 1_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 1_000_000, cache_creation: { ephemeral_1h_input_tokens: 1_000_000, ephemeral_5m_input_tokens: 0 } }));
+    pushClaudeMessage(state, se({ type: "message_delta", usage: { output_tokens: 10_000 } }));
+    // The second call says which model served it, and was written to the 5-minute cache.
+    pushClaudeMessage(state, start({ input_tokens: 0, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 100_000, cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 100_000 } }, "claude-sonnet-5-5"));
+    pushClaudeMessage(state, se({ type: "message_delta", usage: { output_tokens: 20_000 } }));
+    pushClaudeMessage(state, { type: "result", subtype: "success", is_error: false, stop_reason: "end_turn", session_id: SESSION });
+    const cost = finalizeClaudeStream(state).accountedUsage?.cost;
+
+    // Opus 5.5: 1K fresh at $4, 1M one-hour writes at $8, 10K output at $20.
+    // Sonnet 5.5: 1M reads at $0.10, 100K five-minute writes at $2.50, 20K output at $10.
+    expect(cost?.inputUsd).toBeCloseTo(0.004 + 8 + 0.1 + 0.25);
+    expect(cost?.outputUsd).toBeCloseTo(0.2 + 0.2);
+    expect(cost?.pricedInputTokens).toBe(1_001_000 + 1_100_000);
+    expect(cost?.pricedOutputTokens).toBe(30_000);
+  });
+
+  test("prices fast mode and US-only inference, and leaves unpublished or unknown TTLs unpriced", () => {
+    const { callbacks } = recorder();
+    const state = createClaudeStreamState(callbacks, "/work");
+    state.model = "claude-opus-5-5";
+    pushClaudeMessage(state, se({ type: "message_start", message: { usage: { input_tokens: 1_000_000, speed: "fast", inference_geo: "us" } } }));
+    pushClaudeMessage(state, se({ type: "message_delta", usage: { output_tokens: 1_000_000 } }));
+    // Writes without their TTL split: the input can't be priced, the output can.
+    pushClaudeMessage(state, se({ type: "message_start", message: { usage: { input_tokens: 5, cache_creation_input_tokens: 500 } } }));
+    pushClaudeMessage(state, se({ type: "message_delta", usage: { output_tokens: 1_000 } }));
+    pushClaudeMessage(state, { type: "result", subtype: "success", is_error: false, stop_reason: "end_turn", session_id: SESSION });
+    const cost = finalizeClaudeStream(state).accountedUsage?.cost;
+
+    expect(cost?.inputUsd).toBeCloseTo(8 * 1.1);
+    expect(cost?.outputUsd).toBeCloseTo(40 * 1.1 + 0.02);
+    expect(cost?.pricedInputTokens).toBe(1_000_000);
+    expect(cost?.pricedOutputTokens).toBe(1_001_000);
   });
 
   test("times each API call from its request to its last token, like the agent loop's own calls", () => {

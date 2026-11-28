@@ -282,6 +282,7 @@ function accountCallbacks(callbacks: StreamCallbacks, account: string): StreamCa
 
 function accountStreamState(callbacks: StreamCallbacks, cwd: string, account: string, apiCredit: ApiCreditKey | null, model: ModelId, promptUuid: string | null = null, appConvId?: string): ClaudeStreamState {
   const state = createClaudeStreamState(callbacks, cwd, promptUuid);
+  state.model = model;
   state.account = account === MAIN_ACCOUNT_ID ? null : account;
   state.apiCredit = apiCredit !== null;
   state.fableTurn = apiCredit === null && isFableModel(model);

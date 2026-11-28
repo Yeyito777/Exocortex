@@ -200,7 +200,7 @@ table in step with it.
 | `/goal [pause\|resume\|complete\|clear\|max-time <duration>] [objective]` | Set or manage a persistent goal ([Goals](goals.md)) |
 | `/chrono list\|cancel\|in\|at\|every …` | Schedule a message or shell command ([Chrono](chrono.md)) |
 | `/convo` | Copy the conversation's title, id, model and dates to the clipboard |
-| `/tokens [days]` / `/tokens models\|providers\|sources [days]` / `/tokens cost` | Context meter and usage windows for the open conversation, then token heatmap, totals, breakdowns or API-cost estimates |
+| `/tokens [days]` / `/tokens models\|providers\|sources [days]` / `/tokens cost` | Context meter and usage windows for the open conversation, then token heatmap, totals, breakdowns, or what the usage would cost at API list prices (today, week, lifetime; by provider and model). Cost is measured per request at its exact rate; older totals recorded without one are estimated from stored token counts (a range where the totals do not say the rate); models with no published API price are listed as unpriced. Rates and their sources: `shared/src/token-pricing.ts` |
 | `/usage reset` | Spend an earned OpenAI usage-limit reset |
 | `/time [n]` | Timestamp of the latest (or nth-latest) chat message |
 | `/diagnostics [on\|off]` | Show output-token counts in response metadata |

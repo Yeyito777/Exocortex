@@ -172,6 +172,34 @@ describe("token stats", () => {
     expect(lifetime.estimatedOutputCostUsd).toBeCloseTo(0.396);
   });
 
+  test("records a provider's per-request Claude cost instead of pricing the totals", () => {
+    recordTokenUsage("anthropic", "claude-opus-5-5", {
+      inputTokens: 1_101_000,
+      cachedInputTokens: 100_000,
+      cacheMissInputTokens: 1_000_000,
+      outputTokens: 10_000,
+      requests: 2,
+      cost: { inputUsd: 8.024, outputUsd: 0.2, pricedInputTokens: 1_101_000, pricedOutputTokens: 10_000 },
+    }, { source: "conversation" });
+
+    const totals = getTokenStatsSnapshot().today.byModel["claude-opus-5-5"];
+    expect(totals).toMatchObject({ cachedInputTokens: 100_000, cacheMissInputTokens: 1_000_000, uncachedInputTokens: 1_000, pricedInputTokens: 1_101_000, pricedOutputTokens: 10_000 });
+    expect(totals.estimatedInputCostUsd).toBeCloseTo(8.024);
+    expect(totals.estimatedOutputCostUsd).toBeCloseTo(0.2);
+  });
+
+  test("prices Gemini API models and GPT-6.2 Sol from their published tables", () => {
+    recordTokenUsage("gemini", "gemini-4-neon", { inputTokens: 1_000_000, cachedInputTokens: 600_000, cacheMissInputTokens: 400_000, outputTokens: 100_000 }, { source: "conversation" });
+    recordTokenUsage("openai", "gpt-6.2-sol", { inputTokens: 200_000, cachedInputTokens: 200_000, cacheMissInputTokens: 0, outputTokens: 100_000 }, { source: "conversation" });
+
+    const byModel = getTokenStatsSnapshot().today.byModel;
+    // Neon: 600K hits at $0.15, 400K misses at the $3 input rate, 100K output at $15.
+    expect(byModel["gemini-4-neon"].estimatedInputCostUsd).toBeCloseTo(0.09 + 1.2);
+    expect(byModel["gemini-4-neon"].estimatedOutputCostUsd).toBeCloseTo(1.5);
+    expect(byModel["gpt-6.2-sol"].estimatedInputCostUsd).toBeCloseTo(0.02);
+    expect(byModel["gpt-6.2-sol"].pricedOutputTokens).toBe(100_000);
+  });
+
   test("reuses the merged snapshot until this or another instance records usage", () => {
     recordTokenUsage("openai", "gpt-5.4", { inputTokens: 10, outputTokens: 5 }, { source: "conversation" });
     const first = getTokenStatsSnapshot();

@@ -4,7 +4,7 @@ import { cycleAutocomplete, updateAutocomplete } from "./autocomplete";
 import { commandList, getCommandArgs, tryCommand, type CommandResult } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
-import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
+import { createTokenStatsBucket, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
 import { theme, themes } from "./theme";
 import { handleEvent, type DaemonActions } from "./events";
 import { commandCompletions, resolveSlashShorthands } from "./slashsearch";
@@ -113,6 +113,38 @@ function withCapturedCost(
     pricedInputTokens,
     pricedOutputTokens,
   };
+}
+
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+function plainText(state: ReturnType<typeof createInitialState>): string {
+  return ((state.messages.at(-1) as { text?: string } | undefined)?.text ?? "").replace(ANSI_RE, "");
+}
+
+function daysAgoKey(days: number): string {
+  const date = new Date(todayDate);
+  date.setDate(date.getDate() - days);
+  return localDayKey(date);
+}
+
+function usageWith(fields: Partial<TokenUsageTotals>): TokenUsageTotals {
+  const usage = { ...totals(0, 0, 1), ...fields };
+  usage.totalTokens = usage.inputTokens + usage.outputTokens;
+  return usage;
+}
+
+/** Today's Claude turn was priced when it ran; yesterday's and last month's totals predate capture. */
+function costStats(): TokenStatsSnapshot {
+  const days: Array<{ day: string; byModel: Record<string, TokenUsageTotals> }> = [
+    { day: todayKey, byModel: { "claude-opus-5-5": withCapturedCost(usageWith({ inputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 10_000 }), 0.2, 0.2) } },
+    { day: yesterdayKey, byModel: { "claude-opus-5-5": usageWith({ inputTokens: 11_000_000, cachedInputTokens: 10_000_000, cacheMissInputTokens: 1_000_000, outputTokens: 100_000 }) } },
+    { day: daysAgoKey(30), byModel: {
+      "gpt-5.5": usageWith({ inputTokens: 3_000_000, cachedInputTokens: 2_000_000, unmeasuredInputTokens: 1_000_000, outputTokens: 1_000_000 }),
+      "unknown-model": totals(123, 45, 1),
+    } },
+  ];
+  const snapshotDays = days.map(({ day, byModel }) => ({ day, ...createTokenStatsBucket(), byModel }));
+  return { updatedAt: Date.now(), today: snapshotDays[0], lifetime: { ...totals(15_000_123, 1_110_045, 4), byProvider: {}, byModel: {}, bySource: {} }, days: snapshotDays };
 }
 
 const tokenStats: TokenStatsSnapshot = {
@@ -1159,74 +1191,51 @@ describe("/tokens", () => {
     expect(text).not.toContain("Top source tokens:");
   });
 
-  test("shows captured exact-rate cost summaries and provider-grouped lifetime costs", () => {
+  test("prices every period by provider and model: measured per request plus estimates for older totals", () => {
     const state = createInitialState();
-    state.tokenStats = structuredClone(tokenStats);
+    state.tokenStats = costStats();
 
     const result = runTokens("/tokens cost", state);
 
     expect(result).toEqual({ type: "handled" });
-    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
-    expect(text).toContain("no cache assumptions");
-    expect(text).toContain("Today:");
-    expect(text).toContain("$0.000750");
-    expect(text).toContain("$0.006198");
-    expect(text).toContain("Week:");
-    expect(text).toContain("$0.001300");
-    expect(text).toContain("$0.009396");
-    expect(text).toContain("Lifetime:");
-    expect(text).toContain("Input hit/miss-write/no-cache/unknown:");
-    expect(text).toContain("Cost coverage:");
-    expect(text).toContain("1,600");
-    expect(text).toContain("2,200");
-    expect(text).toContain("OpenAI:");
-    expect(text).toContain("    Gpt-5.4: ");
-    expect(text).toContain("$0.001300");
-    expect(text).toContain("$0.009000");
-    expect(text).toContain("DeepSeek:");
-    expect(text).toContain("    DeepSeek V4 Pro: ");
-    expect(text).toContain("$0.000396");
-    expect(text).not.toContain("cached fallback");
+    const lines = plainText(state).split("\n");
+    const row = (label: string) => lines.find((line) => line.trimStart().startsWith(label)) ?? "";
+    // Today: one Claude turn priced when it ran.
+    expect(row("Today").split(/\s{2,}/)).toEqual(["", "Today", "$0.40", "—", "$0.40", "100% / 0% / 0%"]);
+    // Yesterday's Claude totals predate capture: 10M reads at $0.20, 1M misses
+    // at $4 (fresh input) to $8 (1-hour cache write), 100K output at $20.
+    expect(row("Week").split(/\s{2,}/)).toEqual(["", "Week", "$0.40", "$8.00–$12.00", "~$8.40–$12.40", "8.3% / 91.7% / 0%"]);
+    // Old GPT-5.5 totals are exact at its standard rates; the unknown model stays out.
+    expect(row("Lifetime")).toContain("~$44.40–$48.40");
+    expect(row("Lifetime")).toContain("<0.1%");
+    expect(row("Anthropic").split(/\s{2,}/)).toEqual(["", "Anthropic", "$0.40", "~$8.40–$12.40", "~$8.40–$12.40"]);
+    expect(row("Claude Opus 5.5")).toContain("12.0M/110.0K");
+    expect(row("OpenAI").split(/\s{2,}/)).toEqual(["", "OpenAI", "—", "—", "~$36.00"]);
+    expect(row("GPT-5.5")).toContain("~$36.00");
+    expect(lines.indexOf("Unpriced (left out of every total):")).toBeGreaterThan(lines.findIndex((line) => line.includes("GPT-5.5")));
+    expect(row("Unknown-model").split(/\s{2,}/)).toEqual(["", "Unknown-model", "168", "no published API price"]);
+    expect(plainText(state)).toContain("~: includes usage recorded without a per-request cost");
   });
 
-  test("uses exact GPT-5.6 costs but never assigns family rates to a custom model", () => {
+  test("never assigns family rates to a model no price list names", () => {
     const state = createInitialState();
-    const stats = structuredClone(tokenStats);
-    stats.lifetime.byModel = {
-      "gpt-5.6-sol": withCapturedCost(totals(1_000_000, 1_000_000, 1, 0, 1_000_000), 8, 30),
-      "codex-next": totals(1_000_000, 1_000_000, 1),
-    };
+    const stats = costStats();
+    stats.days = [{
+      day: todayKey,
+      ...createTokenStatsBucket(),
+      byModel: {
+        "gpt-5.6-sol": withCapturedCost(totals(1_000_000, 1_000_000, 1, 0, 1_000_000), 8, 30),
+        "codex-next": totals(1_000_000, 1_000_000, 1),
+      },
+    }];
     state.tokenStats = stats;
 
-    const result = runTokens("/tokens cost", state);
+    runTokens("/tokens cost", state);
 
-    expect(result).toEqual({ type: "handled" });
-    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
-    expect(text).toContain("    Gpt-5.6-sol: ");
-    expect(text).toContain("$8.00");
-    expect(text).toContain("$30.00");
-    expect(text).toContain("Codex-next:");
-    expect(text).not.toContain("    Codex-next: $ ");
-    expect(text).not.toContain("Pricing fallbacks:");
-  });
-
-  test("shows unpriced model usage instead of silently dropping it", () => {
-    const state = createInitialState();
-    const stats = structuredClone(tokenStats);
-    stats.lifetime.byModel = {
-      "unknown-model": totals(123, 45, 1),
-    };
-    state.tokenStats = stats;
-
-    const result = runTokens("/tokens cost", state);
-
-    expect(result).toEqual({ type: "handled" });
-    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
-    expect(text).toContain("Unpriced or unclassified tokens (excluded from cost):");
-    expect(text).toContain("Unknown-model:");
-    expect(text).toContain("123");
-    expect(text).toContain("45");
-    expect(text).not.toContain("No token usage recorded yet.");
+    const text = plainText(state);
+    expect(text).toMatch(/GPT-5\.6 Sol\s+\$38\.00/);
+    expect(text).toMatch(/Codex-next\s+2\.0M\s+not on OpenAI's API price list/);
+    expect(text).not.toContain("~:");
   });
 
   test("reports when an older daemon has not pushed stats yet", () => {

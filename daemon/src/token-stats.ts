@@ -430,6 +430,15 @@ function estimateCost(
   };
 }
 
+function providerCost(cost: NonNullable<Parameters<typeof recordTokenUsage>[2]["cost"]>, inputTokens: number, outputTokens: number): TokenCostEstimate {
+  return {
+    estimatedInputCostUsd: normalizeUsd(cost.inputUsd),
+    estimatedOutputCostUsd: normalizeUsd(cost.outputUsd),
+    pricedInputTokens: Math.min(inputTokens, normalizeNumber(cost.pricedInputTokens)),
+    pricedOutputTokens: Math.min(outputTokens, normalizeNumber(cost.pricedOutputTokens)),
+  };
+}
+
 export function recordTokenUsage(
   provider: ProviderId,
   model: ModelId,
@@ -441,6 +450,8 @@ export function recordTokenUsage(
     /** API calls these totals cover (a Claude Code turn makes several). Defaults to one. */
     requests?: number;
     billingServiceTier?: TokenPricingServiceTier;
+    /** List-price cost the provider priced per request (Claude); used instead of pricing the totals. */
+    cost?: { inputUsd: number; outputUsd: number; pricedInputTokens: number; pricedOutputTokens: number };
   },
   tracking: TokenTrackingContext,
   options: RecordTokenUsageOptions = {},
@@ -458,7 +469,7 @@ export function recordTokenUsage(
     timestamp,
   });
   const pricing = resolvedPricing?.provider === provider ? resolvedPricing : null;
-  const cost = estimateCost(input, outputTokens, pricing);
+  const cost = usage.cost ? providerCost(usage.cost, input.inputTokens, outputTokens) : estimateCost(input, outputTokens, pricing);
   const entry: TokenUsageTotals = {
     inputTokens: input.inputTokens,
     cachedInputTokens: input.cachedInputTokens,
